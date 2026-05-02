@@ -1,0 +1,31 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+
+node_modules
+dist
+
+# Env files
+.env
+.env.local
+.env.*.local
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.sw?
+
+*.pem
+.vercel
+
+# Database schema (sensitive)
+docs/databaseschema/
+
+# Graphify output
+graphify-out/
+
+# Test coverage
+coverage/

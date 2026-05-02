@@ -1,0 +1,46 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: oro_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: oro_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - oro_postgres_data:/var/lib/postgresql/data
+    command: >
+      postgres
+      -c max_connections=200
+      -c shared_buffers=256MB
+      -c effective_cache_size=768MB
+      -c work_mem=4MB
+
+  # Optional: pgAdmin web UI to browse the database
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: oro_pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@oro.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+
+  redis:
+    image: redis:7-alpine
+    container_name: oro_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - oro_redis_data:/data
+    command: redis-server --appendonly yes
+
+volumes:
+  oro_postgres_data:
+  oro_redis_data:

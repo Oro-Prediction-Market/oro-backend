@@ -1,0 +1,110 @@
+import "reflect-metadata";
+import * as dotenv from "dotenv";
+import { NestFactory, HttpAdapterHost } from "@nestjs/core";
+import { ValidationPipe, HttpException, Logger } from "@nestjs/common";
+import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
+import { BaseExceptionFilter } from "@nestjs/core";
+import { ArgumentsHost, Catch, ExceptionFilter } from "@nestjs/common";
+import helmet from "helmet";
+import { AppModule } from "./app.module";
+
+// Load environment variables
+dotenv.config();
+
+/** Suppress noisy 401/403 ERROR logs — these are expected (unauthenticated requests)
+ *  and should be logged at DEBUG level, not ERROR. */
+@Catch(HttpException)
+class HttpExceptionFilter implements ExceptionFilter {
+  private readonly logger = new Logger("HTTP");
+  catch(exception: HttpException, host: ArgumentsHost) {
+    const status = exception.getStatus();
+    const ctx = host.switchToHttp();
+    const req = ctx.getRequest();
+    const res = ctx.getResponse();
+    if (status === 401 || status === 403) {
+      this.logger.debug(`[${status}] ${req.method} ${req.url}`);
+    } else if (status >= 500) {
+      this.logger.error(
+        `[${status}] ${req.method} ${req.url} — ${exception.message}`,
+      );
+    } else {
+      this.logger.warn(
+        `[${status}] ${req.method} ${req.url} — ${exception.message}`,
+      );
+    }
+    res.status(status).json(exception.getResponse());
+  }
+}
+
+// Load environment variables
+dotenv.config();
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+
+  // Security headers
+  app.use(helmet());
+
+  // CORS
+  const isProduction = process.env.NODE_ENV === "production";
+  const allowedOrigins: (string | RegExp)[] = [
+    "https://tara-parimutuel.vercel.app",
+  ];
+  if (!isProduction) {
+    allowedOrigins.push(
+      "http://localhost:5173",
+      "http://localhost:5174",
+      "http://127.0.0.1:5174",
+    );
+    // Allow an explicit ngrok URL set in .env (DEV_NGROK_URL=https://xxxx.ngrok-free.app)
+    // — no wildcard regex; each tunnel URL must be explicitly opted in
+    const devNgrok = process.env.DEV_NGROK_URL;
+    if (devNgrok) allowedOrigins.push(devNgrok);
+  }
+  if (process.env.FRONTEND_URL) {
+    // Validate FRONTEND_URL is a proper https origin before trusting it
+    try {
+      const parsed = new URL(process.env.FRONTEND_URL);
+      if (parsed.protocol === "https:") allowedOrigins.push(parsed.origin);
+    } catch {
+      console.warn("FRONTEND_URL is not a valid URL — skipping CORS entry");
+    }
+  }
+  app.enableCors({
+    origin: allowedOrigins,
+    credentials: true,
+  });
+
+  // Global API prefix — all routes are /api/*
+  app.setGlobalPrefix("api");
+
+  // Suppress noisy 401/403 error logs — expected from unauthenticated requests
+  app.useGlobalFilters(new HttpExceptionFilter());
+
+  // Global validation
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    }),
+  );
+
+  // Swagger docs — only in non-production
+  if (!isProduction) {
+    const config = new DocumentBuilder()
+      .setTitle("Oro Parimutuel API")
+      .setDescription("Parimutuel prediction engine for Telegram Mini App")
+      .setVersion("1.0")
+      .addBearerAuth()
+      .build();
+    const document = SwaggerModule.createDocument(app, config);
+    SwaggerModule.setup("docs", app, document);
+  }
+
+  const port = process.env.PORT || 3000;
+  await app.listen(port);
+  console.log(`🚀 Oro backend running on http://localhost:${port}`);
+  console.log(`📖 Swagger docs: http://localhost:${port}/docs`);
+}
+bootstrap();
