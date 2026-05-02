@@ -1,0 +1,114 @@
+name: backend → prod
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: backend-prod
+  cancel-in-progress: true
+
+env:
+  IMAGE: harbor.oro.fun/oro/backend
+  NS: prod
+  DEPLOY: oro-backend
+
+jobs:
+  ship:
+    runs-on: [self-hosted, oro]
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup kubeconfig
+        run: |
+          mkdir -p $RUNNER_TEMP/.kube
+          echo '${{ secrets.KUBECONFIG }}' | base64 -d > $RUNNER_TEMP/.kube/config
+          chmod 600 $RUNNER_TEMP/.kube/config
+          echo "KUBECONFIG=$RUNNER_TEMP/.kube/config" >> $GITHUB_ENV
+
+      - name: Login to Harbor
+        run: |
+          echo '${{ secrets.HARBOR_PASSWORD }}' | docker login harbor.oro.fun \
+            -u '${{ secrets.HARBOR_USERNAME }}' --password-stdin
+
+      - name: Build + push
+        env:
+          TAG: ${{ github.sha }}
+        run: |
+          docker build -t $IMAGE:$TAG -t $IMAGE:latest .
+          docker push $IMAGE:$TAG
+          docker push $IMAGE:latest
+
+      - name: Sync prod Secret (live values from cluster + GH secrets)
+        run: |
+          DB_PASSWORD="$(kubectl -n database get secret oro-pg-app -o jsonpath='{.data.password}' | base64 -d)"
+          REDIS_CACHE_PASSWORD="$(kubectl -n redis get secret oro-redis-cache-auth -o jsonpath='{.data.redis-password}' 2>/dev/null | base64 -d || echo '')"
+          REDIS_QUEUE_PASSWORD="$(kubectl -n redis get secret oro-redis-queue-auth -o jsonpath='{.data.redis-password}' 2>/dev/null | base64 -d || echo '')"
+
+          kubectl create secret generic oro-secrets --namespace=$NS \
+            --dry-run=client -o yaml \
+            --from-literal=DB_HOST=oro-pg-rw.database.svc.cluster.local \
+            --from-literal=DB_PORT=5432 \
+            --from-literal=DB_NAME=oro_db \
+            --from-literal=DB_USERNAME=oro \
+            --from-literal=DB_PASSWORD="$DB_PASSWORD" \
+            --from-literal=REDIS_CACHE_URL="redis://default:${REDIS_CACHE_PASSWORD}@redis-cache.redis.svc.cluster.local:6379" \
+            --from-literal=REDIS_QUEUE_URL="redis://default:${REDIS_QUEUE_PASSWORD}@redis-queue.redis.svc.cluster.local:6379" \
+            --from-literal=JWT_SECRET='${{ secrets.JWT_SECRET }}' \
+            --from-literal=TELEGRAM_BOT_TOKEN='${{ secrets.TELEGRAM_BOT_TOKEN }}' \
+            --from-literal=TELEGRAM_WEBHOOK_SECRET='${{ secrets.TELEGRAM_WEBHOOK_SECRET }}' \
+            --from-literal=TELEGRAM_CHANNEL_ID='${{ secrets.TELEGRAM_CHANNEL_ID }}' \
+            --from-literal=DK_CLIENT_SECRET='${{ secrets.DK_CLIENT_SECRET }}' \
+            --from-literal=DK_BANK_CODE='${{ secrets.DK_BANK_CODE }}' \
+            --from-literal=FOOTBALL_DATA_API_KEY='${{ secrets.FOOTBALL_DATA_API_KEY }}' \
+            --from-literal=ADMIN_TELEGRAM_ID='${{ secrets.ADMIN_TELEGRAM_ID }}' \
+            --from-literal=ADMIN_TOTP_SECRET='${{ secrets.ADMIN_TOTP_SECRET }}' \
+            --from-literal=ADMIN_DEV_SECRET='${{ secrets.ADMIN_DEV_SECRET }}' \
+            --from-literal=PHONE_HASH_SECRET='${{ secrets.PHONE_HASH_SECRET }}' \
+            | kubectl apply -f -
+
+      - name: Run migrations (one-shot Job)
+        env:
+          TAG: ${{ github.sha }}
+        run: |
+          kubectl -n $NS delete job oro-migrations --ignore-not-found
+          cat <<EOF | kubectl apply -f -
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: oro-migrations
+            namespace: $NS
+          spec:
+            backoffLimit: 1
+            ttlSecondsAfterFinished: 86400
+            template:
+              spec:
+                restartPolicy: Never
+                imagePullSecrets:
+                  - name: harbor-pull
+                containers:
+                  - name: migrate
+                    image: $IMAGE:$TAG
+                    command: ["sh","-c","npx typeorm-ts-node-commonjs -d src/data-source.ts migration:run"]
+                    envFrom:
+                      - configMapRef: { name: oro-config }
+                      - secretRef:    { name: oro-secrets }
+          EOF
+          kubectl -n $NS wait --for=condition=complete --timeout=300s job/oro-migrations \
+            || (kubectl -n $NS logs -l job-name=oro-migrations --tail=200; exit 1)
+
+      - name: Roll deployment
+        env:
+          TAG: ${{ github.sha }}
+        run: |
+          kubectl -n $NS set image deployment/$DEPLOY backend=$IMAGE:$TAG
+          kubectl -n $NS rollout status deployment/$DEPLOY --timeout=300s
+
+      - name: Show new pod state
+        if: always()
+        run: |
+          kubectl -n $NS get pods -l app=$DEPLOY -o wide
+          kubectl -n $NS get deploy $DEPLOY
