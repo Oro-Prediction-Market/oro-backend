@@ -91,8 +91,12 @@ async function bootstrap() {
     }),
   );
 
-  // Swagger docs — only in non-production
-  if (!isProduction) {
+  // Swagger docs — controlled by SWAGGER_ENABLED env var.
+  // Default: enabled in non-prod, disabled in prod (set SWAGGER_ENABLED=true to override).
+  const swaggerEnabled = process.env.SWAGGER_ENABLED
+    ? process.env.SWAGGER_ENABLED === "true"
+    : !isProduction;
+  if (swaggerEnabled) {
     const config = new DocumentBuilder()
       .setTitle("Oro Parimutuel API")
       .setDescription("Parimutuel prediction engine for Telegram Mini App")
@@ -101,6 +105,7 @@ async function bootstrap() {
       .build();
     const document = SwaggerModule.createDocument(app, config);
     SwaggerModule.setup("docs", app, document);
+    console.log("📖 Swagger docs enabled at /docs");
   }
 
   const port = process.env.PORT || 3000;
