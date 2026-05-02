@@ -169,9 +169,16 @@ export class MarketsService {
     const cached = await this.redis.getJson<Market[]>(cacheKey);
     if (cached) return cached;
 
+    const activeStatuses = [
+      MarketStatus.UPCOMING,
+      MarketStatus.OPEN,
+      MarketStatus.CLOSED,
+    ];
+
     const qb = this.marketRepo
       .createQueryBuilder("market")
       .leftJoinAndSelect("market.outcomes", "outcome")
+      .where("market.status IN (:...activeStatuses)", { activeStatuses })
       .orderBy("market.createdAt", "DESC");
 
     if (q && q.trim()) {
@@ -180,7 +187,7 @@ export class MarketsService {
         .toLowerCase()
         .replace(/[%_\\]/g, "\\$&");
       const term = `%${safe}%`;
-      qb.where(
+      qb.andWhere(
         "LOWER(market.title) LIKE :term ESCAPE '\\' OR LOWER(market.description) LIKE :term ESCAPE '\\'",
         { term },
       );
