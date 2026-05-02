@@ -31,9 +31,8 @@ RUN apk add --no-cache tini
 COPY --chown=node:node package.json tsconfig.json ./
 COPY --chown=node:node --from=builder /app/node_modules ./node_modules
 COPY --chown=node:node --from=builder /app/dist ./dist
-# typeorm CLI needs the source data-source + migrations at runtime
-COPY --chown=node:node src/data-source.ts ./src/data-source.ts
-COPY --chown=node:node src/migrations    ./src/migrations
+# Migrations run via app startup (migrationsRun: true in data-source.ts).
+# Compiled migrations live in dist/migrations/ already.
 
 USER node
 EXPOSE 3000
