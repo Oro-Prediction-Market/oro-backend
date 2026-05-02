@@ -55,8 +55,7 @@ jobs:
             --from-literal=DB_NAME=oro_db \
             --from-literal=DB_USERNAME=oro \
             --from-literal=DB_PASSWORD="$DB_PASSWORD" \
-            --from-literal=REDIS_CACHE_URL="redis://default:${REDIS_CACHE_PASSWORD}@redis-cache.redis.svc.cluster.local:6379" \
-            --from-literal=REDIS_QUEUE_URL="redis://default:${REDIS_QUEUE_PASSWORD}@redis-queue.redis.svc.cluster.local:6379" \
+            --from-literal=REDIS_URL="redis://default:${REDIS_QUEUE_PASSWORD}@redis-queue.redis.svc.cluster.local:6379" \
             --from-literal=JWT_SECRET='${{ secrets.JWT_SECRET }}' \
             --from-literal=TELEGRAM_BOT_TOKEN='${{ secrets.TELEGRAM_BOT_TOKEN }}' \
             --from-literal=TELEGRAM_WEBHOOK_SECRET='${{ secrets.TELEGRAM_WEBHOOK_SECRET }}' \
