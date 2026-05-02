@@ -28,6 +28,7 @@ export const AppDataSource = new DataSource({
   password: process.env.DB_PASSWORD || "postgres",
   database: process.env.DB_NAME || "oro_db",
   synchronize: false,
+  migrationsRun: true,    // app runs pending migrations on startup
   logging: true,
   extra: {
     max: 5,
