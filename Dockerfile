@@ -25,17 +25,17 @@ WORKDIR /app
 ENV NODE_ENV=production \
     PORT=3000
 
-RUN apk add --no-cache tini \
-    && addgroup -S oro && adduser -S oro -G oro -u 1000
+RUN apk add --no-cache tini
+# Reuse the `node` user that the base image already ships (UID 1000).
 
-COPY --chown=1000:1000 package.json tsconfig.json ./
-COPY --chown=1000:1000 --from=builder /app/node_modules ./node_modules
-COPY --chown=1000:1000 --from=builder /app/dist ./dist
+COPY --chown=node:node package.json tsconfig.json ./
+COPY --chown=node:node --from=builder /app/node_modules ./node_modules
+COPY --chown=node:node --from=builder /app/dist ./dist
 # typeorm CLI needs the source data-source + migrations at runtime
-COPY --chown=1000:1000 src/data-source.ts ./src/data-source.ts
-COPY --chown=1000:1000 src/migrations    ./src/migrations
+COPY --chown=node:node src/data-source.ts ./src/data-source.ts
+COPY --chown=node:node src/migrations    ./src/migrations
 
-USER 1000
+USER node
 EXPOSE 3000
 
 ENTRYPOINT ["/sbin/tini", "--"]
