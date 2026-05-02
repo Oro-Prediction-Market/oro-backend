@@ -54,6 +54,7 @@ async function bootstrap() {
     allowedOrigins.push(
       "http://localhost:5173",
       "http://localhost:5174",
+      "http://localhost:5175",
       "http://127.0.0.1:5174",
     );
     // Allow an explicit ngrok URL set in .env (DEV_NGROK_URL=https://xxxx.ngrok-free.app)
