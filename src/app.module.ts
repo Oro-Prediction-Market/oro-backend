@@ -101,6 +101,8 @@ import { UserEvent } from "./entities/user-event.entity";
           UserEvent,
         ],
         synchronize: false,
+        migrationsRun: true,        // run pending migrations on app startup
+        migrations: [__dirname + "/migrations/*{.js,.ts}"],
         logging: false,
         extra: {
           max: 20,
