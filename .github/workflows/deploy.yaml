@@ -70,35 +70,8 @@ jobs:
             --from-literal=PHONE_HASH_SECRET='${{ secrets.PHONE_HASH_SECRET }}' \
             | kubectl apply -f -
 
-      - name: Run migrations (one-shot Job)
-        env:
-          TAG: ${{ github.sha }}
-        run: |
-          kubectl -n $NS delete job oro-migrations --ignore-not-found
-          cat <<EOF | kubectl apply -f -
-          apiVersion: batch/v1
-          kind: Job
-          metadata:
-            name: oro-migrations
-            namespace: $NS
-          spec:
-            backoffLimit: 1
-            ttlSecondsAfterFinished: 86400
-            template:
-              spec:
-                restartPolicy: Never
-                imagePullSecrets:
-                  - name: harbor-pull
-                containers:
-                  - name: migrate
-                    image: $IMAGE:$TAG
-                    command: ["sh","-c","npx typeorm-ts-node-commonjs -d src/data-source.ts migration:run"]
-                    envFrom:
-                      - configMapRef: { name: oro-config }
-                      - secretRef:    { name: oro-secrets }
-          EOF
-          kubectl -n $NS wait --for=condition=complete --timeout=300s job/oro-migrations \
-            || (kubectl -n $NS logs -l job-name=oro-migrations --tail=200; exit 1)
+      # Migrations are run by the app on startup (migrationsRun: true in
+      # data-source.ts). No separate Job — the backend pod handles it.
 
       - name: Roll deployment
         env:
