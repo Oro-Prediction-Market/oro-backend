@@ -5,10 +5,16 @@ export class CreateChallengesTable1775975312802 implements MigrationInterface {
   name = "AddChallengesTable1775975312802";
 
   public async up(queryRunner: QueryRunner): Promise<void> {
+    // Postgres doesn't support `CREATE TYPE IF NOT EXISTS`; wrap in DO/EXCEPTION
+    // so re-runs (e.g. crashloop retries) don't fail on duplicate_object.
     await queryRunner.query(`
-      CREATE TYPE IF NOT EXISTS "public"."challenges_status_enum" AS ENUM(
-        'open', 'active', 'settled', 'expired', 'void'
-      )
+      DO $$ BEGIN
+        CREATE TYPE "public"."challenges_status_enum" AS ENUM(
+          'open', 'active', 'settled', 'expired', 'void'
+        );
+      EXCEPTION
+        WHEN duplicate_object THEN NULL;
+      END $$;
     `);
 
     await queryRunner.query(`
