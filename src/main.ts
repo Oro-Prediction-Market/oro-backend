@@ -76,8 +76,8 @@ async function bootstrap() {
     credentials: true,
   });
 
-  // Global API prefix — all routes are /api/*
-  app.setGlobalPrefix("api");
+  // No global prefix — host already namespaced at api.oro.fun.
+  // Routes serve at root: /health, /markets, /admin/health, etc.
 
   // Suppress noisy 401/403 error logs — expected from unauthenticated requests
   app.useGlobalFilters(new HttpExceptionFilter());
