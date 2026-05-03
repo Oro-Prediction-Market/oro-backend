@@ -393,6 +393,13 @@ export class ParimutuelEngine implements OnModuleInit {
         this.logger.error(`Referral bonus credit failed: ${err.message}`),
       );
 
+      // Bust cache NOW (before returning) so the immediate refetch gets fresh data
+      await this.redis.del(
+        "oro:cache:markets:all",
+        `oro:cache:market:${marketId}`,
+      );
+      await this.redis.del(`oro:cache:balance:${userId}`);
+
       const result = completedPosition! as Position & {
         streak?: { count: number; dayInCycle: number; boostActive: boolean };
       };

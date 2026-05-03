@@ -939,13 +939,11 @@ describe("Batch payment — NOT triggered on market settlement", () => {
     };
     const mockDataSource = {
       transaction: jest.fn().mockImplementation((cb: Function) => cb(mockEm)),
-      getRepository: jest
-        .fn()
-        .mockReturnValue({
-          save: jest.fn(),
-          update: jest.fn(),
-          increment: jest.fn(),
-        }),
+      getRepository: jest.fn().mockReturnValue({
+        save: jest.fn(),
+        update: jest.fn(),
+        increment: jest.fn(),
+      }),
     };
     const spies = buildBatchSpies();
     const engine = new ParimutuelEngine(

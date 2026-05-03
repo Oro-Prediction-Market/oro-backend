@@ -173,6 +173,7 @@ export class MarketsService {
       MarketStatus.UPCOMING,
       MarketStatus.OPEN,
       MarketStatus.CLOSED,
+      MarketStatus.RESOLVING,
     ];
 
     const qb = this.marketRepo
