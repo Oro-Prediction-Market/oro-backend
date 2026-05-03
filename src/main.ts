@@ -1,5 +1,7 @@
 import "reflect-metadata";
 import * as dotenv from "dotenv";
+// Set Bhutan timezone (UTC+6) before anything else
+process.env.TZ = "Asia/Thimphu";
 import { NestFactory, HttpAdapterHost } from "@nestjs/core";
 import { ValidationPipe, HttpException, Logger } from "@nestjs/common";
 import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
@@ -66,10 +68,16 @@ async function bootstrap() {
   // Configured in k8s/apps/_shared/configmap.yaml as oro-config.CORS_ORIGIN.
   const corsOrigin = process.env.CORS_ORIGIN;
   if (corsOrigin) {
-    for (const raw of corsOrigin.split(",").map((s) => s.trim()).filter(Boolean)) {
+    for (const raw of corsOrigin
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)) {
       try {
         const parsed = new URL(raw);
-        if (parsed.protocol === "https:" && !allowedOrigins.includes(parsed.origin)) {
+        if (
+          parsed.protocol === "https:" &&
+          !allowedOrigins.includes(parsed.origin)
+        ) {
           allowedOrigins.push(parsed.origin);
         }
       } catch {
