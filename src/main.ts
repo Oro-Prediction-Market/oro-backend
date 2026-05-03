@@ -62,14 +62,19 @@ async function bootstrap() {
     const devNgrok = process.env.DEV_NGROK_URL;
     if (devNgrok) allowedOrigins.push(devNgrok);
   }
-  for (const envKey of ["FRONTEND_URL", "ADMIN_URL"]) {
-    const val = process.env[envKey];
-    if (!val) continue;
-    try {
-      const parsed = new URL(val);
-      if (parsed.protocol === "https:") allowedOrigins.push(parsed.origin);
-    } catch {
-      console.warn(`${envKey} is not a valid URL — skipping CORS entry`);
+  // CORS_ORIGIN: comma-separated list of allowed https origins.
+  // Configured in k8s/apps/_shared/configmap.yaml as oro-config.CORS_ORIGIN.
+  const corsOrigin = process.env.CORS_ORIGIN;
+  if (corsOrigin) {
+    for (const raw of corsOrigin.split(",").map((s) => s.trim()).filter(Boolean)) {
+      try {
+        const parsed = new URL(raw);
+        if (parsed.protocol === "https:" && !allowedOrigins.includes(parsed.origin)) {
+          allowedOrigins.push(parsed.origin);
+        }
+      } catch {
+        console.warn(`CORS_ORIGIN entry invalid: ${raw}`);
+      }
     }
   }
   app.enableCors({
