@@ -24,6 +24,7 @@ import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import { DKGatewayService } from "../payment/services/dk-gateway/dk-gateway.service";
 import { StreakService, STREAK_BONUS_MULT } from "../users/streak.service";
 import { ChallengesService } from "../challenges/challenges.service";
+import { SseService } from "../sse/sse.service";
 
 // ─── Valid state machine transitions ────────────────────────────────────────
 const VALID_TRANSITIONS: Record<MarketStatus, MarketStatus[]> = {
@@ -66,6 +67,7 @@ export class ParimutuelEngine implements OnModuleInit {
     private streakService: StreakService,
     private challengesService: ChallengesService,
     private marketsGateway: MarketsGateway,
+    private sse: SseService,
   ) {}
 
   private async getCreditsBalance(
@@ -836,6 +838,10 @@ export class ParimutuelEngine implements OnModuleInit {
     await Promise.all(
       uniqueUserIds.map((uid) => this.redis.del(`oro:cache:balance:${uid}`)),
     );
+    // Push real-time SSE event so frontends auto-refresh
+    for (const uid of uniqueUserIds) {
+      this.sse.emit(uid, "balance:updated", { marketId });
+    }
 
     // Push real BTN from merchant → winners' DK accounts — fire and forget
     this.dispatchDkPayouts(

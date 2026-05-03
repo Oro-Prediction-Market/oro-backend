@@ -41,6 +41,7 @@ describe("ParimutuelEngine.calcOdds", () => {
       null as any,
       null as any, // challengesService
       null as any, // marketsGateway
+      null as any, // sse
     );
   });
 
@@ -146,6 +147,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any,
       null as any, // challengesService
       null as any, // marketsGateway
+      null as any, // sse
     );
     await expect(engine.placePosition("u1", "m1", "o1", 0)).rejects.toThrow(
       BadRequestException,
@@ -213,6 +215,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any,
       null as any,
       null as any, // marketsGateway
+      null as any, // sse
     );
 
     await expect(engine.placePosition("u1", "m1", "o1", 100)).rejects.toThrow(
@@ -278,6 +281,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any,
       null as any,
       null as any, // marketsGateway
+      null as any, // sse
     );
 
     await expect(engine.placePosition("u1", "m1", "o1", 100)).rejects.toThrow(
@@ -353,6 +357,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any,
       null as any,
       null as any, // marketsGateway
+      null as any, // sse
     );
 
     await expect(engine.placePosition("u1", "m1", "o1", 100)).rejects.toThrow(
@@ -428,6 +433,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any,
       null as any,
       null as any, // marketsGateway
+      null as any, // sse
     );
 
     await expect(engine.placePosition("u2", "m1", "o2", 100)).rejects.toThrow(
@@ -509,6 +515,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any,
       null as any,
       null as any, // marketsGateway
+      null as any, // sse
     );
 
     // Should NOT throw — duel is OPEN, not ACTIVE
@@ -619,6 +626,7 @@ describe("Settlement wallet credit — no DK transfer on market settle", () => {
       null as any, // streakService
       null as any, // challengesService
       null as any, // marketsGateway
+      null as any, // sse
     );
 
     return { engine, mockDkGateway, positions };
@@ -793,6 +801,7 @@ describe("Batch payment — NOT triggered on market settlement", () => {
       null as any,
       null as any,
       null as any,
+      null as any, // sse
     );
 
     return engine;
@@ -957,6 +966,7 @@ describe("Batch payment — NOT triggered on market settlement", () => {
       null as any,
       null as any,
       null as any,
+      null as any, // sse
     );
 
     // totalPool=600, houseEdgePct=8 → payoutPool=552
