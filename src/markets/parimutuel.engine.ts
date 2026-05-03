@@ -172,7 +172,7 @@ export class ParimutuelEngine implements OnModuleInit {
         // paid out to a real account.
         if (!user.dkAccountNumber) {
           throw new BadRequestException(
-            "You must link your DK Bank account before placing a bet. Go to Profile → Link DK Bank.",
+            "You must link your DK Bank account before placing a bet. Go to Wallet Page → Link DK Bank.",
           );
         }
 
@@ -180,7 +180,7 @@ export class ParimutuelEngine implements OnModuleInit {
         // This doubles as identity verification and ensures withdrawal delivery.
         if (!user.phoneNumber) {
           throw new BadRequestException(
-            "A verified phone number is required to place a bet. Go to Profile → Link DK Bank.",
+            "A verified phone number is required to place a bet. Go to Wallet Page → Link DK Bank.",
           );
         }
 
