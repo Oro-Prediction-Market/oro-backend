@@ -369,14 +369,100 @@ export class DKBankPaymentService {
     }
 
     this.logger.log(`[Payment] DK debit accepted for payment ${payment.id}`);
+    const txnStatusId = payment.dkTxnStatusId;
+    let confirmedStatus: string = "PENDING";
 
-    // ── Credit Oro balance ────────────────────────────────────────────────────
+    if (txnStatusId) {
+      const MAX_POLLS = 5;
+      const POLL_INTERVAL_MS = 3000;
+
+      for (let attempt = 0; attempt < MAX_POLLS; attempt++) {
+        try {
+          const statusResult =
+            await this.dkGateway.checkTransactionStatus(txnStatusId);
+          const upperStatus = (statusResult.status || "PENDING").toUpperCase();
+
+          if (upperStatus.includes("SUCCESS")) {
+            confirmedStatus = "SUCCESS";
+            payment.metadata = {
+              ...(payment.metadata || {}),
+              dkSettlementConfirmed: true,
+              dkSettlementStatus: statusResult,
+            };
+            await this.paymentRepo.save(payment);
+            break;
+          } else if (upperStatus.includes("FAIL")) {
+            confirmedStatus = "FAILED";
+            payment.metadata = {
+              ...(payment.metadata || {}),
+              dkSettlementConfirmed: false,
+              dkSettlementStatus: statusResult,
+            };
+            await this.paymentRepo.save(payment);
+            break;
+          }
+          // Still PENDING — wait and retry
+          if (attempt < MAX_POLLS - 1) {
+            await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+          }
+        } catch (e: any) {
+          this.logger.warn(
+            `[Payment] Status poll attempt ${attempt + 1} failed for ${payment.id}: ${e.message}`,
+          );
+          if (attempt < MAX_POLLS - 1) {
+            await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+          }
+        }
+      }
+    } else {
+      // No txnStatusId returned — this should not happen in production.
+      // Treat as not confirmed; do NOT credit the wallet immediately.
+      this.logger.warn(
+        `[Payment] No txnStatusId for payment ${payment.id} — cannot confirm settlement`,
+      );
+    }
+
+    if (confirmedStatus !== "SUCCESS") {
+      // Funds not confirmed in merchant account — do NOT credit wallet.
+      // Leave payment as PENDING so it can be confirmed later via webhook or manual poll.
+      this.logger.warn(
+        `[Payment] DK debit accepted but settlement NOT confirmed for payment ${payment.id}. ` +
+          `Status: ${confirmedStatus}. Wallet NOT credited — awaiting webhook/poll confirmation.`,
+      );
+
+      if (confirmedStatus === "FAILED") {
+        payment.status = PaymentStatus.FAILED;
+        payment.failureReason =
+          "DK Bank debit was initiated but settlement failed. Funds were not received by merchant.";
+        await this.paymentRepo.save(payment);
+
+        throw new BadRequestException(
+          "Payment could not be completed. Your bank account has not been charged. Please try again.",
+        );
+      }
+
+      // Still PENDING after all polls — return pending status to frontend
+      // The wallet will be credited later when webhook arrives or status is polled.
+      return {
+        success: true,
+        paymentId: payment.id,
+        status: "pending" as any,
+        amount: Number(payment.amount),
+        currency: payment.currency,
+        method: "dkbank",
+        message:
+          "Payment is being processed. Your balance will be updated shortly once the bank confirms the transfer.",
+        timestamp: new Date().toISOString(),
+      };
+    }
+
+    // ── Settlement confirmed — now safe to credit Oro balance ─────────────────
     await this.applyDKStatusUpdate({
       userId,
       paymentId: payment.id,
-      dkRaw: { source: "dk_otp" },
+      dkRaw: { source: "dk_otp", settlementConfirmed: true },
       dkStatus: "SUCCESS",
-      dkStatusDesc: "DK OTP verified — balance credited",
+      dkStatusDesc: "DK settlement confirmed — balance credited",
       isFromWebhook: false,
     });
 
