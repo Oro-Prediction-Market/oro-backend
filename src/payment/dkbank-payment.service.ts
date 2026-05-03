@@ -157,7 +157,7 @@ export class DKBankPaymentService {
     if (!user.dkCid) {
       throw new BadRequestException(
         "You have not linked a DK Bank account yet. " +
-          "Please go to Profile → Link DK Bank Account first.",
+          "Please go to Wallet Page → Link DK Bank Account first.",
       );
     }
 
@@ -735,7 +735,7 @@ export class DKBankPaymentService {
     if (!user.dkAccountNumber || !user.dkCid) {
       throw new BadRequestException(
         "You have not linked a DK Bank account yet. " +
-          "Please go to Profile → Link DK Bank Account first.",
+          "Please go to Wallet Page → Link DK Bank Account first.",
       );
     }
 

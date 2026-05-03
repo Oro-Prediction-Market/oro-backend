@@ -184,7 +184,7 @@ export class TelegramVerificationService {
           "You haven't linked a DK Bank CID to your Oro account yet.\n\n" +
             "Steps to fix:\n" +
             "1️⃣ Open the Oro Mini App\n" +
-            "2️⃣ Go to Profile → Link DK Bank Account\n" +
+            "2️⃣ Go to Wallet → Link DK Bank Account\n" +
             "3️⃣ Enter your 11-digit CID number\n" +
             "4️⃣ Come back here and share your phone number again.",
         );
