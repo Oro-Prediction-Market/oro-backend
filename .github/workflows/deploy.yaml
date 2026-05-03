@@ -65,6 +65,14 @@ jobs:
             --from-literal=ADMIN_TOTP_SECRET='${{ secrets.ADMIN_TOTP_SECRET }}' \
             --from-literal=ADMIN_DEV_SECRET='${{ secrets.ADMIN_DEV_SECRET }}' \
             --from-literal=PHONE_HASH_SECRET='${{ secrets.PHONE_HASH_SECRET }}' \
+            --from-literal=DK_API_KEY='${{ secrets.DK_API_KEY }}' \
+            --from-literal=DK_BANK_CODE='${{ secrets.DK_BANK_CODE }}' \
+            --from-literal=DK_BENEFICIARY_ACCOUNT='${{ secrets.DK_BENEFICIARY_ACCOUNT }}' \
+            --from-literal=DK_CLIENT_ID='${{ secrets.DK_CLIENT_ID }}' \
+            --from-literal=DK_CLIENT_SECRET='${{ secrets.DK_CLIENT_SECRET }}' \
+            --from-literal=DK_PASSWORD='${{ secrets.DK_PASSWORD }}' \
+            --from-literal=DK_SOURCE_APP='${{ secrets.DK_SOURCE_APP }}' \
+            --from-literal=DK_USERNAME='${{ secrets.DK_USERNAME }}' \
             | kubectl apply -f -
 
       # Migrations are run by the app on startup (migrationsRun: true in
