@@ -62,13 +62,14 @@ async function bootstrap() {
     const devNgrok = process.env.DEV_NGROK_URL;
     if (devNgrok) allowedOrigins.push(devNgrok);
   }
-  if (process.env.FRONTEND_URL) {
-    // Validate FRONTEND_URL is a proper https origin before trusting it
+  for (const envKey of ["FRONTEND_URL", "ADMIN_URL"]) {
+    const val = process.env[envKey];
+    if (!val) continue;
     try {
-      const parsed = new URL(process.env.FRONTEND_URL);
+      const parsed = new URL(val);
       if (parsed.protocol === "https:") allowedOrigins.push(parsed.origin);
     } catch {
-      console.warn("FRONTEND_URL is not a valid URL — skipping CORS entry");
+      console.warn(`${envKey} is not a valid URL — skipping CORS entry`);
     }
   }
   app.enableCors({
