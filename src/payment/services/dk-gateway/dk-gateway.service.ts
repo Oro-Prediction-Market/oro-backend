@@ -192,7 +192,9 @@ export class DKGatewayService {
       ) {
         throw err;
       }
-      this.logger.error(`DK gateway network error on ${endpoint}: ${err?.message}`);
+      this.logger.error(
+        `DK gateway network error on ${endpoint}: ${err?.message}`,
+      );
       throw new ServiceUnavailableException(
         "DK Bank payment gateway is temporarily unavailable. Please try again later.",
       );
@@ -530,19 +532,13 @@ export class DKGatewayService {
           "Transaction failed",
       );
     }
+    const isBatchMode = !res.response_data?.txn_status_id;
 
-    // DK staging routes debit_request to batch settlement — no txn_status_id in response
-    // (returns bfs_txn_id with "PG01..." prefix instead). Fall back to
-    // /v1/initiate/transaction which executes in real-time on staging so the OTP
-    // flow still drives the debit and money actually moves during testing.
-    // Production is unaffected: debit_request returns a real txn_status_id there.
-    const isStagingBatchMode =
-      this.baseUrl.includes(".sit.") && !res.response_data?.txn_status_id;
-
-    if (isStagingBatchMode) {
+    if (isBatchMode) {
       this.logger.warn(
-        `[STAGING] debit_request returned batch mode (no txn_status_id) — ` +
-        `falling back to /v1/initiate/transaction for real-time debit`,
+        `[Payment] debit_request returned batch mode (no txn_status_id) — ` +
+          `falling back to /v1/initiate/transaction for real-time debit. ` +
+          `bfs_txn_id=${(res.response_data as any)?.bfs_txn_id ?? "none"}`,
       );
       const stanNo = this.generateStanNumber();
       const fallback = await this.dkPost<{
@@ -571,7 +567,7 @@ export class DKGatewayService {
 
       if (fallback.response_code === DK_RESPONSE_CODES.SUCCESS) {
         this.logger.log(
-          `[STAGING] initiate/transaction fallback succeeded: txn_status_id=${fallback.response_data?.txn_status_id}`,
+          `[Payment] initiate/transaction real-time debit succeeded: txn_status_id=${fallback.response_data?.txn_status_id}`,
         );
         return {
           txnStatusId: fallback.response_data?.txn_status_id ?? null,
@@ -579,9 +575,14 @@ export class DKGatewayService {
         };
       }
 
-      this.logger.warn(
-        `[STAGING] initiate/transaction fallback failed [${fallback.response_code}]: ` +
-        `${fallback.response_description ?? fallback.response_message}`,
+      this.logger.error(
+        `[Payment] initiate/transaction fallback FAILED [${fallback.response_code}]: ` +
+          `${fallback.response_description ?? fallback.response_message}`,
+      );
+      throw new BadRequestException(
+        fallback.response_description ||
+          fallback.response_message ||
+          "Real-time debit transfer failed. Please try again.",
       );
     }
 
