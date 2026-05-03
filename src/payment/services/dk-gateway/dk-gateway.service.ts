@@ -255,6 +255,20 @@ export class DKGatewayService {
     params.append("source_app", this.sourceApp);
     params.append("request_id", this.generateRequestId());
 
+    // TEMP: shape-check each credential so we can spot mismatches.
+    // Logs fingerprint (first 3 + last 3 + length), never the value.
+    const fp = (k: string) => {
+      const v = params.get(k) ?? "";
+      return `${k}: len=${v.length} first=${v.slice(0, 3)} last=${v.slice(-3)}`;
+    };
+    this.logger.warn(
+      "DK auth/token request fingerprint:\n  " +
+        ["username", "password", "client_id", "client_secret", "source_app"]
+          .map(fp)
+          .join("\n  ") +
+        `\n  X-gravitee-api-key fp: len=${this.apiKey.length} first=${this.apiKey.slice(0, 3)} last=${this.apiKey.slice(-3)}`,
+    );
+
     const res = await this.nativeFetch<DKAuthResponse>(
       "/v1/auth/token",
       params.toString(),
