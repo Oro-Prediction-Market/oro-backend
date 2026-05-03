@@ -96,6 +96,7 @@ function makeEngine(ds: any) {
     null as any, // streakService
     null as any, // challengesService
     null as any, // marketsGateway
+    null as any, // sse
   );
 
   // Inject mocked redis and logger
