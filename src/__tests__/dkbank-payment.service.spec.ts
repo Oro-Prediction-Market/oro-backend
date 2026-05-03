@@ -220,6 +220,7 @@ function makeService(
     userRepo as any,
     paymentRepo as any,
     otpRepo as any,
+    { emit: jest.fn(), broadcast: jest.fn(), forUser: jest.fn() } as any,
   );
 
   return {

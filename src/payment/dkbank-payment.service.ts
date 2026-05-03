@@ -21,6 +21,7 @@ import { DKGatewayService } from "./services/dk-gateway/dk-gateway.service";
 import { RedisService } from "../redis/redis.service";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import { TelegramVerificationService } from "../telegram/telegram-verification.service";
+import { SseService } from "../sse/sse.service";
 
 /** DK Bank OTP window: 10 minutes. */
 const OTP_TTL_MS = 10 * 60 * 1000;
@@ -78,6 +79,7 @@ export class DKBankPaymentService {
     private readonly paymentRepo: Repository<Payment>,
     @InjectRepository(PaymentOtp)
     private readonly otpRepo: Repository<PaymentOtp>,
+    private readonly sse: SseService,
   ) {}
 
   /**
@@ -389,6 +391,7 @@ export class DKBankPaymentService {
       await this.otpRepo.save(otpRecord);
     }
     await this.redis.del(`oro:cache:balance:${userId}`);
+    this.sse.emit(userId, "balance:updated", { paymentId: payment.id });
 
     // ── Telegram success notification ─────────────────────────────────────────
     const depositedAmount = Number(payment.amount);
@@ -1036,6 +1039,9 @@ export class DKBankPaymentService {
     }
     await this.redis.del(`oro:otp:${paymentId}`);
     await this.redis.del(`oro:cache:balance:${userId}`);
+    if (result.status !== "failed") {
+      this.sse.emit(userId, "balance:updated", { paymentId });
+    }
 
     if (result.status === "failed") {
       await this.paymentRepo.save(

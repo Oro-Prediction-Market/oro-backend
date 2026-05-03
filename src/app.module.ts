@@ -36,6 +36,7 @@ import { ReportingModule } from "./reporting/reporting.module";
 import { ReconciliationModule } from "./reconciliation/reconciliation.module";
 import { Reconciliation } from "./entities/reconciliation.entity";
 import { EventsModule } from "./events/events.module";
+import { SseModule } from "./sse/sse.module";
 import { UserEvent } from "./entities/user-event.entity";
 
 @Module({
@@ -101,7 +102,7 @@ import { UserEvent } from "./entities/user-event.entity";
           UserEvent,
         ],
         synchronize: false,
-        migrationsRun: true,        // run pending migrations on app startup
+        migrationsRun: true, // run pending migrations on app startup
         migrations: [__dirname + "/migrations/*{.js,.ts}"],
         logging: false,
         extra: {
@@ -124,6 +125,7 @@ import { UserEvent } from "./entities/user-event.entity";
     ReportingModule,
     ReconciliationModule,
     EventsModule,
+    SseModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
