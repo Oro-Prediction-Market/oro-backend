@@ -5,6 +5,7 @@ import {
 } from "@nestjs/common";
 import { InjectRepository, InjectDataSource } from "@nestjs/typeorm";
 import { Repository, DataSource } from "typeorm";
+import { SseService } from "../sse/sse.service";
 import {
   Challenge,
   ChallengeStatus,
@@ -34,6 +35,7 @@ export class ChallengesService {
     @InjectRepository(Market)
     private marketRepo: Repository<Market>,
     @InjectDataSource() private dataSource: DataSource,
+    private sse: SseService,
   ) {}
 
   // ── Balance helper ─────────────────────────────────────────────────────────
@@ -68,6 +70,7 @@ export class ChallengesService {
       positionId: referenceId ?? undefined,
     });
     await this.dataSource.getRepository(Transaction).save(tx);
+    this.sse.emit(userId, "balance:updated", {});
   }
 
   private async credit(
@@ -87,6 +90,7 @@ export class ChallengesService {
       positionId: referenceId ?? undefined,
     });
     await this.dataSource.getRepository(Transaction).save(tx);
+    this.sse.emit(userId, "balance:updated", {});
   }
 
   // ── Create ─────────────────────────────────────────────────────────────────

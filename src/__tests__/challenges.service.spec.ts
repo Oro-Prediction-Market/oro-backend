@@ -129,11 +129,13 @@ function makeService(
   const positionRepo = overrides.positionRepo ?? makePositionRepo();
   const dataSource = overrides.dataSource ?? makeDataSource();
 
+  const sseMock = { emit: jest.fn() } as any;
   const service = new ChallengesService(
     challengeRepo as any,
     positionRepo as any,
     marketRepo as any,
     dataSource as any,
+    sseMock,
   );
 
   return { service, challengeRepo, marketRepo, positionRepo, dataSource };

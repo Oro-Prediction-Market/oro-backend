@@ -674,7 +674,7 @@ export class DKBankPaymentService {
           });
 
           // priorDepositCount is now 1 (the one we just saved) — so 1 means first deposit
-          if (priorDepositCount === 1) {
+          if (priorDepositCount === 1 && depositAmount >= 1000) {
             const bonusAmount = Math.round(depositAmount * 0.05 * 100) / 100;
             const balAfterDeposit = balanceBefore + depositAmount;
 

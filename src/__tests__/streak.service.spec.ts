@@ -51,10 +51,12 @@ function makeDataSource(txResult?: any) {
 }
 
 function makeService(userRepo: any, txRepo?: any, dataSource?: any) {
+  const sseMock = { emit: jest.fn() } as any;
   return new StreakService(
     userRepo,
     txRepo ?? makeTransactionRepo(),
     dataSource ?? makeDataSource(),
+    sseMock,
   );
 }
 

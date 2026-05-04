@@ -3,6 +3,7 @@ import { InjectRepository, InjectDataSource } from "@nestjs/typeorm";
 import { Repository, DataSource } from "typeorm";
 import { User } from "../entities/user.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
+import { SseService } from "../sse/sse.service";
 
 export const STREAK_BONUS_DAY = 7; // day on which the boost fires
 export const STREAK_BONUS_MULT = 1.2; // 20 % extra payout
@@ -24,6 +25,7 @@ export class StreakService {
     @InjectRepository(Transaction)
     private transactionRepo: Repository<Transaction>,
     @InjectDataSource() private dataSource: DataSource,
+    private sse: SseService,
   ) {}
 
   /**
@@ -163,6 +165,8 @@ export class StreakService {
         }),
       );
     });
+
+    this.sse.emit(userId, "balance:updated", { streakBonus: bonusAmount });
 
     this.logger.log(
       `Streak bonus credited user=${userId} bonus=${bonusAmount}`,

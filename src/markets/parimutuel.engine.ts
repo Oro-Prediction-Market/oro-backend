@@ -497,8 +497,9 @@ export class ParimutuelEngine implements OnModuleInit {
       await userRepo.update(bettor.id, { referralBonusTriggered: true });
     });
 
-    // Invalidate referrer's cached balance
+    // Invalidate referrer's cached balance and notify via SSE
     await this.redis.del(`oro:cache:balance:${referrer.id}`);
+    this.sse.emit(referrer.id, "balance:updated", { referralBonus: bonus });
 
     this.logger.log(
       `[Referral] Credited ${bonus} BTN to referrer ${referrer.id} for referred user ${bettor.id}`,
@@ -562,6 +563,7 @@ export class ParimutuelEngine implements OnModuleInit {
     });
 
     await this.redis.del(`oro:cache:balance:${referrerId}`);
+    this.sse.emit(referrerId, "balance:updated", { referralPrize: prize });
 
     this.logger.log(
       `[ReferralPrize] Credited Nu ${prize} prize to user ${referrerId} (${convertedCount} converted referrals)`,
