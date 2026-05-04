@@ -273,7 +273,7 @@ export class TelegramChannelService {
 
 📊 <b>Market Categories:</b>
 • Sports: 45%
-• Politics: 25%
+• Gaming: 25%
 • Crypto: 20%
 • Other: 10%
 
