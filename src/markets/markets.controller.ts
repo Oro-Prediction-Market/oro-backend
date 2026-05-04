@@ -187,7 +187,7 @@ export class MarketsController {
   @Post(":id/disputes")
   @ApiOperation({
     summary:
-      "Submit an objection during the resolution window. A fixed bond of Nu 5,000 is locked. Bond is returned + rewarded if you are right, forfeited if wrong.",
+      "Submit an objection during the resolution window. A fixed bond of Nu 10 is locked. Bond is returned + rewarded if you are right, forfeited if wrong.",
   })
   @ApiResponse({ status: 201, type: Dispute })
   submitDispute(
