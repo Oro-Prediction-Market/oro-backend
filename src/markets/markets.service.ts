@@ -435,7 +435,7 @@ export class MarketsService {
 
   // Fixed dispute bond — high enough to deter casual/abusive objections
   // while still being accessible to bettors with genuine grievances.
-  private static readonly DISPUTE_BOND = 5_000;
+  private static readonly DISPUTE_BOND = 10;
 
   private calcBond(_positionAmount: number): number {
     return MarketsService.DISPUTE_BOND;
