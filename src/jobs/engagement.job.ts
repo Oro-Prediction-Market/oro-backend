@@ -196,7 +196,10 @@ export class EngagementJob {
       await em
         .createQueryBuilder()
         .update(User)
-        .set({ bonusBalance: () => `"bonusBalance" + ${amount}` })
+        .set({
+          bonusBalance: () => `"bonusBalance" + ${amount}`,
+          bonusRealPayoutRemaining: () => `GREATEST("bonusRealPayoutRemaining", 50)`,
+        })
         .where("id = :userId", { userId })
         .execute();
     });

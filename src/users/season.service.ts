@@ -1,5 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
-import { Cron, CronExpression } from "@nestjs/schedule";
+import { Cron } from "@nestjs/schedule";
 import { InjectRepository, InjectDataSource } from "@nestjs/typeorm";
 import { Repository, DataSource } from "typeorm";
 import { Season, SeasonStatus } from "../entities/season.entity";
@@ -8,7 +8,7 @@ import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 
 // Prize pool for the top 3 finishers each week (in Nu)
-const SEASON_PRIZES: Record<number, number> = { 1: 200, 2: 100, 3: 50 };
+const SEASON_PRIZES: Record<number, number> = { 1: 100, 2: 50, 3: 25 };
 
 @Injectable()
 export class SeasonService {
@@ -142,8 +142,24 @@ export class SeasonService {
 
       const user = winners[i];
 
-      // Credit the prize as a ledger transaction
+      // Credit the prize as a ledger transaction (idempotent — skip if already credited)
+      const prizeNote = `${medals[i]} Week ${weekNumber}/${year} season prize — rank #${rank}`;
       await this.dataSource.transaction(async (em) => {
+        const alreadyCredited = await em.getRepository(Transaction).count({
+          where: {
+            userId: user.id,
+            type: TransactionType.FREE_CREDIT,
+            note: prizeNote,
+          },
+        });
+
+        if (alreadyCredited > 0) {
+          this.logger.warn(
+            `Season prize already credited for user ${user.id} rank #${rank} week ${weekNumber}/${year} — skipping`,
+          );
+          return;
+        }
+
         const { balance: rawBefore } = await em
           .getRepository(Transaction)
           .createQueryBuilder("t")
@@ -160,21 +176,31 @@ export class SeasonService {
             balanceBefore,
             balanceAfter: balanceBefore + prize,
             userId: user.id,
-            note: `${medals[i]} Week ${weekNumber}/${year} season prize — rank #${rank}`,
+            isBonus: true,
+            note: prizeNote,
           }),
         );
-      });
 
-      this.logger.log(`Season prize: Nu ${prize} → user ${user.id} (rank #${rank})`);
+        await em
+          .createQueryBuilder()
+          .update(User)
+          .set({
+            bonusBalance: () => `"bonusBalance" + ${prize}`,
+            bonusRealPayoutRemaining: () => `GREATEST("bonusRealPayoutRemaining", 50)`,
+          })
+          .where("id = :userId", { userId: user.id })
+          .execute();
+
+        this.logger.log(`Season prize: Nu ${prize} → user ${user.id} (rank #${rank})`);
+      });
 
       // DM the winner on Telegram
       if (user.telegramId) {
         const chatId = Number(user.telegramId);
-        const name = user.firstName?.trim() || "Predictor";
         const msg =
           `${medals[i]} <b>Season over — you finished #${rank}!</b>\n\n` +
-          `You've been awarded <b>Nu ${prize}</b> for topping the Week ${weekNumber} leaderboard.\n` +
-          `The credit is already in your Oro wallet. New season starts now — defend your title.`;
+          `You've been awarded <b>Nu ${prize}</b> in play credits for topping the Week ${weekNumber} leaderboard.\n` +
+          `The credits are in your Oro wallet — use them to predict, but they cannot be withdrawn. New season starts now — defend your title.`;
 
         await this.telegram.sendMessage(chatId, msg).catch((err: Error) =>
           this.logger.warn(`Season prize DM failed for user ${user.id}: ${err.message}`),
