@@ -26,7 +26,7 @@ export enum MarketMechanism {
 
 export enum MarketCategory {
   SPORTS = "sports",
-  POLITICS = "politics",
+  GAMING = "gaming",
   WEATHER = "weather",
   ENTERTAINMENT = "entertainment",
   ECONOMY = "economy",

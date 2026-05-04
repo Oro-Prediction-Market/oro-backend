@@ -115,7 +115,7 @@ export class User {
 
   /**
    * Per-category accuracy scores stored as JSON.
-   * Shape: { sports: { correct: 3, total: 5 }, politics: { correct: 1, total: 2 }, ... }
+   * Shape: { sports: { correct: 3, total: 5 }, gaming: { correct: 1, total: 2 }, ... }
    */
   @Column({ type: "jsonb", nullable: true })
   categoryScores: Record<string, { correct: number; total: number }> | null;
