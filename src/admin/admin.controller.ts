@@ -947,6 +947,30 @@ export class AdminController {
     return { data, total: data.length };
   }
 
+  // ── Transactions (full ledger) ─────────────────────────────────────────────
+  @Get("transactions")
+  @ApiOperation({ summary: "List all transactions — full financial ledger" })
+  @ApiQuery({ name: "type", required: false })
+  @ApiQuery({ name: "limit", required: false, type: Number })
+  async listTransactions(
+    @Query("type") type?: string,
+    @Query("limit") limit = "1000",
+  ) {
+    const take = Math.min(Number(limit) || 1000, 2000);
+    const qb = this.transactionRepo
+      .createQueryBuilder("t")
+      .leftJoinAndSelect("t.user", "user")
+      .orderBy("t.createdAt", "DESC")
+      .take(take);
+
+    if (type && type !== "all") {
+      qb.where("t.type = :type", { type });
+    }
+
+    const [data, total] = await qb.getManyAndCount();
+    return { data, total };
+  }
+
   // ── Audit Logs ─────────────────────────────────────────────────────────────
   @Get("audit-logs")
   @ApiOperation({ summary: "Paginated, server-side filterable audit trail" })
