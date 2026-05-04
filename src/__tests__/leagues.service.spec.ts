@@ -77,21 +77,18 @@ describe("LeaguesService.isGroupMember", () => {
     expect(result).toBe(false);
   });
 
-  it("returns false when user exists but is not a member of the group", async () => {
-    const user = { id: "u1" };
-    const membershipRepo = makeMembershipRepo(null, 0); // count = 0
-    const { svc } = makeService({ userRepo: makeUserRepo(user), membershipRepo });
+  it("returns false when user exists but has made no predictions", async () => {
+    const user = { id: "u1", totalPredictions: 0 };
+    const { svc } = makeService({ userRepo: makeUserRepo(user) });
 
     const result = await svc.isGroupMember("chat-1", "tg-123");
 
     expect(result).toBe(false);
-    expect(membershipRepo.count).toHaveBeenCalledWith({ where: { chatId: "chat-1", userId: "u1" } });
   });
 
-  it("returns true when user is a member of the group", async () => {
-    const user = { id: "u1" };
-    const membershipRepo = makeMembershipRepo(null, 1); // count = 1
-    const { svc } = makeService({ userRepo: makeUserRepo(user), membershipRepo });
+  it("returns true when user has made at least one prediction", async () => {
+    const user = { id: "u1", totalPredictions: 3 };
+    const { svc } = makeService({ userRepo: makeUserRepo(user) });
 
     const result = await svc.isGroupMember("chat-1", "tg-123");
 
@@ -166,15 +163,22 @@ describe("LeaguesService.registerMember", () => {
     expect(membershipRepo.save).not.toHaveBeenCalled();
   });
 
-  it("does nothing when group does not exist", async () => {
+  it("creates the group and membership when group does not exist yet", async () => {
     const user = { id: "u1", telegramId: "tg-1" };
-    const groupRepo = makeGroupRepo(null); // group not found
-    const membershipRepo = makeMembershipRepo();
+    const groupRepo = makeGroupRepo(null); // group not found initially
+    const membershipRepo = makeMembershipRepo(null); // not yet a member
     const { svc } = makeService({ userRepo: makeUserRepo(user), groupRepo, membershipRepo });
 
-    await svc.registerMember("chat-1", "tg-1");
+    await svc.registerMember("chat-1", "tg-1", "My Group");
 
-    expect(membershipRepo.save).not.toHaveBeenCalled();
+    // Group should have been created via upsertGroup
+    expect(groupRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: "chat-1", isActive: true }),
+    );
+    // Membership should still be created
+    expect(membershipRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: "chat-1", userId: "u1" }),
+    );
   });
 
   it("saves membership when user and group both exist and user is not yet a member", async () => {

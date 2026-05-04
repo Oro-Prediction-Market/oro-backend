@@ -209,7 +209,7 @@ export class BotPollingService
     // Auto-register Oro users who send messages in group chats
     if ((chatType === "group" || chatType === "supergroup") && message.from?.id) {
       await this.leaguesService
-        .registerMember(String(chatId), String(message.from.id))
+        .registerMember(String(chatId), String(message.from.id), message.chat.title)
         .catch(() => {});
     }
 
@@ -361,7 +361,6 @@ export class BotPollingService
     telegramUserId?: number,
   ): Promise<boolean> {
     if (!telegramUserId) return false;
-    const chatType = "group"; // these commands only make sense in groups — always check
     const isMember = await this.leaguesService.isGroupMember(
       String(chatId),
       String(telegramUserId),
@@ -391,7 +390,6 @@ export class BotPollingService
   ): Promise<void> {
     if (!(await this.assertGroupMember(chatId, telegramUserId))) return;
 
-    const board = await this.leaguesService.getGroupLeaderboard(String(chatId));
     const user = await this.userRepo.findOne({
       where: { telegramId: String(telegramUserId) },
       select: [
@@ -411,11 +409,11 @@ export class BotPollingService
       return;
     }
 
-    const myEntry = board.find((e) => e.userId === user.id);
-    if (!myEntry) {
+    const rank = await this.leaguesService.getUserGroupRank(String(chatId), user.id);
+    if (rank === null) {
       await this.telegramSimple.sendMessage(
         chatId,
-        "You're not on the group leaderboard yet. Send a message in the group after making predictions!",
+        "You're not on the group leaderboard yet. Make a prediction in the Oro mini app first!",
       );
       return;
     }
@@ -442,7 +440,7 @@ export class BotPollingService
 
     await this.telegramSimple.sendMessage(
       chatId,
-      `🎯 <b>Your group rank: #${myEntry.rank}</b>\n\n` +
+      `🎯 <b>Your group rank: #${rank}</b>\n\n` +
         `Tier: ${tierLabel}\n` +
         `Accuracy: ${score}\n` +
         `Win rate: ${winRate}%\n` +

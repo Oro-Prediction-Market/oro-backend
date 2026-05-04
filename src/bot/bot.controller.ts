@@ -91,7 +91,7 @@ export class BotController {
       message.from?.id
     ) {
       await this.leaguesService
-        .registerMember(String(chatId), String(message.from.id))
+        .registerMember(String(chatId), String(message.from.id), message.chat.title)
         .catch(() => {});
     }
 
@@ -197,9 +197,6 @@ export class BotController {
         case "/mystats": {
           if (!message.from?.id) break;
           if (!(await this.assertGroupMember(chatId, message.from.id))) break;
-          const board = await this.leaguesService.getGroupLeaderboard(
-            String(chatId),
-          );
           const myTelegramId = String(message.from.id);
           const user = await this.userRepo.findOne({
             where: { telegramId: myTelegramId },
@@ -218,11 +215,14 @@ export class BotController {
             );
             break;
           }
-          const myEntry = board.find((e) => e.userId === user.id);
-          if (!myEntry) {
+          const rank = await this.leaguesService.getUserGroupRank(
+            String(chatId),
+            user.id,
+          );
+          if (rank === null) {
             await this.telegramSimpleService.sendMessage(
               chatId,
-              "You're not on the group leaderboard yet. Send a message in the group after making predictions!",
+              "You're not on the group leaderboard yet. Make a prediction in the Oro mini app first!",
             );
             break;
           }
@@ -248,7 +248,7 @@ export class BotController {
               : 0;
           await this.telegramSimpleService.sendMessage(
             chatId,
-            `🎯 <b>Your group rank: #${myEntry.rank}</b>\n\n` +
+            `🎯 <b>Your group rank: #${rank}</b>\n\n` +
               `Tier: ${tierLabel}\n` +
               `Accuracy: ${score}\n` +
               `Win rate: ${winRate}%\n` +
