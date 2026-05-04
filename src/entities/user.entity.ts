@@ -200,6 +200,15 @@ export class User {
   @Column({ type: "decimal", precision: 18, scale: 2, default: 0 })
   bonusBalance: number;
 
+  /**
+   * How much real (withdrawable) money this user can still extract from
+   * bonus-funded winning bets. Resets to 50 on each new free credit grant.
+   * Decremented each time a bonus bet pays out real money. Once 0, all
+   * bonus bet wins become play credits only.
+   */
+  @Column({ type: "decimal", precision: 18, scale: 2, default: 50 })
+  bonusRealPayoutRemaining: number;
+
   // ── Referral ───────────────────────────────────────────────────────────────
 
   /**

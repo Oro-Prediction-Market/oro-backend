@@ -179,10 +179,16 @@ export class AuthService {
             note: "Welcome bonus — free Nu 20 to make your first prediction!",
           }),
         );
-        await this.userRepo.update(user.id, {
-          freeCreditGranted: true,
-          bonusBalance: 20,
-        });
+        await this.userRepo
+          .createQueryBuilder()
+          .update()
+          .set({
+            freeCreditGranted: true,
+            bonusBalance: 20,
+            bonusRealPayoutRemaining: () => `GREATEST("bonusRealPayoutRemaining", 50)`,
+          })
+          .where("id = :id", { id: user.id })
+          .execute();
 
         // Send welcome DM — fire and forget, never block registration
         this.sendWelcomeDM(user, referredByUserId, tgUser.first_name).catch(

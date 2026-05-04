@@ -937,16 +937,18 @@ export class ParimutuelEngine implements OnModuleInit {
           const share = winnerPool > 0 ? Number(bet.amount) / winnerPool : 0;
           const rawPayout = parseFloat((payoutPool * share).toFixed(2));
 
-          // ── Bonus cap logic (Option 2) ─────────────────────────────────────
-          // If this bet was placed using bonus credits, cap the withdrawable
-          // portion at Nu 50. Anything above that is re-credited as play money
-          // (isBonus=true) so it can only be re-bet, not withdrawn to DK Bank.
-          const BONUS_WITHDRAWABLE_CAP = 50;
+          // ── Bonus cap logic ────────────────────────────────────────────────
+          // If this bet was placed using bonus credits, cap the total real
+          // (withdrawable) payout against the user's lifetime bonusRealPayoutRemaining.
+          // Anything above that is re-credited as play money (isBonus=true).
+          // Using a lifetime cap prevents splitting bonus into small bets to
+          // multiply real payouts.
           const user = await em.findOne(User, {
             where: { id: bet.userId },
-            select: ["id", "bonusBalance"],
+            select: ["id", "bonusBalance", "bonusRealPayoutRemaining"],
           });
           const userBonusBalance = Number(user?.bonusBalance ?? 0);
+          const bonusRealPayoutRemaining = Number(user?.bonusRealPayoutRemaining ?? 0);
           const betIsBonusFunded =
             userBonusBalance > 0 && Number(bet.amount) <= userBonusBalance;
 
@@ -954,20 +956,27 @@ export class ParimutuelEngine implements OnModuleInit {
           let playPayout = 0;
 
           if (betIsBonusFunded) {
-            withdrawablePayout = Math.min(rawPayout, BONUS_WITHDRAWABLE_CAP);
+            // Cap real payout against the lifetime remaining allowance — not just Nu 50 per bet.
+            // This prevents splitting bonus into many small bets to multiply real payouts.
+            withdrawablePayout = parseFloat(
+              Math.min(rawPayout, bonusRealPayoutRemaining).toFixed(2),
+            );
             playPayout = parseFloat(
               (rawPayout - withdrawablePayout).toFixed(2),
             );
-            // Reduce the user's tracked bonus balance
+            // Reduce both the bonus balance and the lifetime real payout allowance
             const newBonusBalance = Math.max(
               0,
               userBonusBalance - Number(bet.amount),
             );
-            await em.update(
-              User,
-              { id: bet.userId },
-              { bonusBalance: newBonusBalance },
+            const newRealPayoutRemaining = Math.max(
+              0,
+              bonusRealPayoutRemaining - withdrawablePayout,
             );
+            await em.update(User, { id: bet.userId }, {
+              bonusBalance: newBonusBalance,
+              bonusRealPayoutRemaining: newRealPayoutRemaining,
+            });
           }
 
           bet.payout = rawPayout;
@@ -1005,7 +1014,7 @@ export class ParimutuelEngine implements OnModuleInit {
                 positionId: bet.id,
                 userId: bet.userId,
                 isBonus: true,
-                note: `Bonus play credits — payout above Nu ${BONUS_WITHDRAWABLE_CAP} cap (re-bet only)`,
+                note: `Bonus play credits — payout above bonus cap (re-bet only)`,
               }),
             );
             // Track the new play-money balance
