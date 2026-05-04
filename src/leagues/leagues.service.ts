@@ -1,7 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { Brackets, Repository } from "typeorm";
 import { TelegramGroup } from "../entities/telegram-group.entity";
 import { GroupMembership } from "../entities/group-membership.entity";
 import { User } from "../entities/user.entity";
@@ -32,17 +32,14 @@ export class LeaguesService {
     private readonly telegramService: TelegramSimpleService,
   ) {}
 
-  /** Returns true if the telegramId user is a registered member of the given chatId group. */
-  async isGroupMember(chatId: string, telegramId: string): Promise<boolean> {
+  /** Returns true if the telegramId user has made at least one prediction on Oro. */
+  async isGroupMember(_chatId: string, telegramId: string): Promise<boolean> {
     const user = await this.userRepo.findOne({
       where: { telegramId },
-      select: ["id"],
+      select: ["id", "totalPredictions"],
     });
     if (!user) return false;
-    const count = await this.membershipRepo.count({
-      where: { chatId, userId: user.id },
-    });
-    return count > 0;
+    return (user.totalPredictions ?? 0) > 0;
   }
 
   /** Called when the bot is added to a group. Creates or reactivates the record. */
@@ -72,13 +69,15 @@ export class LeaguesService {
    * Auto-register an Oro user as a member of a group when they send a message.
    * Silently skips if the user has no Oro account.
    */
-  async registerMember(chatId: string, telegramId: string): Promise<void> {
+  async registerMember(chatId: string, telegramId: string, groupTitle?: string | null): Promise<void> {
     const user = await this.userRepo.findOne({ where: { telegramId } });
     if (!user) return; // Not an Oro user — ignore
 
-    // Ensure the group record exists (bot may have been added before we stored it)
+    // Ensure the group record exists — create it if the bot was added before this code existed
     const group = await this.groupRepo.findOne({ where: { chatId } });
-    if (!group) return;
+    if (!group) {
+      await this.upsertGroup(chatId, groupTitle ?? null);
+    }
 
     // Upsert membership — index on (chatId, userId) prevents duplicates
     const existing = await this.membershipRepo.findOne({
@@ -92,6 +91,48 @@ export class LeaguesService {
         `[Leagues] Registered user ${user.id} in group ${chatId}`,
       );
     }
+  }
+
+  /**
+   * Returns the user's 1-indexed rank in the group, or null if they have no
+   * membership or no predictions. Counts all members — not just the top 10.
+   */
+  async getUserGroupRank(chatId: string, userId: string): Promise<number | null> {
+    const user = await this.userRepo.findOne({
+      where: { id: userId },
+      select: ["id", "reputationScore", "correctPredictions", "totalPredictions"],
+    });
+    if (!user || (user.totalPredictions ?? 0) === 0) return null;
+
+    const membership = await this.membershipRepo.findOne({ where: { chatId, userId } });
+    if (!membership) return null;
+
+    // Count group members who rank strictly above this user.
+    // Sort order: reputationScore DESC NULLS LAST, then correctPredictions DESC.
+    const qb = this.membershipRepo
+      .createQueryBuilder("m")
+      .innerJoin("m.user", "u")
+      .where("m.chatId = :chatId", { chatId })
+      .andWhere("u.totalPredictions > 0");
+
+    if (user.reputationScore != null) {
+      qb.andWhere(
+        new Brackets((b) =>
+          b
+            .where("u.reputationScore > :score", { score: user.reputationScore })
+            .orWhere(
+              "u.reputationScore = :score AND u.correctPredictions > :correct",
+              { score: user.reputationScore, correct: user.correctPredictions ?? 0 },
+            ),
+        ),
+      );
+    } else {
+      // Null score sorts last — only members with a non-null score rank above
+      qb.andWhere("u.reputationScore IS NOT NULL");
+    }
+
+    const aboveCount = await qb.getCount();
+    return aboveCount + 1;
   }
 
   /** Returns top-10 members of a group sorted by reputationScore DESC. */
@@ -135,8 +176,12 @@ export class LeaguesService {
   }
 
   /** Format and post the standings message for a single group. */
-  async postStandingsToGroup(chatId: string): Promise<void> {
-    const group = await this.groupRepo.findOne({ where: { chatId } });
+  async postStandingsToGroup(chatId: string, groupTitle?: string | null): Promise<void> {
+    let group = await this.groupRepo.findOne({ where: { chatId } });
+    if (!group) {
+      await this.upsertGroup(chatId, groupTitle ?? null);
+      group = await this.groupRepo.findOne({ where: { chatId } });
+    }
     if (!group?.isActive) return;
 
     const board = await this.getGroupLeaderboard(chatId);
