@@ -185,7 +185,8 @@ export class AuthService {
           .set({
             freeCreditGranted: true,
             bonusBalance: 20,
-            bonusRealPayoutRemaining: () => `GREATEST("bonusRealPayoutRemaining", 50)`,
+            bonusRealPayoutRemaining: () =>
+              `GREATEST("bonusRealPayoutRemaining", 50)`,
           })
           .where("id = :id", { id: user.id })
           .execute();
@@ -209,8 +210,12 @@ export class AuthService {
           );
         }
       } else {
-        // Orphaned user — sync telegramChatId
-        await this.userRepo.update(user.id, { telegramChatId: providerId });
+        // Orphaned user — sync telegramChatId + set referrer if not already set
+        const updateFields: any = { telegramChatId: providerId };
+        if (referredByUserId && !user.referredByUserId) {
+          updateFields.referredByUserId = referredByUserId;
+        }
+        await this.userRepo.update(user.id, updateFields);
       }
 
       authMethod = this.authMethodRepo.create({
@@ -224,14 +229,25 @@ export class AuthService {
     } else {
       // Update profile info + always sync telegramChatId
       // In Telegram private chats, chat_id === user_id, so telegramId IS the chatId.
-      await this.userRepo.update(authMethod.userId, {
+      const updateFields: any = {
         telegramId: providerId,
         telegramChatId: providerId, // ← keep chat_id in sync on every login
         firstName: tgUser.first_name,
         lastName: tgUser.last_name,
         username: tgUser.username,
         photoUrl: tgUser.photo_url,
-      });
+      };
+      // Set referrer if user doesn't already have one (late referral attribution)
+      if (referredByUserId) {
+        const existingUser = await this.userRepo.findOne({
+          where: { id: authMethod.userId },
+          select: ["id", "referredByUserId"],
+        });
+        if (existingUser && !existingUser.referredByUserId) {
+          updateFields.referredByUserId = referredByUserId;
+        }
+      }
+      await this.userRepo.update(authMethod.userId, updateFields);
     }
 
     const freshUser = await this.userRepo.findOneBy({
