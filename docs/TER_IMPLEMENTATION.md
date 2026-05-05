@@ -24,16 +24,17 @@ TER (Token of Exchange Rate) is a gold-backed digital asset where 1 TER = 0.01g 
 
 ### Module: `src/ter/`
 
-| File | Role |
-|------|------|
-| `ter.module.ts` | NestJS module wiring |
-| `ter.controller.ts` | REST endpoint `GET /api/ter/price` (public, cached 30s in Redis) |
-| `ter-price.service.ts` | Fetches live TER price (primary: api.ter.bt, fallback: XAU/USD × USD/INR derivation) |
-| `ter-market.service.ts` | Spawns, closes, and auto-resolves 15-min prediction markets |
+| File                    | Role                                                                                 |
+| ----------------------- | ------------------------------------------------------------------------------------ |
+| `ter.module.ts`         | NestJS module wiring                                                                 |
+| `ter.controller.ts`     | REST endpoint `GET /api/ter/price` (public, cached 30s in Redis)                     |
+| `ter-price.service.ts`  | Fetches live TER price (primary: api.ter.bt, fallback: XAU/USD × USD/INR derivation) |
+| `ter-market.service.ts` | Spawns, closes, and auto-resolves 15-min prediction markets                          |
 
 ### API Endpoint: `GET /api/ter/price`
 
 Returns the current TER price (cached 30s in Redis under key `oro:cache:ter:price`):
+
 ```json
 {
   "midPrice": 140.5933,
@@ -48,11 +49,13 @@ Returns the current TER price (cached 30s in Redis under key `oro:cache:ter:pric
 ### Price Derivation (Fallback)
 
 If `api.ter.bt/prices` is unreachable, price is derived:
+
 ```
 midPrice = (XAU_USD / 31.1035) × 0.01 × USD_INR
 buyPrice = midPrice × 1.0122
 sellPrice = midPrice × 0.9878
 ```
+
 - 1 TER = 0.01g of .9999 fine gold
 - Spread: ±1.22%
 
@@ -211,18 +214,18 @@ UPDATE markets SET title = 'TER — UP or DOWN in 15 minutes?' WHERE "externalSo
 
 ## File Map
 
-| File                                        | Purpose                                                        |
-| ------------------------------------------- | -------------------------------------------------------------- |
-| `oro-backend/src/ter/ter.module.ts`         | NestJS module registration                                     |
-| `oro-backend/src/ter/ter.controller.ts`     | `GET /api/ter/price` endpoint (public, Redis-cached 30s)       |
-| `oro-backend/src/ter/ter-price.service.ts`  | Fetches price from api.ter.bt (fallback: XAU×INR derivation)   |
-| `oro-backend/src/ter/ter-market.service.ts` | Market spawn, close, auto-resolution (cron every 15min)        |
-| `oro-pwa/shared/api/client.ts`              | `getTerPrice()` — calls `/api/ter/price`                       |
-| `oro-pwa/src/components/TerMarketCard.tsx`  | PWA market list card (centered price, sentiment bar)           |
-| `oro-tma/src/components/TerMarketCard.tsx`  | TMA market list card                                           |
-| `oro-pwa/src/pages/PwaMarketDetailPage.tsx` | PWA detail page (includes inline `TerPricePanel` component)    |
-| `oro-tma/src/pages/MarketDetailPage.tsx`    | TMA detail page (includes inline `TerPricePanel` component)    |
-| `oro-pwa/src/bst.ts` / `oro-tma/src/bst.ts`| Timezone formatting helpers (Asia/Thimphu)                     |
+| File                                        | Purpose                                                      |
+| ------------------------------------------- | ------------------------------------------------------------ |
+| `oro-backend/src/ter/ter.module.ts`         | NestJS module registration                                   |
+| `oro-backend/src/ter/ter.controller.ts`     | `GET /api/ter/price` endpoint (public, Redis-cached 30s)     |
+| `oro-backend/src/ter/ter-price.service.ts`  | Fetches price from api.ter.bt (fallback: XAU×INR derivation) |
+| `oro-backend/src/ter/ter-market.service.ts` | Market spawn, close, auto-resolution (cron every 15min)      |
+| `oro-pwa/shared/api/client.ts`              | `getTerPrice()` — calls `/api/ter/price`                     |
+| `oro-pwa/src/components/TerMarketCard.tsx`  | PWA market list card (centered price, sentiment bar)         |
+| `oro-tma/src/components/TerMarketCard.tsx`  | TMA market list card                                         |
+| `oro-pwa/src/pages/PwaMarketDetailPage.tsx` | PWA detail page (includes inline `TerPricePanel` component)  |
+| `oro-tma/src/pages/MarketDetailPage.tsx`    | TMA detail page (includes inline `TerPricePanel` component)  |
+| `oro-pwa/src/bst.ts` / `oro-tma/src/bst.ts` | Timezone formatting helpers (Asia/Thimphu)                   |
 
 ---
 
