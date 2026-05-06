@@ -91,7 +91,11 @@ export class BotController {
       message.from?.id
     ) {
       await this.leaguesService
-        .registerMember(String(chatId), String(message.from.id), message.chat.title)
+        .registerMember(
+          String(chatId),
+          String(message.from.id),
+          message.chat.title,
+        )
         .catch(() => {});
     }
 
@@ -146,20 +150,36 @@ export class BotController {
           const miniAppUrl = process.env.TELEGRAM_MINI_APP_URL || "";
           const channelUrl = process.env.TELEGRAM_CHANNEL_URL || "";
           const botToken = process.env.TELEGRAM_BOT_TOKEN;
+
+          // If the payload is a referral code, append it as startapp param
+          // so the Mini App can pick it up via start_param.
+          const isReferral = cmdPayload.startsWith("ref_");
+          const botUsername = process.env.BOT_USERNAME || "OroPredictBot";
+          const miniAppLink = isReferral
+            ? `https://t.me/${botUsername}/app?startapp=${cmdPayload}`
+            : miniAppUrl;
+
           const payload: Record<string, unknown> = {
             chat_id: chatId,
-            text:
-              "🎯 <b>Welcome to Oro!</b>\n\n" +
-              "To enable secure payments, please verify your phone:\n" +
-              "👉 Type /verify and share your phone number.\n\n" +
-              "Other commands:\n" +
-              "/predict - View active markets\n" +
-              "/help    - Show all commands",
+            text: isReferral
+              ? "🎯 <b>Welcome to Oro!</b>\n\n" +
+                "You've been invited by a friend! Open the app to start predicting and earn bonuses.\n\n" +
+                "To enable secure payments, please verify your phone:\n" +
+                "👉 Type /verify and share your phone number.\n\n" +
+                "Other commands:\n" +
+                "/predict - View active markets\n" +
+                "/help    - Show all commands"
+              : "🎯 <b>Welcome to Oro!</b>\n\n" +
+                "To enable secure payments, please verify your phone:\n" +
+                "👉 Type /verify and share your phone number.\n\n" +
+                "Other commands:\n" +
+                "/predict - View active markets\n" +
+                "/help    - Show all commands",
             parse_mode: "HTML",
           };
           const buttons: { text: string; url: string }[] = [];
-          if (miniAppUrl)
-            buttons.push({ text: "🚀 Open Oro", url: miniAppUrl });
+          if (miniAppLink)
+            buttons.push({ text: "🚀 Open Oro", url: miniAppLink });
           if (channelUrl)
             buttons.push({ text: "📢 Join Channel", url: channelUrl });
           if (buttons.length) {
