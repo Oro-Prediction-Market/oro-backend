@@ -135,6 +135,7 @@ export class UsersController {
         // hashes loaded only for boolean derivation — never forwarded to client
         "dkPhoneHash",
         "telegramPhoneHash",
+        "dkLinkVerifiedAt",
       ],
     });
 
@@ -163,15 +164,18 @@ export class UsersController {
       where: { referredByUserId: userId, referralBonusTriggered: true },
     });
 
+    const verifiedByPhone = !!(
+      telegramPhoneHash &&
+      dkPhoneHash &&
+      telegramPhoneHash === dkPhoneHash
+    );
+    const verifiedByAccountNumber = !!user?.dkLinkVerifiedAt;
+
     return {
       ...safeUser,
       creditsBalance,
       isDkPhoneLinked: !!dkPhoneHash,
-      isPhoneVerified: !!(
-        telegramPhoneHash &&
-        dkPhoneHash &&
-        telegramPhoneHash === dkPhoneHash
-      ),
+      isPhoneVerified: verifiedByPhone || verifiedByAccountNumber,
       referralCount,
       ...streakInfo,
     };

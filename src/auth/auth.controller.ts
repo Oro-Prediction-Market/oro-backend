@@ -69,6 +69,15 @@ class PwaStatusDto {
   cid: string;
 }
 
+class VerifyDKAccountDto {
+  @ApiProperty({
+    example: "1234567890",
+    description: "Full DK Bank account number (as shown in your bank app)",
+  })
+  @IsString()
+  accountNumber: string;
+}
+
 class VerifyPhoneTmaDto {
   @ApiProperty({
     example: "+97517123456",
@@ -205,6 +214,30 @@ export class AuthController {
   @ApiBody({ type: DKBankAuthDto })
   async linkDKBank(@Body() dto: DKBankAuthDto, @Request() req: any) {
     return this.authService.loginWithDKBank(dto.cid, req.user.userId);
+  }
+
+  /**
+   * Fallback verification for users whose Telegram phone differs from their DK Bank
+   * registered phone (e.g. Bhutanese users abroad with a foreign SIM).
+   * User proves account ownership by entering their full DK Bank account number,
+   * which is only visible inside the bank app or passbook.
+   */
+  @Post("verify-dk-account")
+  @HttpCode(200)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      "Verify identity via DK Bank account number (fallback for abroad users)",
+  })
+  @ApiBody({ type: VerifyDKAccountDto })
+  async verifyDKAccount(@Body() dto: VerifyDKAccountDto, @Request() req: any) {
+    const telegramChatId = String(req.user.telegramId ?? req.user.userId);
+    return this.telegramVerification.verifyByAccountNumber(
+      req.user.userId,
+      dto.accountNumber,
+      telegramChatId,
+    );
   }
 
   /**

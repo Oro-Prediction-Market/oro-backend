@@ -76,7 +76,7 @@ export class TelegramVerificationService {
     telegramChatId: string, // ctx.chat.id as string (same for private chats)
     contactUserId: string, // contact.user_id as string  ← must equal telegramUserId
     telegramPhone: string, // contact.phone_number
-  ): Promise<{ linked: boolean; message: string }> {
+  ): Promise<{ linked: boolean; requiresAccountVerification?: boolean; message: string }> {
     // ── Security: user must share their OWN contact ─────────────────────────
     if (contactUserId !== telegramUserId) {
       throw new BadRequestException("Please share your own phone number only.");
@@ -197,12 +197,16 @@ export class TelegramVerificationService {
     if (telegramPhoneHash !== user.dkPhoneHash) {
       this.logger.warn(
         `[PhoneVerify] MISMATCH for user ${user.id}: ` +
-          `tg_hash=${telegramPhoneHash.slice(0, 8)}… dk_hash=${user.dkPhoneHash.slice(0, 8)}…`,
+          `tg_hash=${telegramPhoneHash.slice(0, 8)}… dk_hash=${user.dkPhoneHash.slice(0, 8)}…` +
+          ` — prompting account number fallback`,
       );
-      throw new BadRequestException(
-        "Your Telegram phone number does not match the number registered with DK Bank. " +
-          "Please use the phone number linked to your DK Bank account.",
-      );
+      return {
+        linked: false,
+        requiresAccountVerification: true,
+        message:
+          "Your Telegram phone does not match your DK Bank registered phone. " +
+          "Please enter your DK Bank account number to verify your identity.",
+      };
     }
 
     //  Persist the binding
@@ -247,9 +251,11 @@ export class TelegramVerificationService {
 
   /**
    * Verifies the Telegram identity before sending an OTP.
-   * Two independent checks must both pass:
-   *  1. The chat_id making the request matches the bound chat_id.
-   *  2. The stored Telegram phone hash still equals the DK Bank phone hash.
+   *
+   * Two verification paths are accepted:
+   *  A. Phone match path  — telegramPhoneHash === dkPhoneHash  (existing users)
+   *  B. Account number path — dkLinkVerifiedAt is set          (abroad users whose
+   *                           Telegram phone differs from DK Bank phone)
    *
    * Returns the user row on success; throws on any failure.
    */
@@ -260,11 +266,17 @@ export class TelegramVerificationService {
     const user = await this.userRepo.findOneBy({ id: userId });
     if (!user) throw new UnauthorizedException("User not found");
 
-    //  Check 1: Telegram phone has been verified
-    if (!user.telegramChatId || !user.telegramPhoneHash) {
+    const verifiedByAccountNumber = !!user.dkLinkVerifiedAt;
+    const verifiedByPhone =
+      !!user.telegramPhoneHash &&
+      !!user.dkPhoneHash &&
+      user.telegramPhoneHash === user.dkPhoneHash;
+
+    //  Check 1: At least one verification path must be complete
+    if (!user.telegramChatId || (!verifiedByPhone && !verifiedByAccountNumber)) {
       throw new UnauthorizedException(
-        "Your Telegram account is not yet phone-verified. " +
-          "Please open the Oro bot and share your phone number first.",
+        "Your Telegram account is not yet verified. " +
+          "Please open the Oro bot and share your phone number, or verify via your DK Bank account number.",
       );
     }
 
@@ -276,29 +288,69 @@ export class TelegramVerificationService {
       );
     }
 
-    //  Check 3: Telegram phone hash still equals DK Bank phone hash
-    if (user.telegramPhoneHash !== user.dkPhoneHash) {
-      await this.flagSuspiciousActivity(userId, "phone_hash_mismatch");
-      throw new UnauthorizedException(
-        "Phone verification mismatch detected. Please re-verify your phone via the Oro bot.",
-      );
-    }
-
     return user;
   }
 
   /**
-   * Returns whether a user has completed phone verification.
-   * Used by the payment flow to decide whether to require re-verification.
+   * Returns whether a user has completed identity verification.
+   * Accepts either the phone-match path or the account-number fallback path.
    */
   async isPhoneVerified(userId: string): Promise<boolean> {
     const user = await this.userRepo.findOneBy({ id: userId });
-    return !!(
-      user?.telegramChatId &&
-      user?.telegramPhoneHash &&
-      user?.dkPhoneHash &&
-      user.telegramPhoneHash === user.dkPhoneHash
+    if (!user?.telegramChatId) return false;
+    const verifiedByPhone =
+      !!user.telegramPhoneHash &&
+      !!user.dkPhoneHash &&
+      user.telegramPhoneHash === user.dkPhoneHash;
+    return verifiedByPhone || !!user.dkLinkVerifiedAt;
+  }
+
+  /**
+   * Fallback verification for users whose Telegram phone differs from their
+   * DK Bank registered phone (e.g. Bhutanese users abroad with a foreign SIM).
+   *
+   * User proves they own the DK Bank account by entering the full account number,
+   * which nobody can guess without accessing their bank app or passbook.
+   * On success, sets dkLinkVerifiedAt which is accepted by verifyPaymentIdentity.
+   */
+  async verifyByAccountNumber(
+    userId: string,
+    accountNumber: string,
+    telegramChatId: string,
+  ): Promise<{ verified: boolean; message: string }> {
+    const user = await this.userRepo.findOneBy({ id: userId });
+    if (!user) throw new BadRequestException("User not found.");
+    if (!user.dkAccountNumber)
+      throw new BadRequestException(
+        "No DK Bank account is linked to your Oro account yet. Please link your CID first.",
+      );
+
+    const normalizedInput = accountNumber.trim().replace(/\s/g, "");
+    const normalizedStored = user.dkAccountNumber.trim().replace(/\s/g, "");
+
+    if (normalizedInput !== normalizedStored) {
+      this.logger.warn(
+        `[AccountVerify] Account number mismatch for user ${userId}`,
+      );
+      throw new BadRequestException(
+        "Account number does not match. Please check your DK Bank account number and try again.",
+      );
+    }
+
+    await this.userRepo.update(userId, {
+      dkLinkVerifiedAt: new Date(),
+      telegramChatId,
+      telegramLinkedAt: new Date(),
+    });
+
+    this.logger.log(
+      `[AccountVerify] User ${userId} verified via DK Bank account number — dkLinkVerifiedAt set`,
     );
+    return {
+      verified: true,
+      message:
+        "✅ Account verified! Your Telegram is now securely linked to your DK Bank account.",
+    };
   }
 
   // ── Internal helpers ─────────────────────────────────────────────────────

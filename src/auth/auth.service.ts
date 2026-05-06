@@ -457,7 +457,11 @@ export class AuthService {
           dkAccountName: account.accountName,
           phoneNumber: account.phoneNumber || null,
           ...(cidChanging
-            ? { telegramPhoneHash: null as any, telegramLinkedAt: null as any }
+            ? {
+                telegramPhoneHash: null as any,
+                telegramLinkedAt: null as any,
+                dkLinkVerifiedAt: null as any,
+              }
             : {}),
         });
         // Write dkPhoneHash onto the Telegram user row — this is the key step.
@@ -554,11 +558,13 @@ export class AuthService {
 
       if (user) {
         // User row exists — just ensure fields are up to date and create the missing auth_method
+        const cidChangingHere = user.dkCid !== cid;
         await this.userRepo.update(user.id, {
           dkCid: cid,
           dkAccountNumber: account.accountNumber,
           dkAccountName: account.accountName,
           phoneNumber: account.phoneNumber || null,
+          ...(cidChangingHere ? { dkLinkVerifiedAt: null as any } : {}),
         });
         await this.telegramVerification.storeDKPhoneHash(
           user.id,
@@ -836,11 +842,13 @@ export class AuthService {
 
     // Ensure DK fields are synced
     const account = await this.dkGateway.lookupAccountByCID(cid);
+    const cidChangingManual = user.dkCid !== cid;
     await this.userRepo.update(user.id, {
       dkCid: cid,
       dkAccountNumber: account.accountNumber,
       dkAccountName: account.accountName,
       phoneNumber: account.phoneNumber || null,
+      ...(cidChangingManual ? { dkLinkVerifiedAt: null as any } : {}),
     });
     await this.telegramVerification.storeDKPhoneHash(
       user.id,
