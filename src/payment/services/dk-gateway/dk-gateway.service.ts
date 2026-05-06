@@ -435,12 +435,15 @@ export class DKGatewayService {
     }>(
       "/v1/account_auth/pull-payment",
       {
-        account_number: params.customerAccountNumber,
+        // account_number = beneficiary (merchant) — DK locks the credit destination
+        // to this account when creating the bfs_txn_id. Must be the ORO merchant
+        // account, NOT the customer's account.
+        account_number: this.beneficiaryAccount,
+        account_name: this.beneficiaryName,
         transaction_datetime: txDatetime,
         stan_number: params.stanNumber,
         transaction_amount: params.amount.toFixed(2),
         payment_desc: params.description,
-        account_name: params.customerAccountName,
         // DK staging requires phone_number field but cannot send real SMS — use staging placeholder.
         // In production this will be the customer's real registered phone number.
         phone_number: this.baseUrl.includes(".sit.")
