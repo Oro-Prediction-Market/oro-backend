@@ -95,6 +95,16 @@ export class User {
   @Column({ type: "timestamptz", nullable: true })
   telegramLinkedAt: Date | null;
 
+  /**
+   * Set when a user verifies ownership of their DK Bank account via account
+   * number (fallback path for users whose Telegram phone differs from their
+   * DK Bank registered phone — e.g. Bhutanese users living abroad).
+   * Either this OR matching telegramPhoneHash/dkPhoneHash is sufficient to
+   * authorise payments.
+   */
+  @Column({ type: "timestamptz", nullable: true })
+  dkLinkVerifiedAt: Date | null;
+
   // Reputation
 
   /** Overall accuracy score 0.0–1.0 (confidence-adjusted). Null until first market settles. */
