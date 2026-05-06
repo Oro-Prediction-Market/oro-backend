@@ -343,6 +343,18 @@ export class DKBankPaymentService {
       );
     }
 
+    // ── Atomically mark as PROCESSING to prevent double-submit race condition ─
+    const updateResult = await this.paymentRepo.update(
+      { id: paymentId, userId, status: PaymentStatus.PENDING },
+      { status: PaymentStatus.PROCESSING },
+    );
+    if (updateResult.affected === 0) {
+      throw new BadRequestException(
+        "Payment is already being processed. Please wait.",
+      );
+    }
+    payment.status = PaymentStatus.PROCESSING;
+
     // ── Call DK Bank debit_request with the OTP from the user ────────────────
     try {
       const execResult = await this.dkGateway.executeTransactionWithOtp({
@@ -616,7 +628,11 @@ export class DKBankPaymentService {
         .andWhere("p.userId = :userId", { userId: params.userId })
         .getOne();
       if (!payment) throw new NotFoundException("Payment not found");
-      if (payment.status !== PaymentStatus.PENDING) return;
+      if (
+        payment.status !== PaymentStatus.PENDING &&
+        payment.status !== PaymentStatus.PROCESSING
+      )
+        return;
 
       payment.metadata = {
         ...(payment.metadata || {}),
