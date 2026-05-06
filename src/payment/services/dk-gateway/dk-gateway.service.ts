@@ -501,6 +501,13 @@ export class DKGatewayService {
       );
     }
 
+    this.logger.warn(
+      `[DEBIT_REQUEST] Executing pull-payment:\n` +
+        `  Source (customer): ${params.sourceAccountNumber} / ${params.sourceAccountName}\n` +
+        `  Destination (merchant): ${this.beneficiaryAccount} / ${this.beneficiaryName}\n` +
+        `  Amount: ${params.amount} BTN | bfsTxnId: ${params.bfsTxnId}`,
+    );
+
     const res = await this.dkPost<{
       response_code: string;
       response_description?: string;
@@ -628,6 +635,10 @@ export class DKGatewayService {
     }
 
     const s = res.response_data.status;
+    this.logger.warn(
+      `[TXN_STATUS] transactionId=${transactionId} status=${s.status} ` +
+        `debit_account=${s.debit_account} credit_account=${s.credit_account} amount=${s.amount}`,
+    );
     return {
       status: (s.status || "PENDING").toUpperCase(),
       statusDesc: s.status_desc || undefined,
