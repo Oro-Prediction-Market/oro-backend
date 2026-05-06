@@ -490,6 +490,17 @@ export class DKGatewayService {
     qrCode?: string;
     raw: any;
   }> {
+    // Safety check: source (customer) and destination (merchant) must be different accounts
+    if (params.sourceAccountNumber === this.beneficiaryAccount) {
+      this.logger.error(
+        `[CRITICAL] Source account ${params.sourceAccountNumber} is the same as merchant beneficiary account ${this.beneficiaryAccount}. ` +
+          `This would cause debit and credit on the same account. Aborting transaction.`,
+      );
+      throw new BadRequestException(
+        "Transaction cannot be processed: source and merchant accounts are the same. Please contact support.",
+      );
+    }
+
     const res = await this.dkPost<{
       response_code: string;
       response_description?: string;
