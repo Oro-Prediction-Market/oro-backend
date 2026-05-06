@@ -535,55 +535,26 @@ export class DKGatewayService {
     const isBatchMode = !res.response_data?.txn_status_id;
 
     if (isBatchMode) {
+      // debit_request succeeded (0000) but returned batch mode (no txn_status_id).
+      // Previously we fell back to /v1/initiate/transaction here, but that API
+      // is a push-payment (fund_transfer) intended only for refunds/payouts
+      // from the merchant account. Using it to pull from a user's account is
+      // incorrect and was flagged by DK Bank.
+      //
+      // Instead, treat the batch-mode debit_request as successful — the funds
+      // will settle via DK's batch processing. Use the bfs_txn_id as the
+      // transaction reference for status polling.
+      const batchRef =
+        (res.response_data as any)?.bfs_txn_id ?? params.bfsTxnId;
       this.logger.warn(
-        `[Payment] debit_request returned batch mode (no txn_status_id) — ` +
-          `falling back to /v1/initiate/transaction for real-time debit. ` +
-          `bfs_txn_id=${(res.response_data as any)?.bfs_txn_id ?? "none"}`,
+        `[Payment] debit_request returned batch mode (no txn_status_id). ` +
+          `Treating as successful — funds will settle via batch. ` +
+          `bfs_txn_id=${batchRef}`,
       );
-      const stanNo = this.generateStanNumber();
-      const fallback = await this.dkPost<{
-        response_code: string;
-        response_description?: string;
-        response_message?: string;
-        response_data?: { txn_status_id?: string; inquiry_id?: string };
-      }>(
-        "/v1/initiate/transaction",
-        {
-          inquiry_id: `Oro-DEP-${params.bfsTxnId.slice(-8)}-${stanNo}`,
-          transaction_datetime: this.generateDkTimestamp(),
-          source_app: this.sourceApp,
-          transaction_amount: params.amount.toFixed(2),
-          currency: "BTN",
-          payment_type: "INTRA",
-          source_account_name: params.sourceAccountName,
-          source_account_number: params.sourceAccountNumber,
-          bene_cust_name: this.beneficiaryName,
-          bene_account_number: this.beneficiaryAccount,
-          bene_bank_code: this.bankCode,
-          narration: params.description,
-        },
-        true,
-      );
-
-      if (fallback.response_code === DK_RESPONSE_CODES.SUCCESS) {
-        this.logger.log(
-          `[Payment] initiate/transaction real-time debit succeeded: txn_status_id=${fallback.response_data?.txn_status_id}`,
-        );
-        return {
-          txnStatusId: fallback.response_data?.txn_status_id ?? null,
-          raw: fallback.response_data,
-        };
-      }
-
-      this.logger.error(
-        `[Payment] initiate/transaction fallback FAILED [${fallback.response_code}]: ` +
-          `${fallback.response_description ?? fallback.response_message}`,
-      );
-      throw new BadRequestException(
-        fallback.response_description ||
-          fallback.response_message ||
-          "Real-time debit transfer failed. Please try again.",
-      );
+      return {
+        txnStatusId: batchRef,
+        raw: res.response_data,
+      };
     }
 
     const txnStatusId =
