@@ -4,7 +4,7 @@
 
 ## Overview
 
-TER (Token of Exchange Rate) is a gold-backed digital asset where 1 TER = 0.01g fine gold. Oro runs **15-minute price prediction markets** on TER, auto-resolved via the official TER price API.
+TER is a gold-backed digital asset where 1 TER = 0.01g fine gold. Oro runs **15-minute price prediction markets** on TER, auto-resolved via the official TER price API.
 
 ---
 
@@ -13,7 +13,7 @@ TER (Token of Exchange Rate) is a gold-backed digital asset where 1 TER = 0.01g 
 ```
 ┌─────────────────┐       ┌──────────────────┐       ┌─────────────────┐
 │  api.ter.bt     │◄──────│  oro-backend     │──────►│  oro-pwa / tma  │
-│  /prices        │       │  TerMarketService │       │  TerMarketCard  │
+│  /prices        │       │  TerMarketService│       │  TerMarketCard  │
 └─────────────────┘       └──────────────────┘       │  TerPricePanel  │
                                                      └─────────────────┘
 ```

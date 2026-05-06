@@ -207,9 +207,16 @@ export class BotPollingService
     const chatType: string = message.chat.type ?? "private";
 
     // Auto-register Oro users who send messages in group chats
-    if ((chatType === "group" || chatType === "supergroup") && message.from?.id) {
+    if (
+      (chatType === "group" || chatType === "supergroup") &&
+      message.from?.id
+    ) {
       await this.leaguesService
-        .registerMember(String(chatId), String(message.from.id), message.chat.title)
+        .registerMember(
+          String(chatId),
+          String(message.from.id),
+          message.chat.title,
+        )
         .catch(() => {});
     }
 
@@ -280,20 +287,36 @@ export class BotPollingService
             this.config.get<string>("TELEGRAM_MINI_APP_URL") ||
             process.env.TELEGRAM_MINI_APP_URL ||
             "";
+          const isReferral = cmdPayload.startsWith("ref_");
+          const botUsername =
+            this.config.get<string>("BOT_USERNAME") ||
+            process.env.BOT_USERNAME ||
+            "OroPredictBot";
+          const miniAppLink = isReferral
+            ? `https://t.me/${botUsername}/app?startapp=${cmdPayload}`
+            : miniAppUrl;
+
           const payload: Record<string, unknown> = {
             chat_id: chatId,
-            text:
-              "🎯 <b>Welcome to Oro!</b>\n\n" +
-              "To enable secure payments, please verify your phone:\n" +
-              "👉 Type /verify and share your phone number.\n\n" +
-              "Other commands:\n" +
-              "/predict - View active markets\n" +
-              "/help    - Show all commands",
+            text: isReferral
+              ? "🎯 <b>Welcome to Oro!</b>\n\n" +
+                "You've been invited by a friend! Open the app to start predicting and earn bonuses.\n\n" +
+                "To enable secure payments, please verify your phone:\n" +
+                "👉 Type /verify and share your phone number.\n\n" +
+                "Other commands:\n" +
+                "/predict - View active markets\n" +
+                "/help    - Show all commands"
+              : "🎯 <b>Welcome to Oro!</b>\n\n" +
+                "To enable secure payments, please verify your phone:\n" +
+                "👉 Type /verify and share your phone number.\n\n" +
+                "Other commands:\n" +
+                "/predict - View active markets\n" +
+                "/help    - Show all commands",
             parse_mode: "HTML",
           };
-          if (miniAppUrl) {
+          if (miniAppLink) {
             payload.reply_markup = {
-              inline_keyboard: [[{ text: "🚀 Open Oro", url: miniAppUrl }]],
+              inline_keyboard: [[{ text: "🚀 Open Oro", url: miniAppLink }]],
             };
           }
           const res = await fetch(
@@ -409,7 +432,10 @@ export class BotPollingService
       return;
     }
 
-    const rank = await this.leaguesService.getUserGroupRank(String(chatId), user.id);
+    const rank = await this.leaguesService.getUserGroupRank(
+      String(chatId),
+      user.id,
+    );
     if (rank === null) {
       await this.telegramSimple.sendMessage(
         chatId,
@@ -647,20 +673,31 @@ export class BotPollingService
     // ── p:<key>  — short propose key registered by KeeperService ─────────
     if (data.startsWith("p:")) {
       const key = Number(data.slice(2));
-      this.logger.log(`[Bot] propose callback received — key=${key} from=${callback.from?.id} chatId=${chatId}`);
+      this.logger.log(
+        `[Bot] propose callback received — key=${key} from=${callback.from?.id} chatId=${chatId}`,
+      );
 
       // Always answer the callback query immediately to dismiss the spinner.
       // Telegram only allows ONE answer per callback_query_id, so we must NOT
       // call answerCallbackQuery again inside the try/catch below.
-      await this.telegramSimple.answerCallbackQuery(callbackQueryId, "⏳ Processing…");
+      await this.telegramSimple.answerCallbackQuery(
+        callbackQueryId,
+        "⏳ Processing…",
+      );
 
       // Security: only the configured admin may trigger this
       const adminTelegramId = this.config.get<string>("ADMIN_TELEGRAM_ID");
-      if (!adminTelegramId || String(callback.from?.id) !== String(adminTelegramId)) {
+      if (
+        !adminTelegramId ||
+        String(callback.from?.id) !== String(adminTelegramId)
+      ) {
         this.logger.warn(
           `[Bot] Unauthorised propose attempt — from=${callback.from?.id} expected=${adminTelegramId}`,
         );
-        await this.telegramSimple.sendMessage(chatId, "⛔ <b>Not authorised.</b>");
+        await this.telegramSimple.sendMessage(
+          chatId,
+          "⛔ <b>Not authorised.</b>",
+        );
         return;
       }
 
@@ -668,7 +705,9 @@ export class BotPollingService
       this.logger.log(`[Bot] resolving propose key ${key} from Redis…`);
       const resolved = await this.telegramSimple.resolveProposeKey(key);
       if (!resolved) {
-        this.logger.warn(`[Bot] propose key ${key} not found in Redis (expired or Redis down)`);
+        this.logger.warn(
+          `[Bot] propose key ${key} not found in Redis (expired or Redis down)`,
+        );
         await this.telegramSimple.sendMessage(
           chatId,
           "⏰ <b>Button expired.</b> Please use the admin panel to propose a resolution.",
@@ -676,8 +715,14 @@ export class BotPollingService
         return;
       }
 
-      const { marketId, outcomeId, windowMinutes: resolvedWindowMins } = resolved;
-      this.logger.log(`[Bot] resolved key ${key} → marketId=${marketId} outcomeId=${outcomeId} windowMinutes=${resolvedWindowMins}`);
+      const {
+        marketId,
+        outcomeId,
+        windowMinutes: resolvedWindowMins,
+      } = resolved;
+      this.logger.log(
+        `[Bot] resolved key ${key} → marketId=${marketId} outcomeId=${outcomeId} windowMinutes=${resolvedWindowMins}`,
+      );
 
       try {
         // Load market — use update() later to avoid cascade-save on eager outcomes
@@ -687,7 +732,9 @@ export class BotPollingService
         });
         if (!market) throw new Error(`Market ${marketId} not found`);
 
-        this.logger.log(`[Bot] market "${market.title}" status=${market.status}`);
+        this.logger.log(
+          `[Bot] market "${market.title}" status=${market.status}`,
+        );
 
         if (market.status === MarketStatus.RESOLVING) {
           const proposed = (market.outcomes ?? []).find(
@@ -719,10 +766,13 @@ export class BotPollingService
         }
 
         const outcome = (market.outcomes ?? []).find((o) => o.id === outcomeId);
-        if (!outcome) throw new Error(`Outcome ${outcomeId} not found in market`);
+        if (!outcome)
+          throw new Error(`Outcome ${outcomeId} not found in market`);
 
         // Use the window duration stored in the Redis key (set by keeper when sending the button)
-        const disputeDeadlineAt = new Date(Date.now() + resolvedWindowMins * 60 * 1000);
+        const disputeDeadlineAt = new Date(
+          Date.now() + resolvedWindowMins * 60 * 1000,
+        );
         await this.marketRepo.update(
           { id: marketId },
           {
@@ -732,9 +782,14 @@ export class BotPollingService
             status: MarketStatus.RESOLVING,
           },
         );
-        await this.redis.del("oro:cache:markets:all", `oro:cache:market:${marketId}`);
+        await this.redis.del(
+          "oro:cache:markets:all",
+          `oro:cache:market:${marketId}`,
+        );
 
-        this.logger.log(`[Bot] market "${market.title}" transitioned to RESOLVING via bot propose`);
+        this.logger.log(
+          `[Bot] market "${market.title}" transitioned to RESOLVING via bot propose`,
+        );
 
         // Post objection window announcement to the channel so users see it
         const miniAppUrl =
@@ -764,7 +819,10 @@ export class BotPollingService
             `The keeper will auto-settle when the window expires with no valid disputes.`,
         );
       } catch (err: any) {
-        this.logger.error(`[Bot] propose callback failed: ${err.message}`, err.stack);
+        this.logger.error(
+          `[Bot] propose callback failed: ${err.message}`,
+          err.stack,
+        );
         await this.telegramSimple.sendMessage(
           chatId,
           `❌ <b>Could not open dispute window</b>\n\nError: ${err.message}\n\nPlease use the admin panel instead.`,
@@ -778,11 +836,20 @@ export class BotPollingService
       const [, marketId, outcomeId] = data.split(":");
 
       // Security: only the configured admin may trigger this
-      await this.telegramSimple.answerCallbackQuery(callbackQueryId, "⏳ Processing…");
+      await this.telegramSimple.answerCallbackQuery(
+        callbackQueryId,
+        "⏳ Processing…",
+      );
 
       const adminTelegramId = this.config.get<string>("ADMIN_TELEGRAM_ID");
-      if (!adminTelegramId || String(callback.from?.id) !== String(adminTelegramId)) {
-        await this.telegramSimple.sendMessage(chatId, "⛔ <b>Not authorised.</b>");
+      if (
+        !adminTelegramId ||
+        String(callback.from?.id) !== String(adminTelegramId)
+      ) {
+        await this.telegramSimple.sendMessage(
+          chatId,
+          "⛔ <b>Not authorised.</b>",
+        );
         return;
       }
 
@@ -816,7 +883,9 @@ export class BotPollingService
         if (!outcome) throw new Error("Outcome not found in market");
 
         const LEGACY_WINDOW_MINS = 60; // 1-hour default for legacy callbacks
-        const disputeDeadlineAt = new Date(Date.now() + LEGACY_WINDOW_MINS * 60 * 1000);
+        const disputeDeadlineAt = new Date(
+          Date.now() + LEGACY_WINDOW_MINS * 60 * 1000,
+        );
         await this.marketRepo.update(
           { id: marketId },
           {
@@ -826,8 +895,13 @@ export class BotPollingService
             status: MarketStatus.RESOLVING,
           },
         );
-        await this.redis.del("oro:cache:markets:all", `oro:cache:market:${marketId}`);
-        this.logger.log(`[Bot][legacy] Admin proposed "${outcome.label}" for "${market.title}"`);
+        await this.redis.del(
+          "oro:cache:markets:all",
+          `oro:cache:market:${marketId}`,
+        );
+        this.logger.log(
+          `[Bot][legacy] Admin proposed "${outcome.label}" for "${market.title}"`,
+        );
 
         // Post objection window announcement to the channel
         const miniAppUrlLegacy =
@@ -854,7 +928,9 @@ export class BotPollingService
             `The keeper will auto-settle when the window expires with no valid disputes.`,
         );
       } catch (err: any) {
-        this.logger.error(`[Bot][legacy] propose callback failed: ${err.message}`);
+        this.logger.error(
+          `[Bot][legacy] propose callback failed: ${err.message}`,
+        );
         await this.telegramSimple.sendMessage(
           chatId,
           `❌ <b>Could not open dispute window</b>\n\nError: ${err.message}\n\nPlease use the admin panel instead.`,
