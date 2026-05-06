@@ -435,11 +435,11 @@ export class DKGatewayService {
     }>(
       "/v1/account_auth/pull-payment",
       {
-        // account_number = the remitter (customer) whose account will be debited.
-        // DK uses this to identify the customer and send them the OTP.
-        // The beneficiary (merchant) is determined by DK from your source_app registration.
-        account_number: params.customerAccountNumber,
-        account_name: params.customerAccountName,
+        // account_number = beneficiary (merchant) — the account that will RECEIVE the funds.
+        // DK locks this as the credit destination when creating the bfs_txn_id.
+        // remitter_* = the customer whose account will be DEBITED (and who receives OTP).
+        account_number: this.beneficiaryAccount,
+        account_name: this.beneficiaryName,
         transaction_datetime: txDatetime,
         stan_number: params.stanNumber,
         transaction_amount: params.amount.toFixed(2),
