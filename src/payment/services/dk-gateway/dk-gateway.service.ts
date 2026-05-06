@@ -435,9 +435,9 @@ export class DKGatewayService {
     }>(
       "/v1/account_auth/pull-payment",
       {
-        // account_number = beneficiary (merchant) — the account that will RECEIVE the funds.
-        // DK locks this as the credit destination when creating the bfs_txn_id.
-        // remitter_* = the customer whose account will be DEBITED (and who receives OTP).
+        // account_number = beneficiary (merchant) — DK locks this as the credit
+        // destination for the bfs_txn_id. debit_request inherits this.
+        // remitter_* = customer whose account will be debited (receives OTP).
         account_number: this.beneficiaryAccount,
         account_name: this.beneficiaryName,
         transaction_datetime: txDatetime,
@@ -492,6 +492,7 @@ export class DKGatewayService {
     paymentUrl?: string;
     qrCode?: string;
     raw: any;
+    batchMode?: boolean;
   }> {
     // Safety check: source (customer) and destination (merchant) must be different accounts
     if (params.sourceAccountNumber === this.beneficiaryAccount) {
@@ -557,24 +558,20 @@ export class DKGatewayService {
 
     if (isBatchMode) {
       // debit_request succeeded (0000) but returned batch mode (no txn_status_id).
-      // Previously we fell back to /v1/initiate/transaction here, but that API
-      // is a push-payment (fund_transfer) intended only for refunds/payouts
-      // from the merchant account. Using it to pull from a user's account is
-      // incorrect and was flagged by DK Bank.
-      //
-      // Instead, treat the batch-mode debit_request as successful — the funds
-      // will settle via DK's batch processing. Use the bfs_txn_id as the
-      // transaction reference for status polling.
+      // In batch mode, DK has NOT yet moved the money — it's queued for later.
+      // DO NOT credit the wallet yet. The caller must poll /v1/transaction/status
+      // or wait for a DK webhook to confirm the funds actually moved.
       const batchRef =
         (res.response_data as any)?.bfs_txn_id ?? params.bfsTxnId;
       this.logger.warn(
         `[Payment] debit_request returned batch mode (no txn_status_id). ` +
-          `Treating as successful — funds will settle via batch. ` +
-          `bfs_txn_id=${batchRef}`,
+          `Money NOT yet confirmed moved. bfs_txn_id=${batchRef}. ` +
+          `Wallet credit must wait for transaction status confirmation.`,
       );
       return {
         txnStatusId: batchRef,
         raw: res.response_data,
+        batchMode: true,
       };
     }
 
