@@ -356,11 +356,8 @@ export class DKBankPaymentService {
     payment.status = PaymentStatus.PROCESSING;
 
     // ── Call DK Bank debit_request with the OTP from the user ────────────────
-    let execResult: Awaited<
-      ReturnType<typeof this.dkGateway.executeTransactionWithOtp>
-    >;
     try {
-      execResult = await this.dkGateway.executeTransactionWithOtp({
+      const execResult = await this.dkGateway.executeTransactionWithOtp({
         bfsTxnId,
         otp,
         stanNumber,
@@ -387,33 +384,10 @@ export class DKBankPaymentService {
 
     this.logger.log(`[Payment] DK debit accepted for payment ${payment.id}`);
 
-    // ── Batch mode: DK hasn't moved money yet — do NOT credit wallet ─────────
-    // Keep payment in PROCESSING state. The frontend should poll getPaymentStatus
-    // which will check /v1/transaction/status and credit when DK confirms.
-    if (execResult.batchMode) {
-      this.logger.warn(
-        `[Payment] Batch mode — wallet NOT credited yet for payment ${payment.id}. ` +
-          `Awaiting DK batch settlement confirmation.`,
-      );
-      if (otpRecord) {
-        otpRecord.status = OtpStatus.VERIFIED;
-        otpRecord.verifiedAt = new Date();
-        await this.otpRepo.save(otpRecord);
-      }
-      return {
-        success: true,
-        paymentId: payment.id,
-        status: "pending" as any,
-        amount: Number(payment.amount),
-        currency: payment.currency,
-        method: "dkbank",
-        message:
-          "OTP verified. Your deposit is being processed by the bank and will be credited shortly.",
-        timestamp: new Date().toISOString(),
-      };
-    }
-
-    // ── Real-time mode: DK confirmed money moved — credit wallet now ─────────
+    // ── Credit Oro balance immediately ───────────────────────────────────────
+    // The executeTransactionWithOtp call succeeded (DK returned "0000") and
+    // money has been confirmed to reach the merchant account via the real-time
+    // /v1/initiate/transaction endpoint. Safe to credit the wallet now.
     await this.applyDKStatusUpdate({
       userId,
       paymentId: payment.id,

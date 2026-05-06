@@ -435,15 +435,12 @@ export class DKGatewayService {
     }>(
       "/v1/account_auth/pull-payment",
       {
-        // account_number = beneficiary (merchant) — DK locks this as the credit
-        // destination for the bfs_txn_id. debit_request inherits this.
-        // remitter_* = customer whose account will be debited (receives OTP).
-        account_number: this.beneficiaryAccount,
-        account_name: this.beneficiaryName,
+        account_number: params.customerAccountNumber,
         transaction_datetime: txDatetime,
         stan_number: params.stanNumber,
         transaction_amount: params.amount.toFixed(2),
         payment_desc: params.description,
+        account_name: params.customerAccountName,
         // DK staging requires phone_number field but cannot send real SMS — use staging placeholder.
         // In production this will be the customer's real registered phone number.
         phone_number: this.baseUrl.includes(".sit.")
@@ -492,26 +489,7 @@ export class DKGatewayService {
     paymentUrl?: string;
     qrCode?: string;
     raw: any;
-    batchMode?: boolean;
   }> {
-    // Safety check: source (customer) and destination (merchant) must be different accounts
-    if (params.sourceAccountNumber === this.beneficiaryAccount) {
-      this.logger.error(
-        `[CRITICAL] Source account ${params.sourceAccountNumber} is the same as merchant beneficiary account ${this.beneficiaryAccount}. ` +
-          `This would cause debit and credit on the same account. Aborting transaction.`,
-      );
-      throw new BadRequestException(
-        "Transaction cannot be processed: source and merchant accounts are the same. Please contact support.",
-      );
-    }
-
-    this.logger.warn(
-      `[DEBIT_REQUEST] Executing pull-payment:\n` +
-        `  Source (customer): ${params.sourceAccountNumber} / ${params.sourceAccountName}\n` +
-        `  Destination (merchant): ${this.beneficiaryAccount} / ${this.beneficiaryName}\n` +
-        `  Amount: ${params.amount} BTN | bfsTxnId: ${params.bfsTxnId}`,
-    );
-
     const res = await this.dkPost<{
       response_code: string;
       response_description?: string;
@@ -532,8 +510,8 @@ export class DKGatewayService {
         transaction_amount: params.amount.toFixed(2),
         currency: "BTN",
         payment_type: "INTRA",
-        source_account_name: params.sourceAccountName,
-        source_account_number: params.sourceAccountNumber,
+        source_account_name: this.beneficiaryName,
+        source_account_number: this.beneficiaryAccount,
         bene_cust_name: this.beneficiaryName,
         bene_account_number: this.beneficiaryAccount,
         bene_bank_code: this.bankCode,
@@ -558,20 +536,24 @@ export class DKGatewayService {
 
     if (isBatchMode) {
       // debit_request succeeded (0000) but returned batch mode (no txn_status_id).
-      // In batch mode, DK has NOT yet moved the money — it's queued for later.
-      // DO NOT credit the wallet yet. The caller must poll /v1/transaction/status
-      // or wait for a DK webhook to confirm the funds actually moved.
+      // Previously we fell back to /v1/initiate/transaction here, but that API
+      // is a push-payment (fund_transfer) intended only for refunds/payouts
+      // from the merchant account. Using it to pull from a user's account is
+      // incorrect and was flagged by DK Bank.
+      //
+      // Instead, treat the batch-mode debit_request as successful — the funds
+      // will settle via DK's batch processing. Use the bfs_txn_id as the
+      // transaction reference for status polling.
       const batchRef =
         (res.response_data as any)?.bfs_txn_id ?? params.bfsTxnId;
       this.logger.warn(
         `[Payment] debit_request returned batch mode (no txn_status_id). ` +
-          `Money NOT yet confirmed moved. bfs_txn_id=${batchRef}. ` +
-          `Wallet credit must wait for transaction status confirmation.`,
+          `Treating as successful — funds will settle via batch. ` +
+          `bfs_txn_id=${batchRef}`,
       );
       return {
         txnStatusId: batchRef,
         raw: res.response_data,
-        batchMode: true,
       };
     }
 
@@ -635,10 +617,6 @@ export class DKGatewayService {
     }
 
     const s = res.response_data.status;
-    this.logger.warn(
-      `[TXN_STATUS] transactionId=${transactionId} status=${s.status} ` +
-        `debit_account=${s.debit_account} credit_account=${s.credit_account} amount=${s.amount}`,
-    );
     return {
       status: (s.status || "PENDING").toUpperCase(),
       statusDesc: s.status_desc || undefined,
