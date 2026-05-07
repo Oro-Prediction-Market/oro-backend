@@ -44,8 +44,23 @@ dotenv.config();
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  // Security headers
-  app.use(helmet());
+  // Security headers — strict CSP for API routes, relaxed for Swagger UI
+  app.use((req: any, res: any, next: any) => {
+    if (req.path.startsWith("/docs")) {
+      helmet({
+        contentSecurityPolicy: {
+          directives: {
+            defaultSrc: ["'self'"],
+            scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+            styleSrc: ["'self'", "'unsafe-inline'"],
+            imgSrc: ["'self'", "data:", "https:"],
+          },
+        },
+      })(req, res, next);
+    } else {
+      helmet()(req, res, next);
+    }
+  });
 
   // CORS
   const isProduction = process.env.NODE_ENV === "production";
