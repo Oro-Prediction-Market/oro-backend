@@ -151,6 +151,45 @@ export class AdminController {
     return status;
   }
 
+  // ── Finance Stats ───────────────────────────────────────────────────────────
+  @Get("finance-stats")
+  @ApiOperation({ summary: "Platform financial summary: house income, pools" })
+  async financeStats() {
+    // Total pool from ALL settled markets
+    const settledResult = await this.dataSource.query(`
+      SELECT COALESCE(SUM("totalPool"), 0) AS "settledPool",
+             COUNT(*) AS "settledCount"
+      FROM market WHERE status = 'settled'
+    `);
+    // House income = sum(totalPool * houseEdgePct / 100) for settled markets
+    const houseResult = await this.dataSource.query(`
+      SELECT COALESCE(SUM("totalPool" * "houseEdgePct" / 100), 0) AS "houseIncome"
+      FROM market WHERE status = 'settled'
+    `);
+    // Active pool (open + closed + resolving + resolved)
+    const activeResult = await this.dataSource.query(`
+      SELECT COALESCE(SUM("totalPool"), 0) AS "activePool",
+             COUNT(*) AS "activeCount"
+      FROM market WHERE status IN ('open','closed','resolving','resolved')
+    `);
+    // Total all-time volume
+    const allTimeResult = await this.dataSource.query(`
+      SELECT COALESCE(SUM("totalPool"), 0) AS "allTimeVolume",
+             COUNT(*) AS "totalMarkets"
+      FROM market
+    `);
+
+    return {
+      houseIncome: parseFloat(houseResult[0].houseIncome),
+      settledPool: parseFloat(settledResult[0].settledPool),
+      settledCount: parseInt(settledResult[0].settledCount),
+      activePool: parseFloat(activeResult[0].activePool),
+      activeCount: parseInt(activeResult[0].activeCount),
+      allTimeVolume: parseFloat(allTimeResult[0].allTimeVolume),
+      totalMarkets: parseInt(allTimeResult[0].totalMarkets),
+    };
+  }
+
   // ── Markets ────────────────────────────────────────────────────────────────
   @Post("markets")
   @ApiOperation({ summary: "Create a new market with outcomes" })
@@ -1064,7 +1103,9 @@ export class AdminController {
 
   // ── Behavioral Analytics ──────────────────────────────────────────────────
   @Get("behavioral-analytics")
-  @ApiOperation({ summary: "Aggregated user event metrics for admin dashboard" })
+  @ApiOperation({
+    summary: "Aggregated user event metrics for admin dashboard",
+  })
   async behavioralAnalytics() {
     const db = this.dataSource;
 
@@ -1150,7 +1191,11 @@ export class AdminController {
       dau,
       topPages,
       platformSplit,
-      conversionFunnel: conversionFunnel[0] ?? { opened: 0, viewed_market: 0, opened_bet_modal: 0 },
+      conversionFunnel: conversionFunnel[0] ?? {
+        opened: 0,
+        viewed_market: 0,
+        opened_bet_modal: 0,
+      },
       categoryStats,
     };
   }
