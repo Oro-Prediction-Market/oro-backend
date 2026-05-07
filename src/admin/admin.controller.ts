@@ -159,24 +159,24 @@ export class AdminController {
     const settledResult = await this.dataSource.query(`
       SELECT COALESCE(SUM("totalPool"), 0) AS "settledPool",
              COUNT(*) AS "settledCount"
-      FROM market WHERE status = 'settled'
+      FROM markets WHERE status = 'settled'
     `);
     // House income = sum(totalPool * houseEdgePct / 100) for settled markets
     const houseResult = await this.dataSource.query(`
       SELECT COALESCE(SUM("totalPool" * "houseEdgePct" / 100), 0) AS "houseIncome"
-      FROM market WHERE status = 'settled'
+      FROM markets WHERE status = 'settled'
     `);
     // Active pool (open + closed + resolving + resolved)
     const activeResult = await this.dataSource.query(`
       SELECT COALESCE(SUM("totalPool"), 0) AS "activePool",
              COUNT(*) AS "activeCount"
-      FROM market WHERE status IN ('open','closed','resolving','resolved')
+      FROM markets WHERE status IN ('open','closed','resolving','resolved')
     `);
     // Total all-time volume
     const allTimeResult = await this.dataSource.query(`
       SELECT COALESCE(SUM("totalPool"), 0) AS "allTimeVolume",
              COUNT(*) AS "totalMarkets"
-      FROM market
+      FROM markets
     `);
 
     return {
