@@ -155,7 +155,7 @@ describe("TerMarketService", () => {
       await service.spawnMarket();
 
       expect(createdMarket).toBeTruthy();
-      expect(createdMarket.title).toBe("TER — UP or DOWN in 5 minutes?");
+      expect(createdMarket.title).toBe("TER — UP or DOWN in 15 minutes?");
       expect(createdMarket.category).toBe(MarketCategory.ECONOMY);
       expect(createdMarket.status).toBe(MarketStatus.OPEN);
       expect(createdMarket.externalSource).toBe("ter");
@@ -190,7 +190,7 @@ describe("TerMarketService", () => {
       expect(diffMs).toBe(2 * 60 * 1000); // exactly 2 minutes
     });
 
-    it("sets closesAt to 5 minutes from now", async () => {
+    it("sets closesAt to 15 minutes from now", async () => {
       marketRepo.findOne.mockResolvedValue(null);
 
       let createdMarket: any = null;
@@ -214,8 +214,8 @@ describe("TerMarketService", () => {
       const closesAt = new Date(createdMarket.closesAt).getTime();
       const opensAt = new Date(createdMarket.opensAt).getTime();
 
-      // closesAt should be ~5 min after opensAt
-      expect(closesAt - opensAt).toBe(5 * 60 * 1000);
+      // closesAt should be ~15 min after opensAt
+      expect(closesAt - opensAt).toBe(15 * 60 * 1000);
       // opensAt should be roughly now
       expect(opensAt).toBeGreaterThanOrEqual(before);
       expect(opensAt).toBeLessThanOrEqual(after);
