@@ -16,6 +16,7 @@ import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import { TelegramVerificationService } from "../telegram/telegram-verification.service";
 import { LeaguesService } from "../leagues/leagues.service";
 import { BotPollingService } from "./bot-polling.service";
+import { RedisService } from "../redis/redis.service";
 import { User } from "../entities/user.entity";
 import { Market, MarketStatus } from "../entities/market.entity";
 
@@ -27,6 +28,7 @@ export class BotController {
     private readonly telegramVerificationService: TelegramVerificationService,
     private readonly leaguesService: LeaguesService,
     private readonly botPollingService: BotPollingService,
+    private readonly redis: RedisService,
     @InjectRepository(User) private readonly userRepo: Repository<User>,
     @InjectRepository(Market) private readonly marketRepo: Repository<Market>,
   ) {}
@@ -116,7 +118,21 @@ export class BotController {
           contactUserId,
           contact.phone_number,
         );
-        await this.telegramSimpleService.sendMessage(chatId, result.message);
+        if (result.requiresAccountVerification) {
+          await this.redis.setEx(
+            `acct_verify:${chatId}`,
+            600,
+            String(message.from.id),
+          );
+          await this.telegramSimpleService.sendMessage(
+            chatId,
+            "🔐 Your Telegram phone does not match your DK Bank registered phone.\n\n" +
+              "Please type your 12-digit DK Bank account number below to verify your identity.\n\n" +
+              "You can find it in your DK Bank app or passbook.",
+          );
+        } else {
+          await this.telegramSimpleService.sendMessage(chatId, result.message);
+        }
       } catch (err: any) {
         await this.telegramSimpleService.sendMessage(
           chatId,
@@ -136,8 +152,40 @@ export class BotController {
       const cmd = cmdMatch ? cmdMatch[1] : null;
       const cmdPayload = cmdMatch ? (cmdMatch[2] ?? "").trim() : "";
 
-      // Not a slash-command — ignore silently in all chat types.
-      if (!cmd) return;
+      // Not a slash-command — check for pending account number verification.
+      if (!cmd) {
+        if (message.chat?.type === "private") {
+          const rawText = (message.text as string).trim();
+          const digits = rawText.replace(/\D/g, "");
+          const pendingTgId = await this.redis.get(`acct_verify:${chatId}`);
+          if (pendingTgId && digits.length === 12) {
+            const verifyUser = await this.userRepo.findOneBy({
+              telegramId: pendingTgId,
+            });
+            if (verifyUser) {
+              try {
+                const result =
+                  await this.telegramVerificationService.verifyByAccountNumber(
+                    verifyUser.id,
+                    digits,
+                    String(chatId),
+                  );
+                await this.redis.del(`acct_verify:${chatId}`);
+                await this.telegramSimpleService.sendMessage(
+                  chatId,
+                  result.message,
+                );
+              } catch (err: any) {
+                await this.telegramSimpleService.sendMessage(
+                  chatId,
+                  `❌ ${err?.message || "Verification failed"}\n\nPlease try again.`,
+                );
+              }
+            }
+          }
+        }
+        return;
+      }
 
       // /start verify — route to verify handler immediately.
       if (cmd === "/start" && cmdPayload === "verify") {

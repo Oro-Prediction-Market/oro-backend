@@ -237,7 +237,22 @@ export class BotPollingService
           contactUserId,
           contact.phone_number,
         );
-        await this.telegramSimple.sendMessage(chatId, result.message);
+        if (result.requiresAccountVerification) {
+          // Track that this chat is awaiting an account number reply
+          await this.redis.setEx(
+            `acct_verify:${chatId}`,
+            600,
+            String(message.from.id),
+          );
+          await this.telegramSimple.sendMessage(
+            chatId,
+            "🔐 Your Telegram phone does not match your DK Bank registered phone.\n\n" +
+              "Please type your DK Bank account number below to verify your identity.\n\n" +
+              "You can find it in your DK Bank app or passbook.",
+          );
+        } else {
+          await this.telegramSimple.sendMessage(chatId, result.message);
+        }
       } catch (err: any) {
         await this.telegramSimple.sendMessage(
           chatId,
@@ -257,10 +272,40 @@ export class BotPollingService
       const cmd = cmdMatch ? cmdMatch[1] : null;
       const cmdPayload = cmdMatch ? (cmdMatch[2] ?? "").trim() : "";
 
-      // Not a slash-command — in private chats nudge the user if they
-      // have a pending phone verification instead of typing a message.
+      // Not a slash-command — check for pending account number verification
       if (!cmd) {
         if (chatType === "private") {
+          const rawText = (message.text as string).trim();
+          const digits = rawText.replace(/\D/g, "");
+
+          // Check if this chat has a pending account verification
+          const pendingTgId = await this.redis.get(`acct_verify:${chatId}`);
+          if (pendingTgId && digits.length === 12) {
+            // Find the user and attempt account verification
+            const verifyUser = await this.userRepo.findOneBy({
+              telegramId: pendingTgId,
+            });
+            if (verifyUser) {
+              try {
+                const result =
+                  await this.telegramVerification.verifyByAccountNumber(
+                    verifyUser.id,
+                    digits,
+                    String(chatId),
+                  );
+                await this.redis.del(`acct_verify:${chatId}`);
+                await this.telegramSimple.sendMessage(chatId, result.message);
+              } catch (err: any) {
+                await this.telegramSimple.sendMessage(
+                  chatId,
+                  `❌ ${err?.message || "Verification failed"}\n\nPlease try again.`,
+                );
+              }
+            }
+            return;
+          }
+
+          // Existing: nudge if pending phone verification
           const pendingUser = await this.userRepo.findOneBy({
             telegramId: String(message.from?.id),
           });
