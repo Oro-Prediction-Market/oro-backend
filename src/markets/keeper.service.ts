@@ -126,14 +126,16 @@ export class KeeperService {
             await this.marketsService.transition(market.id, MarketStatus.OPEN);
             justOpenedIds.add(market.id);
             this.addLog("success", `✅ Market "${market.title}" auto-opened.`);
-            await this.notifyAdmin(
-              `🤖 <b>Keeper: Market Opened</b>\n\n` +
-                `📊 <b>${market.title}</b>\n` +
-                `Status: UPCOMING → <b>OPEN</b>\n` +
-                (market.closesAt
-                  ? `⏱ Closes at: ${new Date(market.closesAt).toLocaleString()}`
-                  : `⚠️ No closing time set — close manually when ready.`),
-            );
+            if (market.externalSource !== "ter") {
+              await this.notifyAdmin(
+                `🤖 <b>Keeper: Market Opened</b>\n\n` +
+                  `📊 <b>${market.title}</b>\n` +
+                  `Status: UPCOMING → <b>OPEN</b>\n` +
+                  (market.closesAt
+                    ? `⏱ Closes at: ${new Date(market.closesAt).toLocaleString()}`
+                    : `⚠️ No closing time set — close manually when ready.`),
+              );
+            }
           } catch (err: any) {
             this.addLog(
               "error",
@@ -154,6 +156,8 @@ export class KeeperService {
       let closed = 0;
       for (const market of openMarkets) {
         if (!market.closesAt) continue;
+        // TER markets are managed by TerMarketService — skip them entirely
+        if (market.externalSource === "ter") continue;
         // Never close a market that was opened in this same cron tick
         if (justOpenedIds.has(market.id)) {
           this.addLog(
@@ -176,7 +180,10 @@ export class KeeperService {
             );
             // Send admin a DM with one button per outcome so they can propose
             // the winner directly from Telegram — no admin panel needed.
-            await this.notifyAdminPropose(market);
+            // Skip for TER markets — they auto-resolve without admin intervention.
+            if (market.externalSource !== "ter") {
+              await this.notifyAdminPropose(market);
+            }
           } catch (err: any) {
             this.addLog(
               "error",
@@ -231,6 +238,7 @@ export class KeeperService {
       for (const market of resolvingMarkets) {
         if (!market.disputeDeadlineAt || !market.proposedOutcomeId) continue;
         if (new Date() < new Date(market.disputeDeadlineAt)) continue; // window still open
+        if (market.externalSource === "ter") continue; // TER resolves itself via TerMarketService
 
         try {
           this.addLog(

@@ -141,6 +141,14 @@ export class Market {
   @Column({ type: "varchar", length: 32, nullable: true })
   externalMarketType: string | null;
 
+  /** JSON metadata for external markets (e.g., TER price data, match stats, etc.) */
+  @Column({ type: "jsonb", nullable: true })
+  metadata: Record<string, any> | null;
+
+  /** Timestamp when betting closes (for markets where betting closes before the market closes) */
+  @Column({ type: "timestamptz", nullable: true })
+  bettingClosesAt: Date | null;
+
   @CreateDateColumn()
   createdAt: Date;
 
