@@ -356,30 +356,41 @@ export class DKBankPaymentService {
     payment.status = PaymentStatus.PROCESSING;
 
     // ── Call DK Bank debit_request with the OTP from the user ────────────────
-    try {
-      const execResult = await this.dkGateway.executeTransactionWithOtp({
-        bfsTxnId,
-        otp,
-        stanNumber,
-        txDatetime,
-        sourceAccountNumber: meta.customerAccountNumber,
-        sourceAccountName: meta.customerAccountName,
-        amount: Number(payment.amount),
-        description: payment.description ?? "DK Bank deposit",
-      });
-      payment.dkTxnStatusId = execResult.txnStatusId;
-      await this.paymentRepo.save(payment);
-    } catch (e: any) {
-      if (otpRecord) {
-        otpRecord.failedAttempts += 1;
-        await this.otpRepo.save(otpRecord);
-      }
-      payment.status = PaymentStatus.FAILED;
-      payment.failureReason = e?.message || "DK debit request failed";
-      await this.paymentRepo.save(payment);
-      throw new BadRequestException(
-        e?.message || "Invalid OTP or transaction failed. Please try again.",
+    const isStagingDepositBypass =
+      this.configService.get<string>("DK_STAGING_DEPOSIT_BYPASS") === "true";
+
+    if (isStagingDepositBypass) {
+      this.logger.warn(
+        `[STAGING] Skipping real DK debit_request for payment ${payment.id} — DK_STAGING_DEPOSIT_BYPASS active`,
       );
+      payment.dkTxnStatusId = `STAGING-${Date.now()}`;
+      await this.paymentRepo.save(payment);
+    } else {
+      try {
+        const execResult = await this.dkGateway.executeTransactionWithOtp({
+          bfsTxnId,
+          otp,
+          stanNumber,
+          txDatetime,
+          sourceAccountNumber: meta.customerAccountNumber,
+          sourceAccountName: meta.customerAccountName,
+          amount: Number(payment.amount),
+          description: payment.description ?? "DK Bank deposit",
+        });
+        payment.dkTxnStatusId = execResult.txnStatusId;
+        await this.paymentRepo.save(payment);
+      } catch (e: any) {
+        if (otpRecord) {
+          otpRecord.failedAttempts += 1;
+          await this.otpRepo.save(otpRecord);
+        }
+        payment.status = PaymentStatus.FAILED;
+        payment.failureReason = e?.message || "DK debit request failed";
+        await this.paymentRepo.save(payment);
+        throw new BadRequestException(
+          e?.message || "Invalid OTP or transaction failed. Please try again.",
+        );
+      }
     }
 
     this.logger.log(`[Payment] DK debit accepted for payment ${payment.id}`);

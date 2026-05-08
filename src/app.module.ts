@@ -38,6 +38,7 @@ import { Reconciliation } from "./entities/reconciliation.entity";
 import { EventsModule } from "./events/events.module";
 import { SseModule } from "./sse/sse.module";
 import { UserEvent } from "./entities/user-event.entity";
+import { TerModule } from "./ter/ter.module";
 
 @Module({
   imports: [
@@ -126,6 +127,7 @@ import { UserEvent } from "./entities/user-event.entity";
     ReconciliationModule,
     EventsModule,
     SseModule,
+    TerModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

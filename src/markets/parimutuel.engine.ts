@@ -107,7 +107,7 @@ export class ParimutuelEngine implements OnModuleInit {
   > {
     if (amount <= 0)
       throw new BadRequestException("Position amount must be positive");
-    if (amount < 50) throw new BadRequestException("Minimum bet is Nu 50");
+    // Minimum bet validated inside transaction after market is loaded (TER = Nu 10, others = Nu 50)
 
     // Acquire a distributed Redis lock so concurrent bets on the same market
     // are serialised at the application layer before touching the DB.
@@ -158,6 +158,19 @@ export class ParimutuelEngine implements OnModuleInit {
 
         if (market.status !== MarketStatus.OPEN)
           throw new BadRequestException("Market is not open for betting");
+
+        // Market-aware minimum bet: TER markets allow Nu 10, others require Nu 50
+        const minBet = market.externalSource === "ter" ? 10 : 50;
+        if (amount < minBet)
+          throw new BadRequestException(`Minimum bet is Nu ${minBet}`);
+
+        // Enforce bettingClosesAt cutoff (TER markets close betting 2 min before market close)
+        if (
+          market.bettingClosesAt &&
+          new Date() >= new Date(market.bettingClosesAt)
+        ) {
+          throw new BadRequestException("Betting has closed for this market");
+        }
 
         const outcome = market.outcomes.find((o) => o.id === outcomeId);
         if (!outcome)
@@ -948,7 +961,9 @@ export class ParimutuelEngine implements OnModuleInit {
             select: ["id", "bonusBalance", "bonusRealPayoutRemaining"],
           });
           const userBonusBalance = Number(user?.bonusBalance ?? 0);
-          const bonusRealPayoutRemaining = Number(user?.bonusRealPayoutRemaining ?? 0);
+          const bonusRealPayoutRemaining = Number(
+            user?.bonusRealPayoutRemaining ?? 0,
+          );
           const betIsBonusFunded =
             userBonusBalance > 0 && Number(bet.amount) <= userBonusBalance;
 
@@ -973,10 +988,14 @@ export class ParimutuelEngine implements OnModuleInit {
               0,
               bonusRealPayoutRemaining - withdrawablePayout,
             );
-            await em.update(User, { id: bet.userId }, {
-              bonusBalance: newBonusBalance,
-              bonusRealPayoutRemaining: newRealPayoutRemaining,
-            });
+            await em.update(
+              User,
+              { id: bet.userId },
+              {
+                bonusBalance: newBonusBalance,
+                bonusRealPayoutRemaining: newRealPayoutRemaining,
+              },
+            );
           }
 
           bet.payout = rawPayout;
