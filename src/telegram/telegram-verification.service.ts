@@ -76,7 +76,11 @@ export class TelegramVerificationService {
     telegramChatId: string, // ctx.chat.id as string (same for private chats)
     contactUserId: string, // contact.user_id as string  ← must equal telegramUserId
     telegramPhone: string, // contact.phone_number
-  ): Promise<{ linked: boolean; requiresAccountVerification?: boolean; message: string }> {
+  ): Promise<{
+    linked: boolean;
+    requiresAccountVerification?: boolean;
+    message: string;
+  }> {
     // ── Security: user must share their OWN contact ─────────────────────────
     if (contactUserId !== telegramUserId) {
       throw new BadRequestException("Please share your own phone number only.");
@@ -273,7 +277,10 @@ export class TelegramVerificationService {
       user.telegramPhoneHash === user.dkPhoneHash;
 
     //  Check 1: At least one verification path must be complete
-    if (!user.telegramChatId || (!verifiedByPhone && !verifiedByAccountNumber)) {
+    if (
+      !user.telegramChatId ||
+      (!verifiedByPhone && !verifiedByAccountNumber)
+    ) {
       throw new UnauthorizedException(
         "Your Telegram account is not yet verified. " +
           "Please open the Oro bot and share your phone number, or verify via your DK Bank account number.",
@@ -320,20 +327,44 @@ export class TelegramVerificationService {
   ): Promise<{ verified: boolean; message: string }> {
     const user = await this.userRepo.findOneBy({ id: userId });
     if (!user) throw new BadRequestException("User not found.");
+
+    // If dkAccountNumber is missing but CID exists, do a live lookup
+    if (!user.dkAccountNumber && user.dkCid) {
+      this.logger.log(
+        `[AccountVerify] dkAccountNumber missing for user ${userId} — doing live DK lookup for CID ${user.dkCid}`,
+      );
+      try {
+        const account = await this.dkGateway.lookupAccountByCID(user.dkCid);
+        if (account.accountNumber) {
+          await this.userRepo.update(userId, {
+            dkAccountNumber: account.accountNumber,
+            dkAccountName: account.accountName,
+          });
+          user.dkAccountNumber = account.accountNumber;
+        }
+      } catch (err: any) {
+        this.logger.error(
+          `[AccountVerify] Live DK lookup failed: ${err.message}`,
+        );
+      }
+    }
+
     if (!user.dkAccountNumber)
       throw new BadRequestException(
         "No DK Bank account is linked to your Oro account yet. Please link your CID first.",
       );
 
-    const normalizedInput = accountNumber.trim().replace(/\s/g, "");
-    const normalizedStored = user.dkAccountNumber.trim().replace(/\s/g, "");
+    const normalizedInput = accountNumber.trim().replace(/\D/g, "");
+    const normalizedStored = user.dkAccountNumber.trim().replace(/\D/g, "");
 
     if (normalizedInput !== normalizedStored) {
       this.logger.warn(
-        `[AccountVerify] Account number mismatch for user ${userId}`,
+        `[AccountVerify] Account number mismatch for user ${userId} — ` +
+          `input="${normalizedInput.slice(0, 3)}…${normalizedInput.slice(-3)}" (len=${normalizedInput.length}) ` +
+          `stored="${normalizedStored.slice(0, 3)}…${normalizedStored.slice(-3)}" (len=${normalizedStored.length})`,
       );
       throw new BadRequestException(
-        "Account number does not match. Please check your DK Bank account number and try again.",
+        "Account number does not match. Please enter your full DK Bank account number exactly as shown in your DK Bank app or passbook.",
       );
     }
 
