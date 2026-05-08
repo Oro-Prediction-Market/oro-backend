@@ -325,8 +325,28 @@ export class TelegramVerificationService {
     accountNumber: string,
     telegramChatId: string,
   ): Promise<{ verified: boolean; message: string }> {
-    const user = await this.userRepo.findOneBy({ id: userId });
+    let user = await this.userRepo.findOneBy({ id: userId });
     if (!user) throw new BadRequestException("User not found.");
+
+    // If the JWT user doesn't have a dkAccountNumber, check if there's a separate
+    // DK-only user row that should be merged (dual-row scenario).
+    if (!user.dkAccountNumber && !user.dkCid && user.telegramId) {
+      // Look for a DK-only row whose account number matches the input
+      const normalizedInput = accountNumber.trim().replace(/\D/g, "");
+      const dkUser = await this.userRepo
+        .createQueryBuilder("u")
+        .where("REPLACE(u.dkAccountNumber, ' ', '') = :acct", {
+          acct: normalizedInput,
+        })
+        .andWhere("u.id != :userId", { userId: user.id })
+        .getOne();
+      if (dkUser) {
+        this.logger.log(
+          `[AccountVerify] Found DK-only user ${dkUser.id} matching account number — merging into ${user.id}`,
+        );
+        user = await this.mergeUsers(user, dkUser);
+      }
+    }
 
     // If dkAccountNumber is missing but CID exists, do a live lookup
     if (!user.dkAccountNumber && user.dkCid) {
