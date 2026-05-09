@@ -369,7 +369,9 @@ export class MarketsService {
     );
     await this.invalidateMarketCache(marketId);
     if (market) {
-      const winner = market.outcomes?.find((o: any) => o.id === winningOutcomeId);
+      const winner = market.outcomes?.find(
+        (o: any) => o.id === winningOutcomeId,
+      );
       this.telegram
         .postToChannel(
           `✅ <b>Market Resolved: ${market.title}</b>\n\nWinner: <b>${winner?.label ?? winningOutcomeId}</b>`,
@@ -785,6 +787,16 @@ export class MarketsService {
 
   async delete(id: string): Promise<void> {
     const market = await this.findOne(id);
+
+    // For cancelled/upcoming markets, remove related positions first
+    // (cancelled markets have already had bets refunded)
+    if (
+      market.status === MarketStatus.CANCELLED ||
+      market.status === MarketStatus.UPCOMING
+    ) {
+      await this.dataSource.getRepository(Position).delete({ marketId: id });
+    }
+
     await this.marketRepo.remove(market);
     await this.invalidateMarketCache(id);
   }
