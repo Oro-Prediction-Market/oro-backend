@@ -145,6 +145,7 @@ export class MarketsService {
         externalMatchId: dto.externalMatchId ?? null,
         externalSource: dto.externalSource ?? null,
         externalMarketType: dto.externalMarketType ?? null,
+        settlementSource: dto.settlementSource ?? null,
       });
 
       const saved = await this.marketRepo.save(market);
@@ -267,6 +268,8 @@ export class MarketsService {
     if (dto.imageUrlAlt !== undefined) market.imageUrlAlt = dto.imageUrlAlt;
     if (dto.resolutionCriteria !== undefined)
       market.resolutionCriteria = dto.resolutionCriteria;
+    if (dto.settlementSource !== undefined)
+      market.settlementSource = dto.settlementSource ?? null;
     if (dto.opensAt) market.opensAt = new Date(dto.opensAt);
     if (dto.closesAt) market.closesAt = new Date(dto.closesAt);
     if (dto.houseEdgePct !== undefined) market.houseEdgePct = dto.houseEdgePct;
