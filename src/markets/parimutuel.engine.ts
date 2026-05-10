@@ -1228,13 +1228,14 @@ Good luck! 🍀
             totalPayout += payout;
           }
         }
-        const profit = (totalPayout - totalStake).toFixed(2);
+        const profitRaw = parseFloat((totalPayout - totalStake).toFixed(2));
+        const profitLabel = profitRaw >= 0 ? 'profit' : 'net loss';
 
         let msg =
           `✅ <b>You predicted correctly!</b>\n\n` +
           `📊 ${market.title}\n` +
           `🎯 Your pick: <b>${winner.label}</b>\n` +
-          `💰 Payout: <b>Nu ${totalPayout.toLocaleString()}</b> (+Nu ${profit})\n`;
+          `💰 Payout: <b>Nu ${totalPayout.toLocaleString()}</b> (${profitLabel} Nu ${Math.abs(profitRaw).toLocaleString()})\n`;
 
         if (accuracy)
           msg += `⭐ Accuracy: <b>${accuracy}</b> over ${totalPredictions} predictions\n`;

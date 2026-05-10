@@ -1,0 +1,16 @@
+{
+  "folders": [
+    {
+      "path": ".",
+    },
+    {
+      "path": "../oro-admin",
+    },
+    {
+      "path": "../oro-tma",
+    },
+    {
+      "path": "../oro-pwa",
+    },
+  ],
+}
