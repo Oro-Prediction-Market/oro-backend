@@ -451,7 +451,7 @@ export class DKBankPaymentService {
               `💰 New balance: <b>Nu ${newBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b>\n` +
               `🕐 ${ts}\n` +
               `🔖 Ref: <code>${payment.id.slice(0, 8).toUpperCase()}</code>\n\n` +
-              `Thank you, ${firstName}! Open Oro to start placing bets. 🎯`,
+              `Thank you, ${firstName}! Open Oro to start predicting. 🎯`,
           )
           .catch((err) =>
             this.logger.warn(
