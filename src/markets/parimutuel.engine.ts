@@ -943,6 +943,68 @@ export class ParimutuelEngine implements OnModuleInit {
       const winnerPool = Number(winner.totalBetAmount);
       const bets = await em.find(Position, { where: { marketId: market.id } });
 
+      // ── Thin-pool guard ───────────────────────────────────────────────────────
+      // Covers Scenario A (all bets on winning side) and Scenario B (all bets on
+      // losing side) with a single check: a real market needs at least one bettor
+      // on each side. If not, refund everyone instead of letting parimutuel math
+      // pay "winners" less than they staked or silently keep the losing pool.
+      const minUniqueBettors = Number(
+        this.configService.get("MIN_UNIQUE_BETTORS", "2"),
+      );
+      const uniqueBettorIds = new Set(bets.map((b) => b.userId));
+      const winningBets = bets.filter((b) => b.outcomeId === winner.id);
+      const losingSideBettors = bets.length - winningBets.length;
+
+      if (
+        uniqueBettorIds.size < minUniqueBettors ||
+        losingSideBettors === 0 ||   // Scenario A: all bets on winning side
+        winningBets.length === 0     // Scenario B: no bets on winning side (winnerPool=0)
+      ) {
+        await this.refundPositions(
+          em,
+          bets,
+          "Thin pool — market refunded",
+        );
+        market.status = MarketStatus.SETTLED;
+        await em.save(Market, market);
+
+        // Notify each unique bettor
+        const seenForDm = new Set<string>();
+        for (const bet of bets) {
+          if (seenForDm.has(bet.userId)) continue;
+          seenForDm.add(bet.userId);
+          const user = await em.findOne(User, {
+            where: { id: bet.userId },
+            select: ["id", "telegramId"],
+          });
+          if (user?.telegramId) {
+            this.telegramSimple
+              .sendMessage(
+                Number(user.telegramId),
+                `⚠️ <b>Market Refunded</b>\n\n` +
+                  `📊 <b>${market.title}</b>\n\n` +
+                  `This market didn't get enough participation to settle fairly. ` +
+                  `Your <b>Nu ${Number(bet.amount).toLocaleString()}</b> is back in your wallet.`,
+              )
+              .catch(() => undefined);
+          }
+        }
+
+        const settlement = em.create(Settlement, {
+          marketId: market.id,
+          winningOutcomeId: winner.id,
+          totalPositions: bets.length,
+          winningPositions: 0,
+          totalPool,
+          houseAmount: 0,
+          payoutPool: 0,
+          totalPaidOut: 0,
+          cancelReason: "thin_pool",
+        });
+        return em.save(Settlement, settlement);
+      }
+      // ── End thin-pool guard ───────────────────────────────────────────────────
+
       let totalPaidOut = 0;
       let winningPositions = 0;
 
@@ -1390,25 +1452,37 @@ Good luck! 🍀
       await em.save(Market, market);
 
       const bets = await em.find(Position, { where: { marketId } });
-      for (const bet of bets) {
-        if (bet.status === PositionStatus.PENDING) {
-          const balanceBefore = await this.getCreditsBalance(em, bet.userId);
-          await em.save(
-            Transaction,
-            em.create(Transaction, {
-              type: TransactionType.REFUND,
-              amount: Number(bet.amount),
-              balanceBefore,
-              balanceAfter: balanceBefore + Number(bet.amount),
-              positionId: bet.id,
-              userId: bet.userId,
-              note: "Market cancelled — refund",
-            }),
-          );
-          bet.status = PositionStatus.REFUNDED;
-          await em.save(Position, bet);
-        }
-      }
+      await this.refundPositions(em, bets, "Market cancelled — refund");
     });
+  }
+
+  /**
+   * Shared refund loop — writes a REFUND Transaction and flips status to
+   * REFUNDED for every PENDING position in `bets`. Caller is responsible for
+   * setting market status and writing the Settlement record.
+   */
+  private async refundPositions(
+    em: { getRepository: Function; find: Function; save: Function; create: Function },
+    bets: Position[],
+    note: string,
+  ): Promise<void> {
+    for (const bet of bets) {
+      if (bet.status !== PositionStatus.PENDING) continue;
+      const balanceBefore = await this.getCreditsBalance(em, bet.userId);
+      await em.save(
+        Transaction,
+        em.create(Transaction, {
+          type: TransactionType.REFUND,
+          amount: Number(bet.amount),
+          balanceBefore,
+          balanceAfter: balanceBefore + Number(bet.amount),
+          positionId: bet.id,
+          userId: bet.userId,
+          note,
+        }),
+      );
+      bet.status = PositionStatus.REFUNDED;
+      await em.save(Position, bet);
+    }
   }
 }

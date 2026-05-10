@@ -60,7 +60,7 @@ function makeService(overrides: {
   const telegram = overrides.telegram ?? makeTelegram();
 
   return {
-    svc: new LeaguesService(groupRepo as any, membershipRepo as any, userRepo as any, telegram as any),
+    svc: new LeaguesService(groupRepo as any, membershipRepo as any, userRepo as any, telegram as any, {} as any),
     groupRepo,
     membershipRepo,
     userRepo,
