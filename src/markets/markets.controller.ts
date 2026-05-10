@@ -198,24 +198,4 @@ export class MarketsController {
     return this.marketsService.submitDispute(req.user.userId, id, dto);
   }
 
-  @Post(":id/bets/wallet")
-  @Public()
-  @ApiOperation({ summary: "Place a bet using TON wallet (no login required)" })
-  async placeBetWithWallet(
-    @Param("id") id: string,
-    @Body()
-    dto: {
-      outcomeId: string;
-      amount: number;
-      walletAddress: string;
-      txHash?: string;
-    },
-  ) {
-    // TODO: Verify TON transaction on-chain before accepting bet
-    return {
-      message:
-        "Wallet betting endpoint - TODO: implement on-chain verification",
-      dto,
-    };
-  }
 }
