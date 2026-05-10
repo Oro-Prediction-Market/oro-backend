@@ -419,20 +419,11 @@ export class DKBankPaymentService {
     // ── Telegram success notification ─────────────────────────────────────────
     const depositedAmount = Number(payment.amount);
     try {
-      const [user, balRow] = await Promise.all([
-        this.userRepo.findOne({
-          where: { id: userId },
-          select: ["telegramId", "firstName"],
-        }),
-        this.dataSource
-          .getRepository(Transaction)
-          .createQueryBuilder("t")
-          .select("COALESCE(SUM(t.amount), 0)", "balance")
-          .where("t.userId = :userId", { userId })
-          .getRawOne(),
-      ]);
+      const user = await this.userRepo.findOne({
+        where: { id: userId },
+        select: ["telegramId", "firstName"],
+      });
       if (user?.telegramId) {
-        const newBalance = Number(balRow?.balance ?? 0);
         const firstName = user.firstName?.trim() || "there";
         const ts = new Date().toLocaleString("en-US", {
           timeZone: "Asia/Thimphu",
@@ -446,9 +437,8 @@ export class DKBankPaymentService {
         await this.telegramService
           .sendMessage(
             Number(user.telegramId),
-            `✅ <b>Deposit Successful</b>\n\n` +
+            `✅ <b>Top Up Successful</b>\n\n` +
               `<b>Nu ${depositedAmount.toLocaleString()}</b> has been credited to your Oro wallet.\n\n` +
-              `💰 New balance: <b>Nu ${newBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b>\n` +
               `🕐 ${ts}\n` +
               `🔖 Ref: <code>${payment.id.slice(0, 8).toUpperCase()}</code>\n\n` +
               `Thank you, ${firstName}! Open Oro to start predicting. 🎯`,

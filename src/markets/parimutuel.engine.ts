@@ -117,7 +117,6 @@ export class ParimutuelEngine implements OnModuleInit {
     let betOutcome: Outcome | null = null;
     let betUser: User | null = null;
     let betUserTelegramId: string | null = null;
-    let balanceAfterBet = 0;
     let capturedHouseEdgePct = 8; // default; overwritten inside transaction
 
     try {
@@ -308,9 +307,6 @@ export class ParimutuelEngine implements OnModuleInit {
           }),
         );
 
-        // Store balance after bet for notification
-        balanceAfterBet = balanceBefore - amount;
-
         return savedPosition;
       });
 
@@ -321,7 +317,6 @@ export class ParimutuelEngine implements OnModuleInit {
           betMarket,
           betOutcome,
           amount,
-          balanceAfterBet,
         ).catch((err: any) => {
           this.logger.error(
             `Failed to send bet placement notification: ${err.message}`,
@@ -1098,7 +1093,6 @@ export class ParimutuelEngine implements OnModuleInit {
     market: Market,
     outcome: Outcome,
     amount: number,
-    balanceAfter: number,
   ): Promise<void> {
     if (!user.telegramId) {
       this.logger.debug(
@@ -1116,13 +1110,11 @@ export class ParimutuelEngine implements OnModuleInit {
     }
 
     const message = `
-✅ <b>Bet Placed Successfully!</b>
+✅ <b>Prediction Locked In!</b>
 
 📊 <b>Market:</b> ${market.title}
-🎯 <b>Outcome:</b> ${outcome.label}
+🎯 <b>Pick:</b> ${outcome.label}
 💰 <b>Amount:</b> Nu ${amount.toLocaleString()}
-
-💳 <b>New Balance:</b> Nu ${balanceAfter.toLocaleString()}
 
 Good luck! 🍀
     `.trim();
