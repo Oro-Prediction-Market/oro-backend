@@ -150,11 +150,6 @@ export class MarketsService {
       const saved = await this.marketRepo.save(market);
       await this.invalidateMarketCache();
       const full = await this.findOne(saved.id);
-      this.telegram
-        .postToChannel(
-          `New market: <b>${full.title}</b>\nCloses: ${new Date(full.closesAt).toLocaleString()}\nOutcomes: ${full.outcomes.map((o) => o.label).join(" vs ")}`,
-        )
-        .catch(() => undefined);
       return full;
     } catch (err) {
       console.error("❌ Error in MarketsService.create:", err);
