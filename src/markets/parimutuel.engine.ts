@@ -979,12 +979,11 @@ export class ParimutuelEngine implements OnModuleInit {
           });
           if (user?.telegramId) {
             this.telegramSimple
-              .sendMessage(
+              .sendRefundNotification(
                 Number(user.telegramId),
-                `⚠️ <b>Market Refunded</b>\n\n` +
-                  `📊 <b>${market.title}</b>\n\n` +
-                  `This market didn't get enough participation to settle fairly. ` +
-                  `Your <b>Nu ${Number(bet.amount).toLocaleString()}</b> is back in your wallet.`,
+                market.title,
+                Number(bet.amount),
+                "thin_pool",
               )
               .catch(() => undefined);
           }

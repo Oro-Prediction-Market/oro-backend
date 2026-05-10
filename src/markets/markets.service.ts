@@ -414,11 +414,11 @@ export class MarketsService {
         if (!user?.telegramId || seenUsers.has(user.id)) continue;
         seenUsers.add(user.id);
         this.telegram
-          .sendMessage(
+          .sendRefundNotification(
             Number(user.telegramId),
-            `❌ <b>Market Cancelled</b>\n\n` +
-              `📊 <b>${market.title}</b>\n\n` +
-              `Your bet of <b>Nu ${Number(pos.amount).toLocaleString()}</b> has been fully refunded to your balance.`,
+            market.title,
+            Number(pos.amount),
+            "market_cancelled",
           )
           .catch(() => undefined);
       }

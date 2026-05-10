@@ -175,6 +175,34 @@ export class TelegramSimpleService {
     }
   }
 
+  async sendRefundNotification(
+    telegramId: number,
+    marketTitle: string,
+    amount: number,
+    reason: "market_cancelled" | "thin_pool" | "settlement_source_failure",
+  ): Promise<void> {
+    let text: string;
+    if (reason === "market_cancelled") {
+      text =
+        `❌ <b>Market Cancelled</b>\n\n` +
+        `📊 <b>${marketTitle}</b>\n\n` +
+        `Your bet of <b>Nu ${amount.toLocaleString()}</b> has been fully refunded to your balance.`;
+    } else if (reason === "thin_pool") {
+      text =
+        `⚠️ <b>Market Refunded</b>\n\n` +
+        `📊 <b>${marketTitle}</b>\n\n` +
+        `This market didn't get enough participation to settle fairly. ` +
+        `Your <b>Nu ${amount.toLocaleString()}</b> is back in your wallet.`;
+    } else {
+      text =
+        `⚠️ <b>Market Refunded</b>\n\n` +
+        `📊 <b>${marketTitle}</b>\n\n` +
+        `We couldn't verify the result through our settlement source. ` +
+        `Your <b>Nu ${amount.toLocaleString()}</b> is back in your wallet.`;
+    }
+    await this.sendMessage(telegramId, text);
+  }
+
   async sendPositionResult(bet: Position, market: Market): Promise<void> {
     const user = await this.userRepository.findOne({
       where: { id: bet.userId },
