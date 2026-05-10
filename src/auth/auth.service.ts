@@ -741,7 +741,7 @@ export class AuthService {
     });
 
     // Send OTP to user's Telegram
-    const message = `🔐 <b>Tara Manual Login</b>\n\nYour OTP: <code>${otp}</code>\n\nValid for 5 minutes. Do not share this code.\n\nIf you didn't request this, ignore this message.`;
+    const message = `🔐 <b>Oro Manual Login</b>\n\nYour OTP: <code>${otp}</code>\n\nValid for 5 minutes. Do not share this code.\n\nIf you didn't request this, ignore this message.`;
     await this.telegramSimple.sendMessage(Number(telegramId), message);
 
     this.logger.log(`[ManualLogin] OTP sent to Telegram ID ${telegramId}`);
