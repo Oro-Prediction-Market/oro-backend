@@ -6,6 +6,7 @@ import { TelegramGroup } from "../entities/telegram-group.entity";
 import { GroupMembership } from "../entities/group-membership.entity";
 import { User } from "../entities/user.entity";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
+import { RedisService } from "../redis/redis.service";
 
 export interface LeaderboardEntry {
   rank: number;
@@ -30,6 +31,7 @@ export class LeaguesService {
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
     private readonly telegramService: TelegramSimpleService,
+    private readonly redis: RedisService,
   ) {}
 
   /** Returns true if the telegramId user has made at least one prediction on Oro. */
@@ -135,11 +137,10 @@ export class LeaguesService {
     return aboveCount + 1;
   }
 
-  /** Returns top-10 members of a group sorted by reputationScore DESC. */
-  async getGroupLeaderboard(chatId: string): Promise<LeaderboardEntry[]> {
-    const rows = await this.membershipRepo
-      .createQueryBuilder("m")
-      .innerJoin("m.user", "u")
+  /** Returns top-10 predictors sorted by reputationScore DESC. */
+  async getGroupLeaderboard(_chatId: string): Promise<LeaderboardEntry[]> {
+    const rows = await this.userRepo
+      .createQueryBuilder("u")
       .select([
         "u.id",
         "u.firstName",
@@ -149,8 +150,7 @@ export class LeaguesService {
         "u.totalPredictions",
         "u.correctPredictions",
       ])
-      .where("m.chatId = :chatId", { chatId })
-      .andWhere("u.totalPredictions > 0")
+      .where("u.totalPredictions > 0")
       .orderBy("u.reputationScore", "DESC", "NULLS LAST")
       .addOrderBy("u.correctPredictions", "DESC")
       .limit(10)
@@ -177,6 +177,9 @@ export class LeaguesService {
 
   /** Format and post the standings message for a single group. */
   async postStandingsToGroup(chatId: string, groupTitle?: string | null): Promise<void> {
+    const lock = await this.redis.acquireLock(`standings:${chatId}`, 10);
+    if (!lock) return;
+
     let group = await this.groupRepo.findOne({ where: { chatId } });
     if (!group) {
       await this.upsertGroup(chatId, groupTitle ?? null);
