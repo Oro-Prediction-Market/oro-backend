@@ -61,6 +61,11 @@ export class CreateMarketDto {
   @IsString()
   externalSource?: string;
 
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  settlementSource?: string;
+
   /** "match-winner" | "over-under" — used by the keeper to auto-propose results */
   @ApiPropertyOptional()
   @IsOptional()

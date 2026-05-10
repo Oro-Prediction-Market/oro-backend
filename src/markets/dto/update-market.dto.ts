@@ -43,4 +43,9 @@ export class UpdateMarketDto {
   @IsOptional()
   @IsString()
   mechanism?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  settlementSource?: string;
 }
