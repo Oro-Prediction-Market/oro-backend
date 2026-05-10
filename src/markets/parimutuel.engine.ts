@@ -1238,7 +1238,7 @@ Good luck! 🍀
           `💰 Payout: <b>Nu ${totalPayout.toLocaleString()}</b> (${profitLabel} Nu ${Math.abs(profitRaw).toLocaleString()})\n`;
 
         if (accuracy)
-          msg += `⭐ Accuracy: <b>${accuracy}</b> over ${totalPredictions} predictions\n`;
+          msg += `⭐ Insight: <b>${accuracy}</b> over ${totalPredictions} ${totalPredictions === 1 ? 'prediction' : 'predictions'}\n`;
         if (tierUpgraded)
           msg += `\n🏆 <b>Tier upgrade! You are now ${tierNow.charAt(0).toUpperCase() + tierNow.slice(1)}.</b>`;
 
@@ -1286,7 +1286,7 @@ Good luck! 🍀
           `🎯 Your pick: ${outcome?.label ?? "unknown"} · Winner: <b>${winner.label}</b>\n`;
 
         if (accuracy)
-          msg += `⭐ Accuracy: <b>${accuracy}</b> over ${totalPredictions} predictions\n`;
+          msg += `⭐ Insight: <b>${accuracy}</b> over ${totalPredictions} ${totalPredictions === 1 ? 'prediction' : 'predictions'}\n`;
         msg += `\n💡 Every prediction builds your reputation. Keep going.`;
 
         await this.telegramSimple.sendMessage(chatId, msg).catch(() => {});
