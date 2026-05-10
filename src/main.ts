@@ -64,9 +64,9 @@ async function bootstrap() {
 
   // CORS
   const isProduction = process.env.NODE_ENV === "production";
-  const allowedOrigins: (string | RegExp)[] = [
-    "https://tara-parimutuel.vercel.app",
-  ];
+  // Production origins are set via CORS_ORIGIN env var (comma-separated).
+  // See comment below — do not hardcode deployment URLs here.
+  const allowedOrigins: (string | RegExp)[] = [];
   if (!isProduction) {
     allowedOrigins.push(
       "http://localhost:5173",
