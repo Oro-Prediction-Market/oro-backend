@@ -138,7 +138,7 @@ export class Market {
   externalSource: string | null;
 
   /** Human-readable settlement source shown to users, e.g. "Bhutan Cricket Board official results" */
-  @Column({ type: "varchar", length: 255, nullable: true })
+  @Column({ type: "text", nullable: true })
   settlementSource: string | null;
 
   /** market type for auto-resolution: "match-winner" | "over-under" */
