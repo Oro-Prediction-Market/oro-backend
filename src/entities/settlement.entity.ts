@@ -34,6 +34,10 @@ export class Settlement {
   @Column({ type: "decimal", precision: 18, scale: 2, default: 0 })
   totalPaidOut: number;
 
+  /** "thin_pool" | null — set when settlement was refunded rather than paid out */
+  @Column({ type: "varchar", length: 32, nullable: true })
+  cancelReason: string | null;
+
   @CreateDateColumn()
   settledAt: Date;
 }
