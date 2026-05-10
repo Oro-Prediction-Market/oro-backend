@@ -377,21 +377,28 @@ export class ParimutuelEngine implements OnModuleInit {
           dayInCycle === 3 ||
           dayInCycle === 1;
         if (shouldNotify) {
-          let msg: string;
-          if (boostActive) {
-            msg = `🔥 <b>Day 7 streak!</b> Your next winning payout gets a <b>1.2× boost</b>. Keep it going!`;
-          } else if (dayInCycle === 5) {
-            msg = `🔥 <b>5-day streak!</b> Just 2 more days to unlock your <b>1.2× payout boost</b>. Predict tomorrow to keep it alive.`;
-          } else if (dayInCycle === 3) {
-            msg = `⚡ <b>3-day streak!</b> 4 more days until your bonus boost. Keep predicting daily.`;
-          } else {
-            msg = `Streak started! Predict daily to earn a Day-7 bonus boost.`;
-          }
-          this.telegramSimple
-            .sendMessage(streakChatId, msg)
-            .catch((err: any) =>
-              this.logger.error(`Streak push failed: ${err.message}`),
-            );
+          const sendStreak = async () => {
+            let msg: string;
+            if (boostActive) {
+              msg = `🔥 <b>Day 7 streak!</b> Your next winning payout gets a <b>1.2× boost</b>. Keep it going!`;
+            } else if (dayInCycle === 5) {
+              msg = `🔥 <b>5-day streak!</b> Just 2 more days to unlock your <b>1.2× payout boost</b>. Predict tomorrow to keep it alive.`;
+            } else if (dayInCycle === 3) {
+              msg = `⚡ <b>3-day streak!</b> 4 more days until your bonus boost. Keep predicting daily.`;
+            } else {
+              // day-1: deduplicate so only the first bet of a new streak fires this
+              const todayUtc = new Date().toISOString().slice(0, 10);
+              const notifyKey = `streak:day1:notified:${userId}:${todayUtc}`;
+              const alreadyNotified = await this.redis.get(notifyKey);
+              if (alreadyNotified) return;
+              await this.redis.setEx(notifyKey, 48 * 3600, '1');
+              msg = `Streak started! Predict daily to earn a Day-7 bonus boost.`;
+            }
+            await this.telegramSimple.sendMessage(streakChatId, msg);
+          };
+          sendStreak().catch((err: any) =>
+            this.logger.error(`Streak push failed: ${err.message}`),
+          );
         }
       }
 
