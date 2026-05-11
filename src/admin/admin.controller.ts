@@ -615,10 +615,14 @@ export class AdminController {
     @Query("limit") limit = "20",
   ) {
     const take = Math.min(Number(limit) || 20, 100);
-    const skip = (Math.max(Number(page), 1) - 1) * take;
+    const pageNum = Math.max(Number(page), 1);
+    const skip = (pageNum - 1) * take;
+
+    // Exclude orphaned settlements (deleted markets) and deduplicate:
+    // keep only the earliest settlement row per market.
     const [data, total] = await this.settlementRepo
       .createQueryBuilder("settlement")
-      .leftJoinAndMapOne(
+      .innerJoinAndMapOne(
         "settlement.market",
         Market,
         "market",
@@ -630,14 +634,24 @@ export class AdminController {
         "outcome",
         "outcome.id = settlement.winningOutcomeId",
       )
+      .where((qb) => {
+        const sub = qb
+          .subQuery()
+          .select('MIN(s2."settledAt")')
+          .from("settlements", "s2")
+          .where('s2."marketId" = settlement."marketId"')
+          .getQuery();
+        return `settlement."settledAt" = (${sub})`;
+      })
       .orderBy("settlement.settledAt", "DESC")
       .skip(skip)
       .take(take)
       .getManyAndCount();
+
     return {
       data,
       total,
-      page: Math.max(Number(page), 1),
+      page: pageNum,
       pages: Math.ceil(total / take) || 1,
     };
   }
