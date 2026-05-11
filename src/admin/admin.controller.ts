@@ -196,7 +196,7 @@ export class AdminController {
         COALESCE((
           SELECT SUM(pt.amount)
           FROM transactions pt
-          WHERE pt.type = 'position_payout'
+          WHERE pt.type = 'bet_payout'
             AND pt."isBonus" = false
             AND pt.amount > 0
             AND pt."positionId" IN (
@@ -1041,7 +1041,7 @@ export class AdminController {
         `
       SELECT COALESCE(SUM(pt.amount), 0)::float AS total
       FROM transactions pt
-      WHERE pt.type = 'position_payout'
+      WHERE pt.type = 'bet_payout'
         AND pt."isBonus" = false
         AND pt.amount > 0
         AND pt."positionId" IN (
