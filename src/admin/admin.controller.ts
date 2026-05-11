@@ -549,6 +549,24 @@ export class AdminController {
     return this.marketsService.delete(id);
   }
 
+  @Delete("markets/cleanup/zero-pool")
+  @ApiOperation({
+    summary: "Delete all markets with zero pool volume (no bets placed)",
+  })
+  async purgeEmptyMarkets(@Request() req: any) {
+    const count = await this.marketsService.deleteZeroPool();
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action: AuditAction.MARKET_DELETE,
+      entityType: "market",
+      entityId: "bulk-zero-pool",
+      before: { count },
+      ipAddress: req.ip,
+    });
+    return { deleted: count };
+  }
+
   // ── Fixtures ──────────────────────────────────────────────────────────────
   @Get("fixtures")
   @ApiOperation({

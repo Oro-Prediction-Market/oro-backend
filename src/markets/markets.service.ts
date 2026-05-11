@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
 } from "@nestjs/common";
 import { InjectRepository, InjectDataSource } from "@nestjs/typeorm";
 import { Repository, DataSource } from "typeorm";
@@ -785,17 +786,42 @@ export class MarketsService {
 
   async delete(id: string): Promise<void> {
     const market = await this.findOne(id);
+    const hasNoBets = parseFloat(String(market.totalPool ?? 0)) === 0;
 
-    // For cancelled/upcoming markets, remove related positions first
-    // (cancelled markets have already had bets refunded)
     if (
-      market.status === MarketStatus.CANCELLED ||
-      market.status === MarketStatus.UPCOMING
+      !hasNoBets &&
+      market.status !== MarketStatus.CANCELLED &&
+      market.status !== MarketStatus.UPCOMING
     ) {
-      await this.dataSource.getRepository(Position).delete({ marketId: id });
+      throw new ForbiddenException(
+        'Cannot delete a market that has bets placed on it.',
+      );
     }
+
+    // Remove positions for zero-pool, cancelled, or upcoming markets
+    // (cancelled markets have already had bets refunded; zero-pool have none)
+    await this.dataSource.getRepository(Position).delete({ marketId: id });
 
     await this.marketRepo.remove(market);
     await this.invalidateMarketCache(id);
+  }
+
+  async deleteZeroPool(): Promise<number> {
+    const emptyMarkets = await this.marketRepo
+      .createQueryBuilder('m')
+      .where('m.totalPool = :zero OR m.totalPool IS NULL', { zero: 0 })
+      .getMany();
+
+    if (emptyMarkets.length === 0) return 0;
+
+    for (const market of emptyMarkets) {
+      await this.dataSource
+        .getRepository(Position)
+        .delete({ marketId: market.id });
+      await this.marketRepo.remove(market);
+      await this.invalidateMarketCache(market.id);
+    }
+
+    return emptyMarkets.length;
   }
 }
