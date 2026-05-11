@@ -921,7 +921,7 @@ export class AdminController {
       FROM (
         SELECT DISTINCT ON ("marketId") *
         FROM settlements
-        ORDER BY "marketId", "createdAt" ASC
+        ORDER BY "marketId", "settledAt" ASC
       ) s
     `).then((rows: any[]) => rows[0]);
 
