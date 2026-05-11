@@ -282,6 +282,7 @@ export class ParimutuelEngine implements OnModuleInit {
         await em.update(User, { id: userId }, { lastActiveAt: new Date() });
 
         // Create bet record
+        const userBonusBalanceAtBet = Number(user.bonusBalance ?? 0);
         const bet = em.create(Position, {
           userId,
           marketId,
@@ -291,6 +292,10 @@ export class ParimutuelEngine implements OnModuleInit {
           oddsAtPlacement: outcome.currentOdds,
           predictedProbability,
           poolPctAtBet,
+          // Snapshot whether this bet was funded by bonus credits — used later
+          // in reconciliation to track real-money exposure from bonus losses.
+          isBonusFunded:
+            amount <= userBonusBalanceAtBet && userBonusBalanceAtBet > 0,
         });
         const savedPosition = await em.save(Position, bet);
 
@@ -386,7 +391,7 @@ export class ParimutuelEngine implements OnModuleInit {
               const notifyKey = `streak:day1:notified:${userId}:${todayUtc}`;
               const alreadyNotified = await this.redis.get(notifyKey);
               if (alreadyNotified) return;
-              await this.redis.setEx(notifyKey, 48 * 3600, '1');
+              await this.redis.setEx(notifyKey, 48 * 3600, "1");
               msg = `Streak started! Predict daily to earn a Day-7 bonus boost.`;
             }
             await this.telegramSimple.sendMessage(streakChatId, msg);
@@ -990,14 +995,10 @@ export class ParimutuelEngine implements OnModuleInit {
 
       if (
         uniqueBettorIds.size < minUniqueBettors ||
-        losingSideBettors === 0 ||   // Scenario A: all bets on winning side
-        winningBets.length === 0     // Scenario B: no bets on winning side (winnerPool=0)
+        losingSideBettors === 0 || // Scenario A: all bets on winning side
+        winningBets.length === 0 // Scenario B: no bets on winning side (winnerPool=0)
       ) {
-        await this.refundPositions(
-          em,
-          bets,
-          "Thin pool — market refunded",
-        );
+        await this.refundPositions(em, bets, "Thin pool — market refunded");
         market.status = MarketStatus.SETTLED;
         await em.save(Market, market);
 
@@ -1322,7 +1323,7 @@ Good luck! 🍀
           }
         }
         const profitRaw = parseFloat((totalPayout - totalStake).toFixed(2));
-        const profitLabel = profitRaw >= 0 ? 'profit' : 'net loss';
+        const profitLabel = profitRaw >= 0 ? "profit" : "net loss";
 
         let msg =
           `✅ <b>You predicted correctly!</b>\n\n` +
@@ -1331,7 +1332,7 @@ Good luck! 🍀
           `💰 Payout: <b>Nu ${totalPayout.toLocaleString()}</b> (${profitLabel} Nu ${Math.abs(profitRaw).toLocaleString()})\n`;
 
         if (accuracy)
-          msg += `⭐ Insight: <b>${accuracy}</b> over ${totalPredictions} ${totalPredictions === 1 ? 'prediction' : 'predictions'}\n`;
+          msg += `⭐ Insight: <b>${accuracy}</b> over ${totalPredictions} ${totalPredictions === 1 ? "prediction" : "predictions"}\n`;
         if (tierUpgraded)
           msg += `\n🏆 <b>Tier upgrade! You are now ${tierNow.charAt(0).toUpperCase() + tierNow.slice(1)}.</b>`;
 
@@ -1379,7 +1380,7 @@ Good luck! 🍀
           `🎯 Your pick: ${outcome?.label ?? "unknown"} · Winner: <b>${winner.label}</b>\n`;
 
         if (accuracy)
-          msg += `⭐ Insight: <b>${accuracy}</b> over ${totalPredictions} ${totalPredictions === 1 ? 'prediction' : 'predictions'}\n`;
+          msg += `⭐ Insight: <b>${accuracy}</b> over ${totalPredictions} ${totalPredictions === 1 ? "prediction" : "predictions"}\n`;
         msg += `\n💡 Every prediction builds your reputation. Keep going.`;
 
         await this.telegramSimple.sendMessage(chatId, msg).catch(() => {});
@@ -1494,7 +1495,12 @@ Good luck! 🍀
    * setting market status and writing the Settlement record.
    */
   private async refundPositions(
-    em: { getRepository: Function; find: Function; save: Function; create: Function },
+    em: {
+      getRepository: Function;
+      find: Function;
+      save: Function;
+      create: Function;
+    },
     bets: Position[],
     note: string,
   ): Promise<void> {

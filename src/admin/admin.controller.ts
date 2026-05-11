@@ -178,6 +178,45 @@ export class AdminController {
              COUNT(*) AS "totalMarkets"
       FROM markets
     `);
+    // Bonus liability metrics:
+    // "Bonus Exposure Realised" = sum of real payouts paid to WINNING bettors
+    // that came from pools containing bonus-funded LOSING bets.
+    //
+    // Calculation: for each settled market, if any losing position was bonus-funded,
+    // the pro-rata share of the payout pool attributable to those losing positions
+    // is real Nu the platform had to fund from nothing.
+    //
+    // Approximation via POSITION_PAYOUT transactions on markets that had bonus-funded
+    // losing positions: SUM of POSITION_PAYOUT (isBonus=false) for markets where
+    // at least one LOST position had isBonusFunded=true.
+    const bonusResult = await this.dataSource.query(`
+      SELECT
+        COALESCE(SUM(CASE WHEN t.type = 'free_credit' AND t."isBonus" = true THEN t.amount ELSE 0 END), 0) AS "totalBonusIssued",
+        -- Real payouts on markets that had at least one bonus-funded LOSING position
+        COALESCE((
+          SELECT SUM(pt.amount)
+          FROM transactions pt
+          WHERE pt.type = 'position_payout'
+            AND pt."isBonus" = false
+            AND pt.amount > 0
+            AND pt."positionId" IN (
+              SELECT p_win.id FROM positions p_win
+              WHERE p_win.status = 'won'
+                AND p_win."marketId" IN (
+                  SELECT DISTINCT p_loss."marketId"
+                  FROM positions p_loss
+                  WHERE p_loss.status IN ('lost', 'refunded')
+                    AND p_loss."isBonusFunded" = true
+                )
+            )
+        ), 0) AS "bonusFundedRealPayouts"
+      FROM transactions t
+    `);
+    // Current outstanding bonus balance across all users
+    const bonusBalanceResult = await this.dataSource.query(`
+      SELECT COALESCE(SUM("bonusBalance"), 0) AS "outstandingBonusBalance"
+      FROM users
+    `);
 
     return {
       houseIncome: parseFloat(houseResult[0].houseIncome),
@@ -187,6 +226,19 @@ export class AdminController {
       activeCount: parseInt(activeResult[0].activeCount),
       allTimeVolume: parseFloat(allTimeResult[0].allTimeVolume),
       totalMarkets: parseInt(allTimeResult[0].totalMarkets),
+      bonus: {
+        // Total bonus credits ever created (welcome bonuses + payout-overflow credits)
+        totalIssued: parseFloat(bonusResult[0].totalBonusIssued),
+        // Current unspent bonus balance sitting in user wallets
+        outstandingBalance: parseFloat(
+          bonusBalanceResult[0].outstandingBonusBalance,
+        ),
+        // Real Nu paid out to OTHER users because a bonus bettor lost
+        // This is the platform's actual bonus exposure realised as real money
+        realPayoutsFundedByBonus: parseFloat(
+          bonusResult[0].bonusFundedRealPayouts,
+        ),
+      },
     };
   }
 
@@ -927,7 +979,10 @@ export class AdminController {
     // settlement per market so house earnings and counts are not inflated.
     // Deduplicate settlements: join to markets so orphaned rows (deleted markets)
     // are excluded, and DISTINCT ON picks the first canonical row per market.
-    const settlementRow = await em.getRepository(Settlement).query(`
+    const settlementRow = await em
+      .getRepository(Settlement)
+      .query(
+        `
       SELECT
         COALESCE(SUM(s."totalPool"), 0)    AS "totalPool",
         COALESCE(SUM(s."houseAmount"), 0)  AS "houseAmount",
@@ -940,7 +995,9 @@ export class AdminController {
         INNER JOIN markets m ON m.id = sel."marketId"
         ORDER BY sel."marketId", sel."settledAt" ASC
       ) s
-    `).then((rows: any[]) => rows[0]);
+    `,
+      )
+      .then((rows: any[]) => rows[0]);
 
     const pendingBetsRow = await em
       .getRepository(Position)
@@ -970,7 +1027,52 @@ export class AdminController {
     const netExternalFlow = totalDeposits - totalWithdrawals;
     // Net flow − house − breakage − active bets (already deducted from wallets,
     // not yet returned) = liquid balance users should currently hold
-    const expectedUserBalances = netExternalFlow - houseEarnings - breakage - pendingBetsAmount;
+    // IMPORTANT: bonus-funded real payouts inflate user balances beyond external
+    // flow — they represent platform liability that was never deposited.
+    // We must add them to expected balances so reconciliation correctly flags
+    // the real shortfall rather than masking it as "discrepancy".
+    const bonusFundedRealPayoutsRow = await em
+      .getRepository(Transaction)
+      .query(
+        `
+      SELECT COALESCE(SUM(pt.amount), 0)::float AS total
+      FROM transactions pt
+      WHERE pt.type = 'position_payout'
+        AND pt."isBonus" = false
+        AND pt.amount > 0
+        AND pt."positionId" IN (
+          SELECT p_win.id FROM positions p_win
+          WHERE p_win.status = 'won'
+            AND p_win."marketId" IN (
+              SELECT DISTINCT p_loss."marketId"
+              FROM positions p_loss
+              WHERE p_loss.status IN ('lost', 'refunded')
+                AND p_loss."isBonusFunded" = true
+            )
+        )
+    `,
+      )
+      .then((r: any[]) => parseFloat(r[0].total));
+
+    const totalBonusIssuedRow = await em
+      .getRepository(Transaction)
+      .query(
+        `
+      SELECT COALESCE(SUM(amount), 0)::float AS total
+      FROM transactions
+      WHERE type = 'free_credit' AND "isBonus" = true
+    `,
+      )
+      .then((r: any[]) => parseFloat(r[0].total));
+
+    // expectedUserBalances = what users SHOULD hold based purely on external money
+    // + bonus real payouts (real Nu that entered wallets from bonus-loss events)
+    const expectedUserBalances =
+      netExternalFlow -
+      houseEarnings -
+      breakage -
+      pendingBetsAmount +
+      bonusFundedRealPayoutsRow;
     const discrepancy = totalRealBalance - expectedUserBalances;
 
     return {
@@ -1004,6 +1106,8 @@ export class AdminController {
         netExternalFlow,
         houseEarnings,
         breakage,
+        bonusFundedRealPayouts: bonusFundedRealPayoutsRow,
+        totalBonusIssued: totalBonusIssuedRow,
         expectedUserBalances,
         actualUserBalances: totalRealBalance,
         discrepancy,

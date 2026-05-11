@@ -58,6 +58,15 @@ export class Position {
   @Column({ type: "decimal", precision: 10, scale: 6, nullable: true })
   poolPctAtBet: number | null;
 
+  /**
+   * True if this bet was funded by bonus credits at placement time.
+   * Stored so settlement can identify bonus-funded losses — these are the ones
+   * that create real-money exposure for the platform (the OTHER side wins real Nu
+   * from a pool partly funded by fake credits).
+   */
+  @Column({ type: "boolean", default: false })
+  isBonusFunded: boolean;
+
   @CreateDateColumn()
   placedAt: Date;
 
