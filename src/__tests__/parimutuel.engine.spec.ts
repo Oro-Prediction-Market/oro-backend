@@ -1026,3 +1026,158 @@ describe("Batch payment — NOT triggered on market settlement", () => {
     expect(spies.dkUploadFile).not.toHaveBeenCalled();
   });
 });
+
+// ─── resolveMarket atomic concurrency claim ───────────────────────────────────
+// Verifies the conditional UPDATE in ParimutuelEngine.resolveMarket prevents
+// concurrent double-resolution (root cause of the TER 06:01 PM double payouts).
+
+describe("ParimutuelEngine.resolveMarket — atomic concurrency claim", () => {
+  // Helper: build an engine wired with mocks sufficient to reach the atomic claim
+  function buildEngine(opts: {
+    claimAffected: number;
+    market: any;
+    disputes?: number;
+    onClaimExecute?: () => void;
+  }) {
+    const claimExecute = jest.fn(async () => {
+      opts.onClaimExecute?.();
+      return { affected: opts.claimAffected };
+    });
+    const updateChain = {
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      execute: claimExecute,
+    };
+    const marketRepo = {
+      findOne: jest.fn().mockResolvedValue(opts.market),
+      save: jest.fn(async (m: any) => m),
+      createQueryBuilder: jest.fn().mockReturnValue(updateChain),
+    };
+    const outcomeRepo = {
+      save: jest.fn(async (o: any) => o),
+    };
+    const disputeRepo = {
+      count: jest.fn().mockResolvedValue(opts.disputes ?? 0),
+      find: jest.fn().mockResolvedValue([]),
+      save: jest.fn(),
+    };
+
+    const engine = new ParimutuelEngine(
+      marketRepo as any, // marketRepo
+      outcomeRepo as any, // outcomeRepo
+      null as any, // betRepo
+      null as any, // paymentRepo
+      null as any, // transactionRepo
+      null as any, // settlementRepo
+      disputeRepo as any, // disputeRepo
+      null as any, // dataSource
+      null as any, // lmsrService
+      null as any, // redis
+      null as any, // reputationService
+      null as any, // telegramSimple
+      null as any, // dkGateway
+      bypassConfigService, // configService
+      null as any, // streakService
+      null as any, // challengesService
+      null as any, // marketsGateway
+      null as any, // sse
+    );
+
+    return { engine, marketRepo, outcomeRepo, claimExecute };
+  }
+
+  it("throws when atomic claim affected=0 (lost the race to a concurrent caller)", async () => {
+    const market = {
+      id: "m-race",
+      status: "resolving",
+      disputeDeadlineAt: new Date(Date.now() - 1000), // window already closed
+      outcomes: [{ id: "o-win", label: "Yes" }],
+      proposedOutcomeId: "o-win",
+    };
+    const { engine, outcomeRepo, claimExecute } = buildEngine({
+      claimAffected: 0,
+      market,
+    });
+
+    await expect(
+      engine.resolveMarket("m-race", "o-win", "admin-1"),
+    ).rejects.toThrow(/already being resolved|has been resolved/);
+
+    expect(claimExecute).toHaveBeenCalledTimes(1);
+    // Critical: must NOT proceed past the claim — no winner.isWinner write
+    expect(outcomeRepo.save).not.toHaveBeenCalled();
+  });
+
+  it("proceeds past the claim when affected=1 (won the race)", async () => {
+    const market = {
+      id: "m-win",
+      status: "resolving",
+      disputeDeadlineAt: new Date(Date.now() - 1000),
+      outcomes: [{ id: "o-win", label: "Yes" }],
+      proposedOutcomeId: "o-win",
+    };
+    const { engine, outcomeRepo, claimExecute } = buildEngine({
+      claimAffected: 1,
+      market,
+    });
+
+    // settleMarket isn't mocked → it will throw on a downstream null repo.
+    // That's fine: we just need to verify the engine got *past* the claim,
+    // proven by outcomeRepo.save being called for the winner.
+    await expect(
+      engine.resolveMarket("m-win", "o-win", "admin-1"),
+    ).rejects.toThrow();
+
+    expect(claimExecute).toHaveBeenCalledTimes(1);
+    expect(outcomeRepo.save).toHaveBeenCalledTimes(1);
+    expect(outcomeRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "o-win", isWinner: true }),
+    );
+  });
+
+  it("[ORDERING] does NOT fire the atomic claim when objection-window validation throws", async () => {
+    // Critical correctness check: validation throws must happen BEFORE the
+    // atomic UPDATE, otherwise an admin force-resolving a market with an open
+    // window would leave it RESOLVED with no winner / no settlement.
+    const market = {
+      id: "m-window-open",
+      status: "resolving",
+      disputeDeadlineAt: new Date(Date.now() + 60 * 60 * 1000), // 1h in future
+      outcomes: [{ id: "o-win", label: "Yes" }],
+      proposedOutcomeId: "o-win",
+      windowMinutes: 60,
+    };
+    const { engine, outcomeRepo, claimExecute } = buildEngine({
+      claimAffected: 1, // Would succeed if reached — but it must NOT be reached
+      market,
+      disputes: 0,
+    });
+
+    await expect(
+      engine.resolveMarket("m-window-open", "o-win", "admin-1"),
+    ).rejects.toThrow(/objection window is still open/);
+
+    // The claim must NOT have run — otherwise the market is half-resolved.
+    expect(claimExecute).not.toHaveBeenCalled();
+    expect(outcomeRepo.save).not.toHaveBeenCalled();
+  });
+
+  it("rejects with 'must be in Resolving state' when status is not RESOLVING (does not reach claim)", async () => {
+    const market = {
+      id: "m-resolved",
+      status: "resolved", // already past resolving
+      outcomes: [{ id: "o-win", label: "Yes" }],
+    };
+    const { engine, claimExecute } = buildEngine({
+      claimAffected: 1,
+      market,
+    });
+
+    await expect(
+      engine.resolveMarket("m-resolved", "o-win", "admin-1"),
+    ).rejects.toThrow(/must be in Resolving state/);
+
+    expect(claimExecute).not.toHaveBeenCalled();
+  });
+});

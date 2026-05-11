@@ -234,7 +234,7 @@ export class AdminController {
     @Query("limit") limit = "20",
     @Query("status") status?: string,
   ) {
-    const take = Math.min(Number(limit) || 20, 100);
+    const take = Math.min(Number(limit) || 20, 500);
     const skip = (Math.max(Number(page), 1) - 1) * take;
     const qb = this.dataSource
       .getRepository(Market)
