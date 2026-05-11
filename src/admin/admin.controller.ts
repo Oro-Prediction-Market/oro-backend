@@ -206,6 +206,10 @@ export class AdminController {
                   SELECT DISTINCT p_loss."marketId"
                   FROM positions p_loss
                   WHERE p_loss.status IN ('lost', 'refunded')
+                    AND EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_name = 'positions' AND column_name = 'isBonusFunded'
+                    )
                     AND p_loss."isBonusFunded" = true
                 )
             )
@@ -1047,6 +1051,10 @@ export class AdminController {
               SELECT DISTINCT p_loss."marketId"
               FROM positions p_loss
               WHERE p_loss.status IN ('lost', 'refunded')
+                AND EXISTS (
+                  SELECT 1 FROM information_schema.columns
+                  WHERE table_name = 'positions' AND column_name = 'isBonusFunded'
+                )
                 AND p_loss."isBonusFunded" = true
             )
         )
