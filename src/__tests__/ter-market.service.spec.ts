@@ -446,6 +446,92 @@ describe("TerMarketService", () => {
       expect(dataSource.transaction).toHaveBeenCalled();
     });
 
+    it("[CONCURRENCY] skips duplicate processing when the same market is picked up by overlapping interval ticks", async () => {
+      // Reproduces the bug behind the 04:45–06:01 PM double payouts on 2026-05-11:
+      // @Interval(3_000) fires while the previous tick is still awaiting fetchPrice,
+      // both ticks call closeAndResolve(sameMarket), engine.resolveMarket gets
+      // invoked twice → settleMarket runs twice → payouts duplicated.
+      const market = {
+        id: "market-race",
+        externalSource: "ter",
+        status: MarketStatus.OPEN,
+        closesAt: new Date(Date.now() - 1000),
+        outcomes: [
+          { id: "up-1", label: "UP" },
+          { id: "down-1", label: "DOWN" },
+        ],
+        metadata: { referenceTerPrice: 7500.0, referenceBuyPrice: 7505.0 },
+      };
+      const qb = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([market]),
+        getOne: jest.fn().mockResolvedValue(null),
+      };
+      marketRepo.createQueryBuilder.mockReturnValue(qb);
+      marketRepo.findOne.mockResolvedValue(null);
+
+      // Pause fetchPrice so tick #2 can enter closeAndResolve while tick #1 is mid-flight
+      let releaseFetch: (p: TerPrice) => void = () => {};
+      const slowFetch = new Promise<TerPrice>((res) => {
+        releaseFetch = res;
+      });
+      priceService.fetchPrice.mockReturnValue(slowFetch);
+
+      // Fire two overlapping ticks
+      const tick1 = service.closeAndResolveMarkets();
+      // Yield so tick1 reaches the await on fetchPrice
+      await new Promise((res) => setImmediate(res));
+      const tick2 = service.closeAndResolveMarkets();
+      // Yield again so tick2 hits the Set guard and returns
+      await new Promise((res) => setImmediate(res));
+
+      // Release fetch and let tick1 finish
+      releaseFetch(mockHigherPrice);
+      await Promise.all([tick1, tick2]);
+
+      // Without the guard, this would be 2. With the guard, it must be 1.
+      expect(engine.resolveMarket).toHaveBeenCalledTimes(1);
+    });
+
+    it("[CONCURRENCY] releases the processing lock after engine.resolveMarket throws so retries are possible", async () => {
+      const market = {
+        id: "market-err",
+        externalSource: "ter",
+        status: MarketStatus.OPEN,
+        closesAt: new Date(Date.now() - 1000),
+        outcomes: [
+          { id: "up-1", label: "UP" },
+          { id: "down-1", label: "DOWN" },
+        ],
+        metadata: { referenceTerPrice: 7500.0, referenceBuyPrice: 7505.0 },
+      };
+      const qb = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([market]),
+        getOne: jest.fn().mockResolvedValue(null),
+      };
+      marketRepo.createQueryBuilder.mockReturnValue(qb);
+      marketRepo.findOne.mockResolvedValue(null);
+      priceService.fetchPrice.mockResolvedValue(mockHigherPrice);
+
+      // First call: engine.resolveMarket throws
+      engine.resolveMarket.mockRejectedValueOnce(new Error("transient db error"));
+      await service.closeAndResolveMarkets();
+      // closeAndResolveMarkets has its own try/catch, so no throw bubbles up.
+
+      // Second call: engine.resolveMarket succeeds. If the Set still held
+      // market.id from the failed first call, this second call would be skipped.
+      engine.resolveMarket.mockResolvedValueOnce(undefined);
+      await service.closeAndResolveMarkets();
+
+      // Both calls reached engine.resolveMarket → finally block released the lock
+      expect(engine.resolveMarket).toHaveBeenCalledTimes(2);
+    });
+
     it("sets disputeDeadlineAt to past to bypass dispute window", async () => {
       const market = {
         id: "market-1",
