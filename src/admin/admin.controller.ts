@@ -911,6 +911,8 @@ export class AdminController {
     // Deduplicate settlements: the race condition that was fixed created multiple
     // settlement rows per market. Use DISTINCT ON to count only the first (canonical)
     // settlement per market so house earnings and counts are not inflated.
+    // Deduplicate settlements: join to markets so orphaned rows (deleted markets)
+    // are excluded, and DISTINCT ON picks the first canonical row per market.
     const settlementRow = await em.getRepository(Settlement).query(`
       SELECT
         COALESCE(SUM(s."totalPool"), 0)    AS "totalPool",
@@ -919,9 +921,10 @@ export class AdminController {
         COALESCE(SUM(s."totalPaidOut"), 0) AS "totalPaidOut",
         COUNT(*)                           AS count
       FROM (
-        SELECT DISTINCT ON ("marketId") *
-        FROM settlements
-        ORDER BY "marketId", "settledAt" ASC
+        SELECT DISTINCT ON (sel."marketId") sel.*
+        FROM settlements sel
+        INNER JOIN markets m ON m.id = sel."marketId"
+        ORDER BY sel."marketId", sel."settledAt" ASC
       ) s
     `).then((rows: any[]) => rows[0]);
 
@@ -951,8 +954,9 @@ export class AdminController {
     const pendingBetsCount = Number(pendingBetsRow.count);
 
     const netExternalFlow = totalDeposits - totalWithdrawals;
-    // deposits received − withdrawals paid − house cut − breakage = what users should hold
-    const expectedUserBalances = netExternalFlow - houseEarnings - breakage;
+    // Net flow − house − breakage − active bets (already deducted from wallets,
+    // not yet returned) = liquid balance users should currently hold
+    const expectedUserBalances = netExternalFlow - houseEarnings - breakage - pendingBetsAmount;
     const discrepancy = totalRealBalance - expectedUserBalances;
 
     return {
