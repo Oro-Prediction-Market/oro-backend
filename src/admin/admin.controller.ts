@@ -908,15 +908,22 @@ export class AdminController {
       .orderBy("t.type")
       .getRawMany();
 
-    const settlementRow = await em
-      .getRepository(Settlement)
-      .createQueryBuilder("s")
-      .select("COALESCE(SUM(s.totalPool), 0)", "totalPool")
-      .addSelect("COALESCE(SUM(s.houseAmount), 0)", "houseAmount")
-      .addSelect("COALESCE(SUM(s.payoutPool), 0)", "payoutPool")
-      .addSelect("COALESCE(SUM(s.totalPaidOut), 0)", "totalPaidOut")
-      .addSelect("COUNT(*)", "count")
-      .getRawOne();
+    // Deduplicate settlements: the race condition that was fixed created multiple
+    // settlement rows per market. Use DISTINCT ON to count only the first (canonical)
+    // settlement per market so house earnings and counts are not inflated.
+    const settlementRow = await em.getRepository(Settlement).query(`
+      SELECT
+        COALESCE(SUM(s."totalPool"), 0)    AS "totalPool",
+        COALESCE(SUM(s."houseAmount"), 0)  AS "houseAmount",
+        COALESCE(SUM(s."payoutPool"), 0)   AS "payoutPool",
+        COALESCE(SUM(s."totalPaidOut"), 0) AS "totalPaidOut",
+        COUNT(*)                           AS count
+      FROM (
+        SELECT DISTINCT ON ("marketId") *
+        FROM settlements
+        ORDER BY "marketId", "createdAt" ASC
+      ) s
+    `).then((rows: any[]) => rows[0]);
 
     const pendingBetsRow = await em
       .getRepository(Position)
