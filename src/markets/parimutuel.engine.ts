@@ -675,6 +675,39 @@ export class ParimutuelEngine implements OnModuleInit {
       }
     }
 
+    // ── Atomic claim: prevent concurrent double-resolution ──────────────────────
+    // The status check at the top of this function is read-then-act and can be
+    // passed by two concurrent callers before either commits. This conditional
+    // UPDATE flips RESOLVING → RESOLVED in a single atomic statement — only one
+    // caller wins. Any duplicate tick (e.g. from the @Interval(3_000) scheduler)
+    // sees affected === 0 and bails out before reaching settleMarket(),
+    // eliminating double payouts.
+    //
+    // Placed AFTER all validation so that a thrown validation error does not
+    // leave the market in a half-resolved state (RESOLVED with no winner /
+    // no settlement).
+    const claim = await this.marketRepo
+      .createQueryBuilder()
+      .update(Market)
+      .set({
+        status: MarketStatus.RESOLVED,
+        resolvedOutcomeId: winningOutcomeId,
+        resolvedAt: new Date(),
+      })
+      .where("id = :id AND status = :status", {
+        id: marketId,
+        status: MarketStatus.RESOLVING,
+      })
+      .execute();
+    if (claim.affected === 0) {
+      this.logger.warn(
+        `[Concurrency] Market ${marketId} already claimed by another resolver — aborting duplicate resolution`,
+      );
+      throw new BadRequestException(
+        "Market is already being resolved or has been resolved",
+      );
+    }
+
     // ── Mark the winner ───────────────────────────────────────────────────────
     winner.isWinner = true;
     await this.outcomeRepo.save(winner);

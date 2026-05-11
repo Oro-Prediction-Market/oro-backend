@@ -15,6 +15,7 @@ import { ParimutuelEngine } from "../markets/parimutuel.engine";
 export class TerMarketService {
   private readonly logger = new Logger(TerMarketService.name);
   private spawning = false;
+  private readonly processingMarkets = new Set<string>();
 
   constructor(
     @InjectRepository(Market)
@@ -195,6 +196,15 @@ export class TerMarketService {
    * After resolution, immediately spawns the next market
    */
   private async closeAndResolve(market: Market): Promise<void> {
+    if (this.processingMarkets.has(market.id)) {
+      this.logger.warn(
+        `TER market ${market.id} is already being processed — skipping duplicate interval tick`,
+      );
+      return;
+    }
+    this.processingMarkets.add(market.id);
+
+    try {
     this.logger.log(`Closing and resolving TER market ${market.id}`);
 
     // Fetch settlement price
@@ -288,6 +298,9 @@ export class TerMarketService {
 
     // Immediately spawn the next market — reuse settlement price to avoid a second API call
     await this.spawnNextMarketWithPrice(settlementPrice);
+    } finally {
+      this.processingMarkets.delete(market.id);
+    }
   }
 
   /**

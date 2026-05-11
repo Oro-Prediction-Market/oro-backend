@@ -61,6 +61,9 @@ export class AutoResolveMarketsJob {
 
     for (const market of candidates) {
       try {
+        // TER markets resolve themselves via TerMarketService — skip to avoid double payouts
+        if (market.externalSource === "ter") continue;
+
         // Count objections
         const objectionCount = await this.disputeRepo.count({
           where: { marketId: market.id },
