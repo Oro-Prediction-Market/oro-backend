@@ -31,7 +31,7 @@ Add to your `.env` file:
 ```bash
 # Telegram Bot Configuration
 TELEGRAM_BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrsTUVwxyz
-TELEGRAM_CHANNEL_ID=-1001234567890
+TELEGRAM_CHANNEL_ID=-1000274567190
 TELEGRAM_WEBHOOK_URL=https://your-domain.com/api/telegram/webhook
 TELEGRAM_WEBHOOK_SECRET=your-webhook-secret-key
 TELEGRAM_MINI_APP_URL=https://your-mini-app-url.com

@@ -51,7 +51,7 @@ CID stands for Citizenship Identity number — the 11-digit ID number on your Bh
 
 ### How does parimutuel betting work?
 
-In a parimutuel market, all stakes from all users go into a single shared pool. When the market resolves, the total pool (minus the house edge) is distributed proportionally among everyone who bet on the winning outcome.
+In a parimutuel market, all stakes from all users go into a single shared pool. When the market resolves, the total pool (minus the house edge) is distributed proportionally among everyone who predicted on the winning outcome.
 
 **Example:** The market pool is Nu 10,000. The house edge is 5%, so the payout pool is Nu 9,500. You staked Nu 500 on the winning outcome, which attracted 25% of all stakes on that side. Your payout is 25% of Nu 9,500 = Nu 2,375.
 
@@ -66,6 +66,14 @@ No. All bets are final once confirmed. You cannot cancel, adjust, or withdraw a 
 ### What happens to my bet if a market is cancelled?
 
 If an admin cancels a market, all stakes are fully refunded to each user's Oro wallet. No deductions are made.
+
+### What happens if everyone bets on the same outcome (thin pool)?
+
+If a market resolves and there are no bets on the losing side — meaning all stakes are on the winning outcome — the market is considered a **thin pool** and cannot pay out proportionally. In this case, all bets are fully refunded to every user's wallet. No house edge is deducted. You will receive a notification confirming your refund.
+
+### Is there a minimum payout if I win?
+
+A **1.05× payout floor** is planned for a future release. Under this policy, winning bettors will always receive at least 1.05× their original stake — even in markets where the pool distribution would otherwise return less. This is not yet active.
 
 ### When does a market close?
 
@@ -200,7 +208,7 @@ Examples of milestones that unlock badges:
 |-------|-----------|
 | First Call | Place your first prediction |
 | Ten Deep | Make 10 predictions |
-| Eagle Eye | Achieve >65% accuracy |
+| Eagle Eye | Achieve >65% prediction accuracy (shown as Insight Score on your profile) |
 | Bankrolled | Link your DK Bank account |
 | Challenger | Complete your first Duel |
 | Ambassador | Refer 5 friends |
