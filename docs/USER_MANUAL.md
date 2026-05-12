@@ -288,7 +288,7 @@ Badges are awarded automatically when you hit milestones. They are purely cosmet
 | Category | Examples |
 |----------|---------|
 | Volume | First Call (1 prediction), Triple Threat (3), Ten Deep (10), Centurion (100) |
-| Accuracy | Above Average (>50%), Eagle Eye (>65%), Oracle (>80%), Godlike (>90%) |
+| Insight | Above Average (>50%), Eagle Eye (>65%), Oracle (>80%), Godlike (>90%) |
 | Correct Calls | Right Once (1 correct), Double Digit (10), Half Century (50) |
 | Tier | Rookie, Sharpshooter, Hot Hand, Legend |
 | Profile | Verified (phone linked), Bankrolled (DK Bank linked), Connected, High Score |
@@ -589,6 +589,18 @@ The **Reconciliation** page provides a financial snapshot of the platform's acco
 The snapshot timestamp shows when the data was last calculated. Click **Refresh** to re-run the reconciliation calculation against live data.
 
 A **discrepancy** indicator highlights if the balance equation does not resolve to zero, which may indicate a data integrity issue requiring investigation.
+
+#### Accounting integrity dependencies
+
+Two backend behaviors are load-bearing for reconciliation accuracy. They are not visible in the UI but must remain intact — regression in either will cause the reconciliation check to report a false balance.
+
+**Settlement deduplication**
+When the Keeper settles a market, the reconciliation query reads only the *earliest* settlement record per market and excludes orphaned rows (settlement rows with no corresponding market). This prevents double-counting in scenarios where a settlement job ran more than once or where a market was re-settled after a correction. If this deduplication is ever removed, total paid-out figures and house earnings will overcount, producing a phantom discrepancy.
+
+**Bonus-funded position tracking**
+Each position records whether it was placed using bonus credits (`isBonusFunded`). The admin portal uses this flag to separate real-money exposure from bonus liability when reporting user wallet totals. If this flag is missing or incorrect on a position, bonus balance and real balance will be conflated in the Reconciliation panel, and the bonus liability metric in the dashboard will be understated.
+
+If you observe a reconciliation discrepancy and cannot trace it to a deposit or withdrawal anomaly, check these two areas first before escalating to the technical team.
 
 ---
 
