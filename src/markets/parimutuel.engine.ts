@@ -1046,6 +1046,12 @@ export class ParimutuelEngine implements OnModuleInit {
           // Payout proportional to their share of winner pool
           const share = winnerPool > 0 ? Number(bet.amount) / winnerPool : 0;
           const rawPayout = parseFloat((payoutPool * share).toFixed(2));
+          // Floor at 1.05× stake so winners always profit; house absorbs the difference
+          // in thin-pool edge cases not caught by the thin-pool guard above.
+          const stake = Number(bet.amount);
+          const effectivePayout = parseFloat(
+            Math.max(rawPayout, stake * 1.05).toFixed(2),
+          );
 
           // ── Bonus cap logic ────────────────────────────────────────────────
           // If this bet was placed using bonus credits, cap the total real
@@ -1064,17 +1070,17 @@ export class ParimutuelEngine implements OnModuleInit {
           const betIsBonusFunded =
             userBonusBalance > 0 && Number(bet.amount) <= userBonusBalance;
 
-          let withdrawablePayout = rawPayout;
+          let withdrawablePayout = effectivePayout;
           let playPayout = 0;
 
           if (betIsBonusFunded) {
             // Cap real payout against the lifetime remaining allowance — not just Nu 50 per bet.
             // This prevents splitting bonus into many small bets to multiply real payouts.
             withdrawablePayout = parseFloat(
-              Math.min(rawPayout, bonusRealPayoutRemaining).toFixed(2),
+              Math.min(effectivePayout, bonusRealPayoutRemaining).toFixed(2),
             );
             playPayout = parseFloat(
-              (rawPayout - withdrawablePayout).toFixed(2),
+              (effectivePayout - withdrawablePayout).toFixed(2),
             );
             // Reduce both the bonus balance and the lifetime real payout allowance
             const newBonusBalance = Math.max(
@@ -1095,9 +1101,9 @@ export class ParimutuelEngine implements OnModuleInit {
             );
           }
 
-          bet.payout = rawPayout;
+          bet.payout = effectivePayout;
           bet.status = PositionStatus.WON;
-          totalPaidOut += rawPayout;
+          totalPaidOut += effectivePayout;
           winningPositions++;
 
           const balanceBefore = await this.getCreditsBalance(em, bet.userId);
@@ -1113,6 +1119,7 @@ export class ParimutuelEngine implements OnModuleInit {
               positionId: bet.id,
               userId: bet.userId,
               isBonus: false,
+              stakeAmount: stake,
               note: `Payout for winning bet on: ${winner.label}`,
             }),
           );

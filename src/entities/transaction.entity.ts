@@ -60,11 +60,9 @@ export class Transaction {
   @Column({ type: "varchar", nullable: true })
   note: string;
 
-  /**
-   * True when this transaction originated from a FREE_CREDIT grant or a
-   * payout derived from a free-credit bet. Winnings from bonus credits are
-   * capped at Nu 50 withdrawable — the rest is re-credited as play money.
-   */
+  @Column({ type: "decimal", precision: 20, scale: 9, nullable: true })
+  stakeAmount: number | null;
+
   @Column({ default: false })
   isBonus: boolean;
 

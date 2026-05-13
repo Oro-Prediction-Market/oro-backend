@@ -89,8 +89,11 @@ export class ReconciliationService {
     for (const position of winningPositions) {
       const expectedShare =
         winnerPool > 0 ? Number(position.amount) / winnerPool : 0;
-      const expectedPayout = parseFloat(
+      const rawExpectedPayout = parseFloat(
         (payoutPool * expectedShare).toFixed(2),
+      );
+      const expectedPayout = parseFloat(
+        Math.max(rawExpectedPayout, Number(position.amount) * 1.05).toFixed(2),
       );
 
       // Check if bet was bonus-funded and apply cap
