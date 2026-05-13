@@ -1,4 +1,4 @@
-# Tara Project — Claude Code
+# Oro Project — Claude Code
 
 ## Available Personas
 
@@ -16,13 +16,13 @@ When starting a session, ask the user which persona to activate (or they can inv
 
 ## Project Overview
 
-- **Backend:** NestJS (TypeScript), located in `backend/`
-- **Frontend:** React + Vite (TypeScript), PWA + Telegram Mini App, located in `frontend/`
+- **Backend:** NestJS (TypeScript), located in `oro-backend/`
+- **Frontend:** React + Vite (TypeScript), PWA + Telegram Mini App, located in `oro-frontend/`
 - **Stack:** PostgreSQL, TypeORM, Telegram Bot API, TON blockchain
 
 ## Key Conventions
 
 - Use TypeScript strictly — no `any` unless unavoidable
 - Follow existing NestJS module structure (controller → service → repository)
-- Frontend has two targets: `pwa/` (Progressive Web App) and `tma/` (Telegram Mini App)
-- Parimutuel betting engine lives in `backend/src/markets/`
+- Frontend has two targets: `oro-pwa/` (Progressive Web App) and `oro-tma/` (Telegram Mini App)
+- Parimutuel betting engine lives in `oro-backend/src/markets/`
