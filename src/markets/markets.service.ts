@@ -61,6 +61,7 @@ export class MarketsService {
       userName: string;
       outomeLabel: string;
       marketTitle: string;
+      marketId: string;
       amount: number;
       placedAt: Date;
     }[]
@@ -88,6 +89,7 @@ export class MarketsService {
         userName: displayName,
         outomeLabel: p.outcome?.label ?? "an outcome",
         marketTitle: p.market?.title ?? "a market",
+        marketId: p.market?.id ?? "",
         amount: Number(p.status === "won" ? (p.payout ?? p.amount) : p.amount),
         placedAt: p.placedAt,
       };

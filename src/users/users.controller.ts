@@ -344,7 +344,7 @@ export class UsersController {
         `(SELECT COALESCE(SUM(p.amount), 0) FROM positions p WHERE p."userId" = u.id)`,
         "totalBetAmount",
       )
-      .where("u.totalPredictions > 0")
+      .where("u.totalPredictions >= 10")
       .orderBy("u.reputationScore", "DESC", "NULLS LAST")
       .addOrderBy("u.correctPredictions", "DESC")
       .limit(50)
@@ -377,7 +377,7 @@ export class UsersController {
     } else {
       const above = await this.userRepo
         .createQueryBuilder("u")
-        .where("u.totalPredictions > 0")
+        .where("u.totalPredictions >= 10")
         .andWhere(
           '(u.reputationScore > (SELECT "reputationScore" FROM users WHERE id = :myId) OR (u.reputationScore = (SELECT "reputationScore" FROM users WHERE id = :myId) AND u.correctPredictions > (SELECT "correctPredictions" FROM users WHERE id = :myId)))',
           { myId },
@@ -388,7 +388,7 @@ export class UsersController {
 
     const totalRanked = await this.userRepo
       .createQueryBuilder("u")
-      .where("u.totalPredictions > 0")
+      .where("u.totalPredictions >= 10")
       .getCount();
 
     return { board, myRank, totalRanked };
