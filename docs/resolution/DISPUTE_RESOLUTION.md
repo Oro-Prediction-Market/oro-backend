@@ -4,12 +4,12 @@
 
 **Admin Final Call with Dispute Bonds**
 
-When a market closes, the admin proposes a winning outcome and a 24-hour dispute window opens. Any bettor can stake a bond to signal disagreement. After reviewing disputes, the admin makes the final resolution call.
+When a market closes, the admin proposes a winning outcome and a 10 mins, 30 mins, 1-hour and 24 hrs dispute window opens. Any bettor can stake a bond to signal disagreement. After reviewing disputes, the admin makes the final resolution call.
 
 ## Flow
 
 ```
-CLOSED → RESOLVING (admin proposes outcome, 24h window opens)
+CLOSED → RESOLVING (admin proposes outcome, 1h window opens)
          ↓
          Bettors submit dispute bonds (optional)
          ↓
@@ -44,7 +44,7 @@ The admin is accountable through transparency. Any resolution decision is logged
 
 ## Why This is the Right Choice for Now
 
-- **Simpler UX** — No wallet, no gas, no token. Users just stake credits.
+- **Simpler UX** — No gas, no token. Users just stake credits.
 - **Faster to build and ship** — One entity, one endpoint, one UI panel.
 - **Accessible to our audience** — Telegram/mobile users are not expecting trustless governance.
 - **Upgrade path** — Once we have volume and community, we can layer in an oracle or community voting round on top of this same flow.

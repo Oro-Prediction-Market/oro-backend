@@ -24,7 +24,7 @@ Welcome to the Oro betting platform documentation.
 ## Project Structure
 
 ```
-/backend
+/oro-backend
   /src
     /markets
       parimutuel.engine.ts  ← Current betting engine
@@ -34,7 +34,7 @@ Welcome to the Oro betting platform documentation.
       outcome.entity.ts     ← Update with lmsrProbability
       bet.entity.ts         ← Bet records
 
-/frontend
+/oro-frontend
   /src
     /tma/pages
       MarketsPage.tsx       ← Market list
