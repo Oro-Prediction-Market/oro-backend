@@ -28,11 +28,11 @@ export class TerMarketService {
   ) {}
 
   /**
-   * Spawn a new TER market every hour
-   * Runs at :00 each hour
+   * Spawn a new TER market every 24 hours
+   * Runs at midnight each day
    * Only spawns if no active TER market exists
    */
-  @Cron("0 * * * *")
+  @Cron("0 0 * * *")
   async spawnMarket(): Promise<void> {
     if (this.spawning) return;
     this.spawning = true;
@@ -62,8 +62,8 @@ export class TerMarketService {
       // Market opens immediately
       const now = new Date();
 
-      // Market closes in 1 hour
-      const closesAt = new Date(now.getTime() + 60 * 60 * 1000);
+      // Market closes in 24 hours
+      const closesAt = new Date(now.getTime() + 24 * 60 * 60 * 1000);
 
       // Betting closes 2 minutes before market close
       const bettingClosesAt = new Date(closesAt.getTime() - 2 * 60 * 1000);
@@ -71,7 +71,7 @@ export class TerMarketService {
       await this.dataSource.transaction(async (manager) => {
         // Create market
         const market = manager.create(Market, {
-          title: "TER — UP or DOWN in 1 hour?",
+          title: "TER — UP or DOWN in 24 hours?",
           category: MarketCategory.ECONOMY,
           status: MarketStatus.OPEN,
           opensAt: now,
@@ -323,12 +323,12 @@ export class TerMarketService {
       // Reuse provided price or fetch fresh
       const p = price ?? (await this.terPriceService.fetchPrice());
       const now = new Date();
-      const closesAt = new Date(now.getTime() + 60 * 60 * 1000);
+      const closesAt = new Date(now.getTime() + 24 * 60 * 60 * 1000);
       const bettingClosesAt = new Date(closesAt.getTime() - 2 * 60 * 1000);
 
       await this.dataSource.transaction(async (manager) => {
         const market = manager.create(Market, {
-          title: "TER — UP or DOWN in 1 hour?",
+          title: "TER — UP or DOWN in 24 hours?",
           category: MarketCategory.ECONOMY,
           status: MarketStatus.OPEN,
           opensAt: now,
