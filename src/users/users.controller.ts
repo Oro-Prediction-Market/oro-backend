@@ -11,7 +11,7 @@ import {
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { ConfigService } from "@nestjs/config";
-import { JwtAuthGuard } from "../auth/guards";
+import { JwtAuthGuard, Public } from "../auth/guards";
 import { User } from "../entities/user.entity";
 import { Payment } from "../entities/payment.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
@@ -323,9 +323,10 @@ export class UsersController {
   // ── Leaderboard ───────────────────────────────────────────────────────────
 
   @Get("leaderboard")
+  @Public()
   @ApiOperation({ summary: "Global leaderboard — top 50 predictors" })
   async getLeaderboard(@Request() req: any) {
-    const myId: string = req.user.userId;
+    const myId: string | null = req.user?.userId ?? null;
 
     const rows = await this.userRepo
       .createQueryBuilder("u")
@@ -366,24 +367,26 @@ export class UsersController {
           ? Math.round((u.correctPredictions / u.totalPredictions) * 100)
           : 0,
       totalBetAmount: Math.round(Number(rows.raw[i]?.totalBetAmount ?? 0)),
-      isMe: u.id === myId,
+      isMe: myId != null && u.id === myId,
     }));
 
-    // Compute caller's rank even if outside top 50
+    // Compute caller's rank even if outside top 50 (only for authenticated users)
     let myRank: number | null = null;
-    const meInBoard = board.find((r) => r.isMe);
-    if (meInBoard) {
-      myRank = meInBoard.rank;
-    } else {
-      const above = await this.userRepo
-        .createQueryBuilder("u")
-        .where("u.totalPredictions >= 10")
-        .andWhere(
-          '(u.reputationScore > (SELECT "reputationScore" FROM users WHERE id = :myId) OR (u.reputationScore = (SELECT "reputationScore" FROM users WHERE id = :myId) AND u.correctPredictions > (SELECT "correctPredictions" FROM users WHERE id = :myId)))',
-          { myId },
-        )
-        .getCount();
-      myRank = above + 1;
+    if (myId) {
+      const meInBoard = board.find((r) => r.isMe);
+      if (meInBoard) {
+        myRank = meInBoard.rank;
+      } else {
+        const above = await this.userRepo
+          .createQueryBuilder("u")
+          .where("u.totalPredictions >= 10")
+          .andWhere(
+            '(u.reputationScore > (SELECT "reputationScore" FROM users WHERE id = :myId) OR (u.reputationScore = (SELECT "reputationScore" FROM users WHERE id = :myId) AND u.correctPredictions > (SELECT "correctPredictions" FROM users WHERE id = :myId)))',
+            { myId },
+          )
+          .getCount();
+        myRank = above + 1;
+      }
     }
 
     const totalRanked = await this.userRepo
