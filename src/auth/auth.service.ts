@@ -364,6 +364,9 @@ export class AuthService {
   // ── Check if a CID account has a PWA password set (no sensitive data) ──────
   async getPwaStatus(cid: string): Promise<{ hasPassword: boolean }> {
     if (!cid || cid.length !== 11) return { hasPassword: false };
+    // Per-CID throttle — prevents enumerating which CIDs belong to Oro PWA users
+    const { allowed } = await this.redis.rateLimit(`pwa-status:cid:${cid}`, 5, 3600);
+    if (!allowed) throw new UnauthorizedException("Too many requests for this CID.");
     const user = await this.userRepo.findOne({
       where: { dkCid: cid },
       select: ["pwaPasswordHash"],

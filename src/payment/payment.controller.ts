@@ -215,11 +215,23 @@ export class PaymentController {
     if (!dto?.id_number || dto.id_number.length < 11) {
       throw new BadRequestException(`id_number must be 11 digits`);
     }
-    // 3 CID lookups per minute per IP — public endpoint, keep tight
+    // Per-IP limit: 3 per minute
     const ip = req.ip || req.connection?.remoteAddress || "unknown";
-    await this.enforceRateLimit(`client-inquiry:${ip}`, 3, 60);
+    await this.enforceRateLimit(`client-inquiry:ip:${ip}`, 3, 60);
+    // Per-CID limit: 10 per hour — stops bulk scanning across rotating IPs
+    await this.enforceRateLimit(`client-inquiry:cid:${dto.id_number}`, 10, 3600);
 
-    return this.dkGatewayService.clientInquiry(dto);
+    const raw = await this.dkGatewayService.clientInquiry(dto);
+
+    // Strip fields that must not leave the server: account number, phone, national ID.
+    // Callers only need the name to show a confirmation prompt to the user.
+    if (Array.isArray(raw?.response_data)) {
+      raw.response_data = raw.response_data.map(
+        ({ account_number: _a, phone_number: _p, national_id: _n, ...safe }: any) => safe,
+      );
+    }
+
+    return raw;
   }
 
   @Get("dkbank/status/:paymentId")
