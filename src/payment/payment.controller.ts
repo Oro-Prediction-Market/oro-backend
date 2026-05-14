@@ -203,10 +203,10 @@ export class PaymentController {
     return this.dkGatewayService.lookupAccountByCID(dto.id_number);
   }
 
-  // Public endpoint (no JWT) - aligned to CLIENT_INQUIRY_API.md
   @Post("client-inquiry")
+  @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: "DK client inquiry by CID" })
+  @ApiOperation({ summary: "DK client inquiry by CID (requires auth)" })
   @ApiBody({ type: ClientInquiryDto })
   async clientInquiry(@Body() dto: ClientInquiryDto, @Request() req: any) {
     if (!dto?.id_type || dto.id_type !== "CID") {

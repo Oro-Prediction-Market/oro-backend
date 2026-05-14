@@ -192,6 +192,7 @@ export class AuthController {
    */
   @Get("pwa-status")
   @Public()
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @ApiOperation({ summary: "Check if a CID account has a PWA password set" })
   @ApiQuery({ name: "cid", required: true })
   async pwaStatus(@Query("cid") cid: string) {
@@ -356,9 +357,14 @@ export class AuthController {
       throw new UnauthorizedException("Wrong secret");
     }
 
-    // TOTP 2FA — required if ADMIN_TOTP_SECRET is configured
+    // TOTP 2FA — mandatory in production, optional in dev/staging
     const totpSecret = process.env.ADMIN_TOTP_SECRET;
     if (!totpSecret) {
+      if (process.env.NODE_ENV === "production") {
+        throw new UnauthorizedException(
+          "ADMIN_TOTP_SECRET must be configured in production",
+        );
+      }
       Logger.warn("ADMIN_TOTP_SECRET is not set — admin login has no 2FA", "AuthController");
     }
     if (totpSecret) {

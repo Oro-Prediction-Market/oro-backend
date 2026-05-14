@@ -343,14 +343,19 @@ export class AuthService {
     await this.telegramSimple.sendMessage(chatId, msg);
   }
 
-  // ── Dev-only: login and ensure isAdmin=true ───────────────────────────────
+  // ── Admin login — verifies the Telegram account already has isAdmin=true ────
   async ensureAdminAndLogin(rawInitData: string) {
     const result = await this.loginWithTelegram(rawInitData);
     const userId = result.user.id;
     if (!result.user.isAdmin) {
+      if (process.env.NODE_ENV === "production") {
+        throw new UnauthorizedException(
+          "This Telegram account does not have admin privileges. Grant isAdmin in the database first.",
+        );
+      }
+      // Dev/staging only — auto-grant so local setup works without manual DB edits
       await this.userRepo.update(userId, { isAdmin: true });
     }
-    // Re-sign with isAdmin=true
     const freshUser = await this.userRepo.findOneBy({ id: userId });
     // freshUser cannot be null — user was just returned by loginWithTelegram
     const token = this.jwtService.sign({
