@@ -198,7 +198,6 @@ export class AdminController {
           FROM transactions pt
           WHERE pt.type = 'bet_payout'
             AND pt."isBonus" = false
-            AND pt.amount > 0
             AND pt."positionId" IN (
               SELECT p_win.id FROM positions p_win
               WHERE p_win.status = 'won'
