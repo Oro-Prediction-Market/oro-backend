@@ -3,7 +3,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { User } from "../entities/user.entity";
 import { Market } from "../entities/market.entity";
-import { Dispute } from "../entities/dispute.entity";
+import { Dispute, DisputeBondStatus } from "../entities/dispute.entity";
 import { Transaction } from "../entities/transaction.entity";
 import { AuditLog } from "../entities/audit-log.entity";
 
@@ -104,11 +104,24 @@ export class ReportingService {
   }
 
   async getDisputeStats(): Promise<any> {
-    const [totalDisputes, byBondRefunded] = await Promise.all([
+    const [total, pending, resolved, bondResult] = await Promise.all([
       this.disputeRepo.count(),
-      this.disputeRepo.createQueryBuilder("d").select("d.bondRefunded", "bondRefunded").addSelect("COUNT(*)", "count").groupBy("d.bondRefunded").getRawMany(),
+      this.disputeRepo.count({ where: { bondStatus: DisputeBondStatus.LOCKED } }),
+      this.disputeRepo.createQueryBuilder("d")
+        .where("d.bondStatus IN (:...statuses)", {
+          statuses: [DisputeBondStatus.REWARDED, DisputeBondStatus.FORFEITED],
+        })
+        .getCount(),
+      this.disputeRepo.createQueryBuilder("d")
+        .select("SUM(d.bondAmount)", "totalBond")
+        .getRawOne(),
     ]);
-    return { totalDisputes, byBondRefunded };
+    return {
+      total,
+      pending,
+      resolved,
+      totalBond: Number(bondResult?.totalBond ?? 0),
+    };
   }
 
   async getMarketDisputeSummary(marketId: string): Promise<any> {
@@ -137,7 +150,7 @@ export class ReportingService {
     const qb = this.disputeRepo.createQueryBuilder("d")
       .leftJoinAndSelect("d.user", "user")
       .leftJoinAndSelect("d.market", "market")
-      .where("d.bondRefunded = :refunded", { refunded: false });
+      .where("d.bondStatus = :status", { status: DisputeBondStatus.LOCKED });
     const [data, total] = await qb
       .orderBy("d.bondAmount", "DESC")
       .addOrderBy("d.createdAt", "ASC")
