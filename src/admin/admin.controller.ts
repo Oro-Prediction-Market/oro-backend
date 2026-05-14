@@ -284,10 +284,12 @@ export class AdminController {
   @ApiQuery({ name: "page", required: false, type: Number })
   @ApiQuery({ name: "limit", required: false, type: Number })
   @ApiQuery({ name: "status", required: false, type: String })
+  @ApiQuery({ name: "externalSource", required: false, type: String, description: "Filter by externalSource. Use 'none' to get markets with no externalSource." })
   async listMarkets(
     @Query("page") page = "1",
     @Query("limit") limit = "20",
     @Query("status") status?: string,
+    @Query("externalSource") externalSource?: string,
   ) {
     const take = Math.min(Number(limit) || 20, 500);
     const skip = (Math.max(Number(page), 1) - 1) * take;
@@ -299,7 +301,12 @@ export class AdminController {
       .skip(skip)
       .take(take);
     if (status && status.toLowerCase() !== "all") {
-      qb.where("market.status = :status", { status: status.toLowerCase() });
+      qb.andWhere("market.status = :status", { status: status.toLowerCase() });
+    }
+    if (externalSource === "none") {
+      qb.andWhere("market.externalSource IS NULL");
+    } else if (externalSource) {
+      qb.andWhere("market.externalSource = :externalSource", { externalSource });
     }
     const [data, total] = await qb.getManyAndCount();
     return {
