@@ -126,7 +126,7 @@ export class KeeperService {
             await this.marketsService.transition(market.id, MarketStatus.OPEN);
             justOpenedIds.add(market.id);
             this.addLog("success", `✅ Market "${market.title}" auto-opened.`);
-            if (market.externalSource !== "ter") {
+            if (!["ter", "btc"].includes(market.externalSource ?? "")) {
               await this.notifyAdmin(
                 `🤖 <b>Keeper: Market Opened</b>\n\n` +
                   `📊 <b>${market.title}</b>\n` +
@@ -156,8 +156,8 @@ export class KeeperService {
       let closed = 0;
       for (const market of openMarkets) {
         if (!market.closesAt) continue;
-        // TER markets are managed by TerMarketService — skip them entirely
-        if (market.externalSource === "ter") continue;
+        // TER/BTC markets are managed by their own service — skip them entirely
+        if (["ter", "btc"].includes(market.externalSource ?? "")) continue;
         // Never close a market that was opened in this same cron tick
         if (justOpenedIds.has(market.id)) {
           this.addLog(
@@ -180,8 +180,8 @@ export class KeeperService {
             );
             // Send admin a DM with one button per outcome so they can propose
             // the winner directly from Telegram — no admin panel needed.
-            // Skip for TER markets — they auto-resolve without admin intervention.
-            if (market.externalSource !== "ter") {
+            // Skip for TER/BTC markets — they auto-resolve without admin intervention.
+            if (!["ter", "btc"].includes(market.externalSource ?? "")) {
               await this.notifyAdminPropose(market);
             }
           } catch (err: any) {
@@ -238,7 +238,7 @@ export class KeeperService {
       for (const market of resolvingMarkets) {
         if (!market.disputeDeadlineAt || !market.proposedOutcomeId) continue;
         if (new Date() < new Date(market.disputeDeadlineAt)) continue; // window still open
-        if (market.externalSource === "ter") continue; // TER resolves itself via TerMarketService
+        if (["ter", "btc"].includes(market.externalSource ?? "")) continue; // auto-resolving markets manage themselves
 
         try {
           this.addLog(

@@ -1,9 +1,9 @@
-import { Controller, Get, Post } from "@nestjs/common";
+import { Controller, Get, Post, UseGuards } from "@nestjs/common";
 import { ApiTags, ApiOperation } from "@nestjs/swagger";
 import { TerPriceService, TerPrice } from "./ter-price.service";
 import { TerMarketService } from "./ter-market.service";
 import { RedisService } from "../redis/redis.service";
-import { Public } from "../auth/guards";
+import { Public, JwtAuthGuard, AdminGuard } from "../auth/guards";
 
 @ApiTags("ter")
 @Controller("ter")
@@ -42,9 +42,9 @@ export class TerController {
   }
 
   @Post("spawn")
-  @Public() // TODO: In production, this should be admin-only
+  @UseGuards(JwtAuthGuard, AdminGuard)
   @ApiOperation({
-    summary: "Manually spawn a TER market (for testing)",
+    summary: "Manually spawn a TER market (admin only)",
     description:
       "Manually triggers the creation of a new TER market. " +
       "Useful for testing without waiting for the cron schedule.",

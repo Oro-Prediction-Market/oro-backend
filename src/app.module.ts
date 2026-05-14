@@ -39,6 +39,7 @@ import { EventsModule } from "./events/events.module";
 import { SseModule } from "./sse/sse.module";
 import { UserEvent } from "./entities/user-event.entity";
 import { TerModule } from "./ter/ter.module";
+import { BtcModule } from "./btc/btc.module";
 
 @Module({
   imports: [
@@ -128,6 +129,7 @@ import { TerModule } from "./ter/ter.module";
     EventsModule,
     SseModule,
     TerModule,
+    BtcModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

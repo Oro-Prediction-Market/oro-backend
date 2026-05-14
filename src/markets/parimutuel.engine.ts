@@ -158,8 +158,8 @@ export class ParimutuelEngine implements OnModuleInit {
         if (market.status !== MarketStatus.OPEN)
           throw new BadRequestException("Market is not open for betting");
 
-        // Market-aware minimum bet: TER markets allow Nu 10, others require Nu 50
-        const minBet = market.externalSource === "ter" ? 10 : 50;
+        // Market-aware minimum bet: TER/BTC markets allow Nu 10, others require Nu 50
+        const minBet = ["ter", "btc"].includes(market.externalSource ?? "") ? 10 : 50;
         if (amount < minBet)
           throw new BadRequestException(`Minimum bet is Nu ${minBet}`);
 

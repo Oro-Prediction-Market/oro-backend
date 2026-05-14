@@ -36,7 +36,7 @@
 
 ## 1. What is Oro?
 
-Oro is a **parimutuel prediction market** built for Bhutan and delivered as a **Telegram Mini App**. Users predict the outcome of real-world events — sports, politics, weather, entertainment — stake Oro credits (Nu, pegged to the Bhutanese Ngultrum), and share a payout pool when the market resolves in their favour.
+Oro is a **parimutuel prediction market** built for Bhutan and delivered as a **Telegram Mini App**. Users predict the outcome of real-world events — sports, gaming, weather, entertainment — stake Oro credits (Nu, pegged to the Bhutanese Ngultrum), and share a payout pool when the market resolves in their favour.
 
 Everything runs inside Telegram. No separate download or account creation is needed. Real-money flow is handled through **DK Bank**, Bhutan's digital payment network.
 
