@@ -918,11 +918,16 @@ export class ParimutuelEngine implements OnModuleInit {
     );
 
     // Recalculate reputation + send individual result DMs — fire and forget
-    this.sendSettlementNotifications(market, winner, settlement).catch((err) =>
-      this.logger.warn(
-        `[Notify] Settlement notifications failed for market ${marketId}: ${err.message}`,
-      ),
-    );
+    // Skip if the market was refunded (thin pool / cancelled) — refund DMs
+    // are already sent inside settleMarket(); sending win/loss DMs on top
+    // would produce a confusing double notification.
+    if (!settlement.cancelReason) {
+      this.sendSettlementNotifications(market, winner, settlement).catch((err) =>
+        this.logger.warn(
+          `[Notify] Settlement notifications failed for market ${marketId}: ${err.message}`,
+        ),
+      );
+    }
 
     // Settle any active duels on this market — fire and forget
     this.challengesService
