@@ -9,6 +9,7 @@ import {
   BadRequestException,
   UseGuards,
   Request,
+  Logger,
 } from "@nestjs/common";
 import {
   ApiTags,
@@ -25,7 +26,7 @@ import {
   MinLength as MinLengthValidator,
 } from "class-validator";
 import { ApiProperty } from "@nestjs/swagger";
-import { Throttle, SkipThrottle } from "@nestjs/throttler";
+import { Throttle } from "@nestjs/throttler";
 import { verify as totpVerify } from "otplib";
 import { AuthService } from "./auth.service";
 import { Public, JwtAuthGuard } from "./guards";
@@ -35,6 +36,20 @@ import { ManualLoginRequestDto } from "./dto/manual-login-request.dto";
 import { ManualLoginVerifyDto } from "./dto/manual-login-verify.dto";
 import { TelegramVerificationService } from "../telegram/telegram-verification.service";
 import { AuditAction } from "../entities/audit-log.entity";
+
+class AdminLoginDto {
+  @ApiProperty({ description: "Value of ADMIN_DEV_SECRET in .env" })
+  @IsString()
+  secret: string;
+
+  @ApiProperty({
+    description: "6-digit TOTP code (required when ADMIN_TOTP_SECRET is set)",
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  totp?: string;
+}
 
 class SetPwaPasswordDto {
   @ApiProperty({
@@ -315,28 +330,19 @@ export class AuthController {
 
   /**
    * Admin portal login — requires ADMIN_DEV_SECRET + TOTP (2FA).
-   * Works in all environments. The secret + TOTP pair is the security gate.
+   * Credentials go in the POST body so they never appear in server logs.
+   * Rate-limited to 5 attempts per 5 minutes to prevent brute-force.
    */
-  @Get("admin/login")
+  @Post("admin/login")
   @Public()
-  @SkipThrottle()
+  @HttpCode(200)
+  @Throttle({ default: { limit: 5, ttl: 300_000 } })
   @ApiOperation({
     summary: "Admin portal login (requires ADMIN_DEV_SECRET + TOTP)",
   })
-  @ApiQuery({
-    name: "secret",
-    required: true,
-    description: "Value of ADMIN_DEV_SECRET in .env",
-  })
-  @ApiQuery({
-    name: "totp",
-    required: false,
-    description: "6-digit TOTP code (required when ADMIN_TOTP_SECRET is set)",
-  })
-  async adminLogin(
-    @Query("secret") secret: string,
-    @Query("totp") totp?: string,
-  ) {
+  @ApiBody({ type: AdminLoginDto })
+  async adminLogin(@Body() dto: AdminLoginDto) {
+    const { secret, totp } = dto;
     const expected = process.env.ADMIN_DEV_SECRET;
     if (!expected) {
       throw new UnauthorizedException("Admin login is not configured");
@@ -352,6 +358,9 @@ export class AuthController {
 
     // TOTP 2FA — required if ADMIN_TOTP_SECRET is configured
     const totpSecret = process.env.ADMIN_TOTP_SECRET;
+    if (!totpSecret) {
+      Logger.warn("ADMIN_TOTP_SECRET is not set — admin login has no 2FA", "AuthController");
+    }
     if (totpSecret) {
       if (!totp) throw new UnauthorizedException("TOTP code required");
       const { valid } = await totpVerify({ token: totp, secret: totpSecret });

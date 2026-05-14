@@ -45,6 +45,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       isAdmin: user.isAdmin,
       jti: payload.jti,
       exp: payload.exp,
+      telegramId: user.telegramId,
     };
   }
 }
