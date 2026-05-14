@@ -1,6 +1,6 @@
 # Oro — Prediction Markets for Bhutan
 
-Oro is a parimutuel prediction market platform built for Bhutan and delivered as a Telegram Mini App. Users predict the outcome of real-world events — sports, politics, weather, entertainment — stake Oro credits (Nu, pegged to the Bhutanese Ngultrum), and share a payout pool when the market resolves in their favour.
+Oro is a parimutuel prediction market platform built for Bhutan and delivered as a Telegram Mini App. Users predict the outcome of real-world events — sports, gaming, weather, entertainment — stake Oro credits (Nu, pegged to the Bhutanese Ngultrum), and share a payout pool when the market resolves in their favour.
 
 ---
 
