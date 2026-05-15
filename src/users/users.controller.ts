@@ -325,9 +325,81 @@ export class UsersController {
   @Get("leaderboard")
   @Public()
   @ApiOperation({ summary: "Global leaderboard — top 50 predictors" })
-  async getLeaderboard(@Request() req: any) {
+  @ApiQuery({ name: "period", enum: ["all", "week"], required: false })
+  async getLeaderboard(
+    @Request() req: any,
+    @Query("period") period: "all" | "week" = "all",
+  ) {
     const myId: string | null = req.user?.userId ?? null;
 
+    if (period === "week") {
+      const weekStart = new Date(Date.now() - 7 * 24 * 3600 * 1000);
+
+      const weeklyRows = await this.betRepo
+        .createQueryBuilder("p")
+        .select("u.id", "id")
+        .addSelect("u.firstName", "firstName")
+        .addSelect("u.lastName", "lastName")
+        .addSelect("u.username", "username")
+        .addSelect("u.photoUrl", "photoUrl")
+        .addSelect("u.reputationScore", "reputationScore")
+        .addSelect("u.reputationTier", "reputationTier")
+        .addSelect("u.totalPredictions", "totalPredictions")
+        .addSelect("u.correctPredictions", "correctPredictions")
+        .addSelect("COUNT(p.id)", "weeklyPredictions")
+        .addSelect(
+          "SUM(CASE WHEN p.status = 'won' THEN 1 ELSE 0 END)",
+          "weeklyWins",
+        )
+        .addSelect("COALESCE(SUM(p.amount), 0)", "weeklyBetAmount")
+        .innerJoin("p.user", "u")
+        .where("p.placedAt >= :weekStart", { weekStart })
+        .groupBy("u.id")
+        .orderBy('"weeklyWins"', "DESC")
+        .addOrderBy('"weeklyPredictions"', "DESC")
+        .limit(50)
+        .getRawMany();
+
+      const board = weeklyRows.map((r, i) => {
+        const wp = Number(r.weeklyPredictions);
+        const ww = Number(r.weeklyWins);
+        return {
+          rank: i + 1,
+          id: r.id,
+          firstName: r.firstName,
+          lastName: r.lastName,
+          username: r.username,
+          photoUrl: r.photoUrl,
+          reputationScore:
+            r.reputationScore !== null ? Number(r.reputationScore) : null,
+          reputationTier: r.reputationTier,
+          totalPredictions: Number(r.totalPredictions),
+          correctPredictions: Number(r.correctPredictions),
+          winRate: wp > 0 ? Math.round((ww / wp) * 100) : 0,
+          totalBetAmount: Math.round(Number(r.weeklyBetAmount)),
+          weeklyPredictions: wp,
+          weeklyWins: ww,
+          isMe: myId != null && r.id === myId,
+        };
+      });
+
+      const totalRankedRaw = await this.betRepo
+        .createQueryBuilder("p")
+        .innerJoin("p.user", "u")
+        .where("p.placedAt >= :weekStart", { weekStart })
+        .select("COUNT(DISTINCT u.id)", "cnt")
+        .getRawOne();
+      const totalRanked = Number(totalRankedRaw?.cnt ?? 0);
+
+      const meInBoard = board.find((r) => r.isMe);
+      return {
+        board,
+        myRank: meInBoard ? meInBoard.rank : null,
+        totalRanked,
+      };
+    }
+
+    // ── All-time ──────────────────────────────────────────────────────────────
     const rows = await this.userRepo
       .createQueryBuilder("u")
       .select([
@@ -370,7 +442,6 @@ export class UsersController {
       isMe: myId != null && u.id === myId,
     }));
 
-    // Compute caller's rank even if outside top 50 (only for authenticated users)
     let myRank: number | null = null;
     if (myId) {
       const meInBoard = board.find((r) => r.isMe);

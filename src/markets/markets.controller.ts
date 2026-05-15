@@ -122,7 +122,6 @@ export class MarketsController {
   }
 
   @Get("activity")
-  @Public()
   @ApiOperation({
     summary: "Recent bet/win events for the live activity ticker",
   })
