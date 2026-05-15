@@ -337,7 +337,7 @@ export class AuthController {
   @Post("admin/login")
   @Public()
   @HttpCode(200)
-  @Throttle({ default: { limit: 5, ttl: 300_000 } })
+  @Throttle({ default: { limit: 10, ttl: 300_000 } })
   @ApiOperation({
     summary: "Admin portal login (requires ADMIN_DEV_SECRET + TOTP)",
   })
