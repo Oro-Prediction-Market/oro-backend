@@ -159,7 +159,9 @@ export class ParimutuelEngine implements OnModuleInit {
           throw new BadRequestException("Market is not open for betting");
 
         // Market-aware minimum bet: TER/BTC markets allow Nu 10, others require Nu 50
-        const minBet = ["ter", "btc"].includes(market.externalSource ?? "") ? 10 : 50;
+        const minBet = ["ter", "btc"].includes(market.externalSource ?? "")
+          ? 10
+          : 50;
         if (amount < minBet)
           throw new BadRequestException(`Minimum bet is Nu ${minBet}`);
 
@@ -308,7 +310,7 @@ export class ParimutuelEngine implements OnModuleInit {
             balanceAfter: balanceBefore - amount,
             positionId: savedPosition.id,
             userId,
-            note: `Position on outcome: ${outcome.label}`,
+            note: `Predicted on · ${market.title} → ${outcome.label}`,
           }),
         );
 
@@ -922,10 +924,11 @@ export class ParimutuelEngine implements OnModuleInit {
     // are already sent inside settleMarket(); sending win/loss DMs on top
     // would produce a confusing double notification.
     if (!settlement.cancelReason) {
-      this.sendSettlementNotifications(market, winner, settlement).catch((err) =>
-        this.logger.warn(
-          `[Notify] Settlement notifications failed for market ${marketId}: ${err.message}`,
-        ),
+      this.sendSettlementNotifications(market, winner, settlement).catch(
+        (err) =>
+          this.logger.warn(
+            `[Notify] Settlement notifications failed for market ${marketId}: ${err.message}`,
+          ),
       );
     }
 
@@ -1425,7 +1428,7 @@ Good luck! 🍀
     }
 
     this.logger.log(
-      `[Notify] Settlement DMs sent for market ${market.id} to ${Object.keys(betsByUser).length} bettors (${bets.length} positions total)`,
+      `[Notify] Settlement DMs sent for market ${market.id} to ${Object.keys(betsByUser).length} predictors (${bets.length} positions total)`,
     );
   }
 
