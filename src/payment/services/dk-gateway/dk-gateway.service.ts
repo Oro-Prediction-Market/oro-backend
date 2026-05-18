@@ -320,13 +320,13 @@ export class DKGatewayService {
     }
 
     try {
-      this.logger.log(`DK POST ${endpoint} → ${JSON.stringify(requestBody)}`);
+      this.logger.debug(`DK POST ${endpoint} → ${JSON.stringify(requestBody)}`);
       const res = await this.nativeFetch<T>(
         endpoint,
         JSON.stringify(requestBody),
         headers,
       );
-      this.logger.log(`DK POST ${endpoint} ← ${JSON.stringify(res)}`);
+      this.logger.debug(`DK POST ${endpoint} ← ${JSON.stringify(res)}`);
       return res;
     } catch (err: any) {
       // nativeFetch already converts HTTP errors and timeouts — just re-throw.

@@ -3,10 +3,12 @@ import { JwtModule } from "@nestjs/jwt";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import { SseService } from "./sse.service";
 import { SseController } from "./sse.controller";
+import { RedisModule } from "../redis/redis.module";
 
 @Global()
 @Module({
   imports: [
+    RedisModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
