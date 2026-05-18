@@ -406,7 +406,7 @@ export class ParimutuelEngine implements OnModuleInit {
 
       // ── Referral bonus (non-blocking) ────────────────────────────────────
       // Fires exactly once: on the referred user's first ever bet.
-      // Referrer earns 20% of the house rake on that bet.
+      // Referrer earns Nu 25 flat + 5% of the first bet, capped at Nu 75.
       this.creditReferralBonusIfEligible(
         userId,
         amount,
@@ -492,9 +492,21 @@ export class ParimutuelEngine implements OnModuleInit {
     );
     if (bonus <= 0) return;
 
+    let bonusCredited = false;
+
     await this.dataSource.transaction(async (em) => {
       const txRepo = em.getRepository(Transaction);
       const userRepo = em.getRepository(User);
+
+      // Atomic guard: only the first concurrent call wins.
+      // Two bets placed simultaneously on different markets can both pass the
+      // outer check (pre-transaction read). The conditional WHERE here ensures
+      // only one DB write succeeds; the second sees affected=0 and aborts.
+      const claim = await userRepo.update(
+        { id: bettor.id, referralBonusTriggered: false },
+        { referralBonusTriggered: true },
+      );
+      if (!claim.affected) return;
 
       const { balance: referrerBalance } = await txRepo
         .createQueryBuilder("t")
@@ -511,13 +523,15 @@ export class ParimutuelEngine implements OnModuleInit {
           balanceBefore: balBefore,
           balanceAfter: balBefore + bonus,
           userId: referrer.id,
+          isBonus: false,
           note: `Referral bonus — friend placed their first bet`,
         }),
       );
 
-      // Mark so this never fires again for this referred user
-      await userRepo.update(bettor.id, { referralBonusTriggered: true });
+      bonusCredited = true;
     });
+
+    if (!bonusCredited) return;
 
     // Invalidate referrer's cached balance and notify via SSE
     await this.redis.del(`oro:cache:balance:${referrer.id}`);
@@ -561,6 +575,15 @@ export class ParimutuelEngine implements OnModuleInit {
       const txRepo = em.getRepository(Transaction);
       const userRepo = em.getRepository(User);
 
+      // Atomic guard: concurrent referral bonus credits for the same referrer
+      // could both trigger this check before either commits. Conditional WHERE
+      // ensures only one call wins.
+      const claim = await userRepo.update(
+        { id: referrerId, referralPrizeClaimed: false },
+        { referralPrizeClaimed: true },
+      );
+      if (!claim.affected) return;
+
       const { balance } = await txRepo
         .createQueryBuilder("t")
         .select("COALESCE(SUM(t.amount), 0)", "balance")
@@ -576,12 +599,10 @@ export class ParimutuelEngine implements OnModuleInit {
           balanceBefore: balBefore,
           balanceAfter: balBefore + prize,
           userId: referrerId,
+          isBonus: false,
           note: `Referral prize — reached ${ParimutuelEngine.REFERRAL_PRIZE_THRESHOLD} converted friends`,
         }),
       );
-
-      // Mark claimed so this never fires again
-      await userRepo.update(referrerId, { referralPrizeClaimed: true });
     });
 
     await this.redis.del(`oro:cache:balance:${referrerId}`);

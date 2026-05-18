@@ -126,12 +126,16 @@ export class AuthService {
     const tgUser = this.validateTelegramInitData(rawInitData);
     const providerId = String(tgUser.id);
 
-    // Resolve referrer from code like "ref_<telegramId>" — ignore self-referrals
+    // Resolve referrer from code like "ref_<telegramId>" or
+    // "ref_<telegramId>_m_<marketId>" (ChallengeAFriend deep-link). Strip the
+    // _m_<marketId> suffix so only the telegramId is used for the lookup.
     let referredByUserId: string | null = null;
     if (referralCode) {
-      const refTelegramId = referralCode.startsWith("ref_")
+      const raw = referralCode.startsWith("ref_")
         ? referralCode.slice(4)
         : referralCode;
+      // Strip optional _m_<anything> market suffix
+      const refTelegramId = raw.split("_m_")[0];
       if (refTelegramId && refTelegramId !== providerId) {
         const referrer = await this.userRepo.findOne({
           where: { telegramId: refTelegramId },

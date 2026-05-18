@@ -20,6 +20,9 @@ function makeDs(opts: {
   bettorReferredBy: string | null;
   bonusAlreadyTriggered: boolean;
   referrerBalance: number;
+  /** Simulate the race being lost: DB update returns affected=0 even though the
+   *  outer pre-transaction read saw referralBonusTriggered=false. */
+  simulateRaceLost?: boolean;
 }) {
   const savedTx: any[] = [];
   const updatedUsers: Record<string, any> = {};
@@ -51,8 +54,14 @@ function makeDs(opts: {
       }
       return Promise.resolve(null);
     }),
-    update: jest.fn(async (id: string, patch: any) => {
-      updatedUsers[id] = patch;
+    // Engine now passes an object WHERE clause: { id, referralBonusTriggered: false }
+    // We extract the userId from it and return a proper UpdateResult shape.
+    update: jest.fn(async (whereOrId: any, patch: any) => {
+      const userId =
+        typeof whereOrId === "string" ? whereOrId : whereOrId.id;
+      const affected = opts.simulateRaceLost ? 0 : 1;
+      if (affected) updatedUsers[userId] = patch;
+      return { affected };
     }),
   };
 
@@ -77,6 +86,7 @@ function makeDs(opts: {
 function makeEngine(ds: any) {
   const redis = { del: jest.fn(), get: jest.fn(), set: jest.fn() };
   const logger = { log: jest.fn(), error: jest.fn(), warn: jest.fn() };
+  const sse = { emit: jest.fn() };
 
   const engine = new ParimutuelEngine(
     null as any, // marketRepo
@@ -96,19 +106,20 @@ function makeEngine(ds: any) {
     null as any, // streakService
     null as any, // challengesService
     null as any, // marketsGateway
-    null as any, // sse
+    null as any, // sse (overridden below)
   );
 
-  // Inject mocked redis and logger
+  // Inject mocked redis, logger, and sse
   (engine as any).redis = redis;
   (engine as any).logger = logger;
+  (engine as any).sse = sse;
 
   // Stub out the prize check so it doesn't cascade
   jest
     .spyOn(engine as any, "creditReferralPrizeIfEligible")
     .mockResolvedValue(undefined);
 
-  return { engine, redis, logger };
+  return { engine, redis, logger, sse };
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -204,5 +215,22 @@ describe("creditReferralBonusIfEligible", () => {
     await (engine as any).creditReferralBonusIfEligible(BETTOR_ID, 20, 5);
 
     expect(savedTx[0].amount).toBe(26);
+  });
+
+  it("race condition — concurrent second call loses DB race and does NOT double-credit", async () => {
+    // Simulates two bets landing simultaneously: both pass the outer
+    // referralBonusTriggered=false check, but only the first DB update succeeds.
+    // The second sees affected=0 and must abort without saving any transaction.
+    const { ds, savedTx } = makeDs({
+      bettorReferredBy: REFERRER_ID,
+      bonusAlreadyTriggered: false,
+      referrerBalance: 500,
+      simulateRaceLost: true,
+    });
+    const { engine } = makeEngine(ds);
+
+    await (engine as any).creditReferralBonusIfEligible(BETTOR_ID, 100, 5);
+
+    expect(savedTx).toHaveLength(0);
   });
 });
