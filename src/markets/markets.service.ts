@@ -17,6 +17,7 @@ import {
   MarketMechanism,
   MarketCategory,
 } from "../entities/market.entity";
+import { Settlement } from "../entities/settlement.entity";
 import { Outcome } from "../entities/outcome.entity";
 import { Dispute } from "../entities/dispute.entity";
 import { DisputeBondStatus } from "../entities/dispute.entity";
@@ -825,5 +826,31 @@ export class MarketsService {
     }
 
     return emptyMarkets.length;
+  }
+
+  async getZeroPoolSettled(): Promise<Market[]> {
+    return this.marketRepo
+      .createQueryBuilder('m')
+      .where('m.status = :status', { status: MarketStatus.SETTLED })
+      .andWhere('(m.totalPool = :zero OR m.totalPool IS NULL)', { zero: 0 })
+      .orderBy('m.createdAt', 'DESC')
+      .getMany();
+  }
+
+  async deleteZeroPoolSettled(): Promise<number> {
+    const markets = await this.getZeroPoolSettled();
+    if (markets.length === 0) return 0;
+
+    const settlementRepo = this.dataSource.getRepository(Settlement);
+    const positionRepo = this.dataSource.getRepository(Position);
+
+    for (const market of markets) {
+      await positionRepo.delete({ marketId: market.id });
+      await settlementRepo.delete({ marketId: market.id });
+      await this.marketRepo.remove(market);
+      await this.invalidateMarketCache(market.id);
+    }
+
+    return markets.length;
   }
 }

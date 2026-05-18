@@ -155,16 +155,22 @@ export class AdminController {
   @Get("finance-stats")
   @ApiOperation({ summary: "Platform financial summary: house income, pools" })
   async financeStats() {
-    // Total pool from ALL settled markets
+    // Settled pool and house income — sourced from settlements table (actual
+    // recorded amounts) so this matches the Reconciliation panel exactly.
+    // Thin-pool refunded markets have houseAmount=0 in settlements; using the
+    // markets table formula (totalPool × houseEdgePct) would overstate by the
+    // theoretical take on those refunded pools.
     const settledResult = await this.dataSource.query(`
-      SELECT COALESCE(SUM("totalPool"), 0) AS "settledPool",
-             COUNT(*) AS "settledCount"
-      FROM markets WHERE status = 'settled'
-    `);
-    // House income = sum(totalPool * houseEdgePct / 100) for settled markets
-    const houseResult = await this.dataSource.query(`
-      SELECT COALESCE(SUM("totalPool" * "houseEdgePct" / 100), 0) AS "houseIncome"
-      FROM markets WHERE status = 'settled'
+      SELECT
+        COALESCE(SUM(s."totalPool"), 0)   AS "settledPool",
+        COALESCE(SUM(s."houseAmount"), 0) AS "houseIncome",
+        COUNT(*)                          AS "settledCount"
+      FROM (
+        SELECT DISTINCT ON (sel."marketId") sel.*
+        FROM settlements sel
+        INNER JOIN markets m ON m.id = sel."marketId"
+        ORDER BY sel."marketId", sel."settledAt" ASC
+      ) s
     `);
     // Active pool (open + closed + resolving + resolved)
     const activeResult = await this.dataSource.query(`
@@ -172,10 +178,12 @@ export class AdminController {
              COUNT(*) AS "activeCount"
       FROM markets WHERE status IN ('open','closed','resolving','resolved')
     `);
-    // Total all-time volume
+    // Total all-time volume — exclude cancelled markets (pools were refunded, not real volume).
+    // Count includes all markets ever created.
     const allTimeResult = await this.dataSource.query(`
-      SELECT COALESCE(SUM("totalPool"), 0) AS "allTimeVolume",
-             COUNT(*) AS "totalMarkets"
+      SELECT
+        COALESCE(SUM(CASE WHEN status != 'cancelled' THEN "totalPool" ELSE 0 END), 0) AS "allTimeVolume",
+        COUNT(*) AS "totalMarkets"
       FROM markets
     `);
     // Bonus liability metrics:
@@ -222,7 +230,7 @@ export class AdminController {
     `);
 
     return {
-      houseIncome: parseFloat(houseResult[0].houseIncome),
+      houseIncome: parseFloat(settledResult[0].houseIncome),
       settledPool: parseFloat(settledResult[0].settledPool),
       settledCount: parseInt(settledResult[0].settledCount),
       activePool: parseFloat(activeResult[0].activePool),
@@ -315,6 +323,28 @@ export class AdminController {
       page: Math.max(Number(page), 1),
       pages: Math.ceil(total / take) || 1,
     };
+  }
+
+  @Get("markets/settled/zero-pool")
+  @ApiOperation({ summary: "List settled markets with zero pool volume" })
+  getZeroPoolSettledMarkets() {
+    return this.marketsService.getZeroPoolSettled();
+  }
+
+  @Delete("markets/cleanup/zero-pool-settled")
+  @ApiOperation({ summary: "Delete all settled markets with zero pool volume" })
+  async purgeZeroPoolSettled(@Request() req: any) {
+    const count = await this.marketsService.deleteZeroPoolSettled();
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action: AuditAction.MARKET_DELETE,
+      entityType: "market",
+      entityId: "bulk-zero-pool-settled",
+      before: { count },
+      ipAddress: req.ip,
+    });
+    return { deleted: count };
   }
 
   @Get("markets/:id")
