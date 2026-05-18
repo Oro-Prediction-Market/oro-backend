@@ -352,12 +352,14 @@ export class AuthService {
     const result = await this.loginWithTelegram(rawInitData);
     const userId = result.user.id;
     if (!result.user.isAdmin) {
-      if (process.env.NODE_ENV === "production") {
+      // Auto-grant requires an explicit opt-in flag, not just a non-production NODE_ENV.
+      // This prevents staging/preview environments from accidentally granting admin to
+      // any Telegram user when NODE_ENV is misconfigured or absent.
+      if (process.env.ALLOW_AUTO_ADMIN !== "true") {
         throw new UnauthorizedException(
           "This Telegram account does not have admin privileges. Grant isAdmin in the database first.",
         );
       }
-      // Dev/staging only — auto-grant so local setup works without manual DB edits
       await this.userRepo.update(userId, { isAdmin: true });
     }
     const freshUser = await this.userRepo.findOneBy({ id: userId });
@@ -620,6 +622,7 @@ export class AuthService {
         const token = this.jwtService.sign({
           sub: freshUser!.id,
           isAdmin: freshUser!.isAdmin,
+          jti: randomUUID(),
         });
         const { phoneNumber: _p2, ...safeDkAccount2 } = account;
         return {

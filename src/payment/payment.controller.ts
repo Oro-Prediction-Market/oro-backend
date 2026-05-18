@@ -196,11 +196,21 @@ export class PaymentController {
       },
     },
   })
-  async dkAccountInquiry(@Body() dto: ClientInquiryDto) {
+  async dkAccountInquiry(@Body() dto: ClientInquiryDto, @Request() req: any) {
     if (!dto?.id_number || dto.id_number.length < 11) {
       throw new BadRequestException("id_number must be 11 digits");
     }
-    return this.dkGatewayService.lookupAccountByCID(dto.id_number);
+    // Same rate limits as client-inquiry: 3/min per IP, 10/hr per CID
+    const ip = req.ip || req.connection?.remoteAddress || "unknown";
+    await this.enforceRateLimit(`account-inquiry:ip:${ip}`, 3, 60);
+    await this.enforceRateLimit(`account-inquiry:cid:${dto.id_number}`, 10, 3600);
+
+    const { accountNumber, accountName } =
+      await this.dkGatewayService.lookupAccountByCID(dto.id_number);
+    // phoneNumber is not returned — callers only need name + account number
+    // to show a confirmation prompt. Returning the phone would expose PII to
+    // any authenticated user who knows the target's CID.
+    return { accountNumber, accountName };
   }
 
   @Post("client-inquiry")
