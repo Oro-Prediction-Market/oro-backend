@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual, randomUUID } from "crypto";
+import { createHmac, timingSafeEqual, randomUUID, randomInt } from "crypto";
 import * as bcrypt from "bcryptjs";
 import {
   Injectable,
@@ -737,7 +737,7 @@ export class AuthService {
     }
 
     // Generate 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otp = randomInt(100000, 1000000).toString();
 
     // Store OTP in Redis with 5-minute expiry
     const redisKey = `manual_login_otp:${telegramId}`;
