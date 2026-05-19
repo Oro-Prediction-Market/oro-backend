@@ -53,6 +53,37 @@ export class TelegramSimpleService {
     this.botToken = this.configService.getOrThrow<string>("TELEGRAM_BOT_TOKEN");
   }
 
+  /**
+   * Fetch user's Telegram profile photo URL via Bot API.
+   * Returns the HTTPS URL or null if no photo is available.
+   */
+  async getUserProfilePhotoUrl(telegramId: number): Promise<string | null> {
+    try {
+      const photosRes = await fetch(
+        `https://api.telegram.org/bot${this.botToken}/getUserProfilePhotos?user_id=${telegramId}&limit=1`,
+      );
+      const photosData = await photosRes.json();
+      if (!photosData?.ok || !photosData.result?.photos?.length) return null;
+
+      // Get the smallest photo (last in the array is largest, first is smallest)
+      const photo = photosData.result.photos[0];
+      // Pick a medium-sized version (index 1 if available, otherwise last)
+      const fileObj = photo[Math.min(1, photo.length - 1)];
+      if (!fileObj?.file_id) return null;
+
+      const fileRes = await fetch(
+        `https://api.telegram.org/bot${this.botToken}/getFile?file_id=${fileObj.file_id}`,
+      );
+      const fileData = await fileRes.json();
+      if (!fileData?.ok || !fileData.result?.file_path) return null;
+
+      return `https://api.telegram.org/file/bot${this.botToken}/${fileData.result.file_path}`;
+    } catch (err: any) {
+      this.logger.warn(`Failed to fetch profile photo for ${telegramId}: ${err.message}`);
+      return null;
+    }
+  }
+
   /** Send a message using built-in fetch — no axios/HttpService dependency. */
   async sendMessage(chatId: number, text: string): Promise<void> {
     try {

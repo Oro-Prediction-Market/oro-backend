@@ -133,7 +133,9 @@ export class AuthService {
     });
 
     const existingUser = authMethod
-      ? await this.userRepo.findOneBy({ id: authMethod.user?.id ?? authMethod.userId })
+      ? await this.userRepo.findOneBy({
+          id: authMethod.user?.id ?? authMethod.userId,
+        })
       : await this.userRepo.findOneBy({ telegramId: providerId });
 
     if (!existingUser) {
@@ -144,6 +146,15 @@ export class AuthService {
         preKyc: true,
         jti: randomUUID(),
       });
+
+      // Fetch profile photo via Bot API if not in initData
+      let photoUrl = tgUser.photo_url || null;
+      if (!photoUrl) {
+        photoUrl = await this.telegramSimple
+          .getUserProfilePhotoUrl(Number(providerId))
+          .catch(() => null);
+      }
+
       return {
         token,
         user: null,
@@ -154,7 +165,7 @@ export class AuthService {
           firstName: tgUser.first_name,
           lastName: tgUser.last_name,
           username: tgUser.username,
-          photoUrl: tgUser.photo_url,
+          photoUrl,
         },
         referralCode,
       };
@@ -183,8 +194,19 @@ export class AuthService {
       telegramChatId: providerId,
       firstName: tgUser.first_name,
       lastName: tgUser.last_name,
-      photoUrl: tgUser.photo_url,
     };
+
+    // Telegram Mini App initData often omits photo_url — fetch via Bot API if missing
+    if (tgUser.photo_url) {
+      updateFields.photoUrl = tgUser.photo_url;
+    } else {
+      const photoUrl = await this.telegramSimple
+        .getUserProfilePhotoUrl(Number(providerId))
+        .catch(() => null);
+      if (photoUrl) updateFields.photoUrl = photoUrl;
+      // If both are null, don't overwrite existing photoUrl in DB
+    }
+
     if (referredByUserId && !existingUser.referredByUserId) {
       updateFields.referredByUserId = referredByUserId;
     }
@@ -201,7 +223,9 @@ export class AuthService {
         }),
       );
     } else {
-      await this.authMethodRepo.update(authMethod.id, { metadata: tgUser as any });
+      await this.authMethodRepo.update(authMethod.id, {
+        metadata: tgUser as any,
+      });
     }
 
     const freshUser = await this.userRepo.findOneBy({ id: existingUser.id });
@@ -225,7 +249,12 @@ export class AuthService {
       },
     });
 
-    return { token, user: stripSensitiveFields(freshUser!), isNewUser: false, requiresKYC: false };
+    return {
+      token,
+      user: stripSensitiveFields(freshUser!),
+      isNewUser: false,
+      requiresKYC: false,
+    };
   }
 
   // ── First-session welcome DM ──────────────────────────────────────────────
@@ -327,8 +356,13 @@ export class AuthService {
   async getPwaStatus(cid: string): Promise<{ hasPassword: boolean }> {
     if (!cid || cid.length !== 11) return { hasPassword: false };
     // Per-CID throttle — prevents enumerating which CIDs belong to Oro PWA users
-    const { allowed } = await this.redis.rateLimit(`pwa-status:cid:${cid}`, 5, 3600);
-    if (!allowed) throw new UnauthorizedException("Too many requests for this CID.");
+    const { allowed } = await this.redis.rateLimit(
+      `pwa-status:cid:${cid}`,
+      5,
+      3600,
+    );
+    if (!allowed)
+      throw new UnauthorizedException("Too many requests for this CID.");
     const user = await this.userRepo.findOne({
       where: { dkCid: cid },
       select: ["pwaPasswordHash"],
