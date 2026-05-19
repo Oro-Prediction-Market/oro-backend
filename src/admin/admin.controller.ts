@@ -292,7 +292,13 @@ export class AdminController {
   @ApiQuery({ name: "page", required: false, type: Number })
   @ApiQuery({ name: "limit", required: false, type: Number })
   @ApiQuery({ name: "status", required: false, type: String })
-  @ApiQuery({ name: "externalSource", required: false, type: String, description: "Filter by externalSource. Use 'none' to get markets with no externalSource." })
+  @ApiQuery({
+    name: "externalSource",
+    required: false,
+    type: String,
+    description:
+      "Filter by externalSource. Use 'none' to get markets with no externalSource.",
+  })
   async listMarkets(
     @Query("page") page = "1",
     @Query("limit") limit = "20",
@@ -314,7 +320,9 @@ export class AdminController {
     if (externalSource === "none") {
       qb.andWhere("market.externalSource IS NULL");
     } else if (externalSource) {
-      qb.andWhere("market.externalSource = :externalSource", { externalSource });
+      qb.andWhere("market.externalSource = :externalSource", {
+        externalSource,
+      });
     }
     const [data, total] = await qb.getManyAndCount();
     return {
@@ -802,9 +810,15 @@ export class AdminController {
         "u.createdAt",
         "u.updatedAt",
       ])
-      .addSelect("COALESCE(lba.cid, u.\"dkCid\")", "dkCid")
-      .addSelect("COALESCE(lba.\"accountNumber\", u.\"dkAccountNumber\")", "dkAccountNumber")
-      .addSelect("COALESCE(lba.\"accountName\", u.\"dkAccountName\")", "dkAccountName");
+      .addSelect('COALESCE(lba.cid, u."dkCid")', "dkCid")
+      .addSelect(
+        'COALESCE(lba."accountNumber", u."dkAccountNumber")',
+        "dkAccountNumber",
+      )
+      .addSelect(
+        'COALESCE(lba."accountName", u."dkAccountName")',
+        "dkAccountName",
+      );
 
     // ── Full-text search ────────────────────────────────────────────────────
     if (search && search.trim()) {
