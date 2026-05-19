@@ -216,6 +216,14 @@ export class BankLinkService {
     account.verifiedAt = new Date();
     await this.lbaRepo.save(account);
 
+    // Sync DK fields back to users table for backward compatibility (admin panel, etc.)
+    await this.userRepo.update(userId, {
+      dkCid: account.cid,
+      dkAccountNumber: account.accountNumber,
+      dkAccountName: account.accountName,
+      dkLinkVerifiedAt: account.verifiedAt,
+    });
+
     this.logger.log(
       `[BankLink] Account ${account.id} verified for user ${userId} (CID: ${account.cid})`,
     );
