@@ -917,7 +917,7 @@ export class ParimutuelEngine implements OnModuleInit {
 
     const settlement = await this.settleMarket(market, winner, 0);
 
-    // Bust balance cache for every bettor so the TMA reflects payouts immediately
+    // Bust balance cache for every predictor so the TMA reflects payouts immediately
     const allBets = await this.betRepo.find({ where: { marketId } });
     const uniqueUserIds = [...new Set(allBets.map((b) => b.userId))];
     await Promise.all(
