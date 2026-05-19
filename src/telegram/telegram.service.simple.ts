@@ -27,21 +27,25 @@ export class TelegramSimpleService {
     windowMinutes: number = 60,
   ): Promise<number> {
     const key = Date.now() * 1000 + Math.floor(Math.random() * 1000);
-    await this.redis.setJsonEx(
-      `oro:propose:${key}`,
-      this.PROPOSE_KEY_TTL_SEC,
-      { marketId, outcomeId, windowMinutes },
-    );
+    await this.redis.setJsonEx(`oro:propose:${key}`, this.PROPOSE_KEY_TTL_SEC, {
+      marketId,
+      outcomeId,
+      windowMinutes,
+    });
     return key;
   }
 
   /** Resolve a short key back to {marketId, outcomeId, windowMinutes}, or undefined if expired/missing. */
   async resolveProposeKey(
     key: number,
-  ): Promise<{ marketId: string; outcomeId: string; windowMinutes: number } | undefined> {
-    const val = await this.redis.getJson<{ marketId: string; outcomeId: string; windowMinutes: number }>(
-      `oro:propose:${key}`,
-    );
+  ): Promise<
+    { marketId: string; outcomeId: string; windowMinutes: number } | undefined
+  > {
+    const val = await this.redis.getJson<{
+      marketId: string;
+      outcomeId: string;
+      windowMinutes: number;
+    }>(`oro:propose:${key}`);
     return val ?? undefined;
   }
 
@@ -79,7 +83,9 @@ export class TelegramSimpleService {
 
       return `https://api.telegram.org/file/bot${this.botToken}/${fileData.result.file_path}`;
     } catch (err: any) {
-      this.logger.warn(`Failed to fetch profile photo for ${telegramId}: ${err.message}`);
+      this.logger.warn(
+        `Failed to fetch profile photo for ${telegramId}: ${err.message}`,
+      );
       return null;
     }
   }
