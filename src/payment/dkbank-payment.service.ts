@@ -9,6 +9,7 @@ import { ConfigService } from "@nestjs/config";
 import { DataSource, Repository } from "typeorm";
 
 import { User } from "../entities/user.entity";
+import { LinkedBankAccount } from "../entities/linked-bank-account.entity";
 import {
   Payment,
   PaymentMethod,
@@ -20,7 +21,6 @@ import { PaymentOtp, OtpStatus } from "../entities/payment-otp.entity";
 import { DKGatewayService } from "./services/dk-gateway/dk-gateway.service";
 import { RedisService } from "../redis/redis.service";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
-import { TelegramVerificationService } from "../telegram/telegram-verification.service";
 import { SseService } from "../sse/sse.service";
 
 /** DK Bank OTP window: 10 minutes. */
@@ -73,8 +73,9 @@ export class DKBankPaymentService {
     private readonly configService: ConfigService,
     private readonly redis: RedisService,
     private readonly telegramService: TelegramSimpleService,
-    private readonly telegramVerification: TelegramVerificationService,
     @InjectRepository(User) private readonly userRepo: Repository<User>,
+    @InjectRepository(LinkedBankAccount)
+    private readonly lbaRepo: Repository<LinkedBankAccount>,
     @InjectRepository(Payment)
     private readonly paymentRepo: Repository<Payment>,
     @InjectRepository(PaymentOtp)
@@ -142,29 +143,28 @@ export class DKBankPaymentService {
     const user = await this.userRepo.findOne({ where: { id: userId } });
     if (!user) throw new NotFoundException("User not found");
 
-    // ── CID ownership check — ALWAYS enforced, even in staging ───────────────
-    // The CID submitted must match the one the user linked to their account.
-    // This prevents user A from paying with user B's CID.
-    if (user.dkCid && user.dkCid !== cid) {
+    // ── Linked account check ─────────────────────────────────────────────────
+    // Require a verified linked account whose CID matches the submitted CID.
+    // Ownership was already proven via OTP during bank linking — no phone-hash
+    // comparison needed.
+    const linkedAccount = await this.lbaRepo.findOne({
+      where: { userId, isVerified: true, isDefault: true },
+    });
+    if (!linkedAccount) {
+      throw new BadRequestException(
+        "You have not linked a DK Bank account yet. " +
+          "Please go to Wallet → Link DK Bank Account first.",
+      );
+    }
+    if (linkedAccount.cid !== cid) {
       this.logger.warn(
-        `[Payment] CID mismatch for user ${userId}: submitted=${cid} linked=${user.dkCid}`,
+        `[Payment] CID mismatch for user ${userId}: submitted=${cid} linked=${linkedAccount.cid}`,
       );
       throw new BadRequestException(
         "The CID you entered does not match your linked DK Bank account. " +
           "Please use your own CID.",
       );
     }
-    if (!user.dkCid) {
-      throw new BadRequestException(
-        "You have not linked a DK Bank account yet. " +
-          "Please go to Wallet Page → Link DK Bank Account first.",
-      );
-    }
-
-    // ── Bank-level security: verify Telegram phone == DK Bank phone ──────────
-    // ALWAYS enforced in both staging and production.
-    // User must have verified their Telegram phone matches their DK Bank phone.
-    await this.telegramVerification.verifyPaymentIdentity(userId);
 
     const payment = this.paymentRepo.create({
       type: PaymentType.DEPOSIT,
@@ -713,10 +713,13 @@ export class DKBankPaymentService {
     const user = await this.userRepo.findOne({ where: { id: userId } });
     if (!user) throw new NotFoundException("User not found");
 
-    if (!user.dkAccountNumber || !user.dkCid) {
+    const linkedAccount = await this.lbaRepo.findOne({
+      where: { userId, isVerified: true, isDefault: true },
+    });
+    if (!linkedAccount || !linkedAccount.accountNumber) {
       throw new BadRequestException(
         "You have not linked a DK Bank account yet. " +
-          "Please go to Wallet Page → Link DK Bank Account first.",
+          "Please go to Wallet → Link DK Bank Account first.",
       );
     }
 
@@ -751,8 +754,9 @@ export class DKBankPaymentService {
       description: "Withdrawal to DK Bank account",
       userId: user.id,
       metadata: {
-        dkAccountNumber: user.dkAccountNumber,
-        dkAccountName: user.dkAccountName ?? null,
+        dkAccountNumber: linkedAccount.accountNumber,
+        dkAccountName: linkedAccount.accountName ?? null,
+        linkedBankAccountId: linkedAccount.id,
         initiatedAt: new Date().toISOString(),
       },
     });
@@ -962,12 +966,8 @@ export class DKBankPaymentService {
         };
       } else {
         transferResult = await this.dkGateway.transferToAccount({
-          accountNumber:
-            user?.dkAccountNumber ?? lockedPayment.metadata?.dkAccountNumber,
-          accountName:
-            user?.dkAccountName ??
-            lockedPayment.metadata?.dkAccountName ??
-            undefined,
+          accountNumber: lockedPayment.metadata?.dkAccountNumber,
+          accountName: lockedPayment.metadata?.dkAccountName ?? undefined,
           amount: withdrawalAmount,
           currency: "BTN",
           reference: lockedPayment.id,

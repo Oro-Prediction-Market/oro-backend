@@ -1,17 +1,31 @@
-import { Controller, Get, UseGuards, Request, Query } from "@nestjs/common";
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+  Request,
+  UseGuards,
+  Query,
+} from "@nestjs/common";
 import {
   ApiBearerAuth,
-  ApiTags,
+  ApiBody,
+  ApiOkResponse,
   ApiOperation,
-  ApiResponse,
   ApiProperty,
   ApiPropertyOptional,
   ApiQuery,
+  ApiResponse,
+  ApiTags,
 } from "@nestjs/swagger";
+import { IsOptional, IsString, Length, Matches } from "class-validator";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { ConfigService } from "@nestjs/config";
-import { JwtAuthGuard, Public } from "../auth/guards";
+import { JwtAuthGuard, PreKycJwtAuthGuard, Public } from "../auth/guards";
 import { User } from "../entities/user.entity";
 import { Payment } from "../entities/payment.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
@@ -19,7 +33,53 @@ import { Position, PositionStatus } from "../entities/position.entity";
 import { RedisService } from "../redis/redis.service";
 import { StreakService } from "./streak.service";
 import { SeasonService } from "./season.service";
+import { OnboardService } from "./onboard.service";
 import { ParimutuelEngine } from "../markets/parimutuel.engine";
+
+class SendOnboardOtpDto {
+  @ApiProperty({ description: "Phone number (E.164)", required: false })
+  @IsOptional()
+  @IsString()
+  phoneNumber?: string;
+
+  @ApiProperty({ description: "Email address", required: false })
+  @IsOptional()
+  @IsString()
+  email?: string;
+}
+
+class RegisterTelegramUserDto {
+  @ApiProperty({ example: "sonam_t", description: "3–50 chars, letters/numbers/underscores" })
+  @IsString()
+  @Length(3, 50)
+  @Matches(/^[a-zA-Z0-9_]+$/, { message: "Letters, numbers and underscores only" })
+  username: string;
+
+  @ApiProperty({ example: "Sonam Tenzin" })
+  @IsString()
+  @Length(1, 255)
+  fullName: string;
+
+  @ApiProperty({ example: "123456", description: "6-digit code from Telegram bot" })
+  @IsString()
+  @Length(6, 6)
+  otp: string;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  phoneNumber?: string;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  email?: string;
+
+  @ApiProperty({ required: false, description: "Referral code from startParam" })
+  @IsOptional()
+  @IsString()
+  referralCode?: string;
+}
 
 // ─── Response schemas for Swagger ────────────────────────────────────────────
 
@@ -98,7 +158,58 @@ export class UsersController {
     private readonly streakService: StreakService,
     private readonly config: ConfigService,
     private readonly seasonService: SeasonService,
+    private readonly onboardService: OnboardService,
   ) {}
+
+  // ── Onboarding ────────────────────────────────────────────────────────────
+
+  @Get("check/username/:username")
+  @Public()
+  @ApiOperation({ summary: "Check whether a username is available" })
+  @ApiOkResponse({ schema: { properties: { available: { type: "boolean" } } } })
+  async checkUsername(@Param("username") username: string) {
+    const available = await this.onboardService.isUsernameAvailable(username);
+    return { available };
+  }
+
+  @Post("send-onboard-otp")
+  @HttpCode(200)
+  @UseGuards(PreKycJwtAuthGuard)
+  @ApiOperation({
+    summary: "Send OTP via Telegram bot during onboarding (pre-KYC token required)",
+  })
+  @ApiBody({ type: SendOnboardOtpDto })
+  @ApiOkResponse({ schema: { properties: { sent: { type: "boolean" } } } })
+  async sendOnboardOtp(@Body() dto: SendOnboardOtpDto, @Request() req: any) {
+    if (!dto.phoneNumber && !dto.email) {
+      throw new BadRequestException("phoneNumber or email is required");
+    }
+    await this.onboardService.sendOnboardOtp(
+      req.user.telegramId,
+      dto.phoneNumber,
+      dto.email,
+    );
+    return { sent: true };
+  }
+
+  @Post("telegram/register")
+  @HttpCode(200)
+  @UseGuards(PreKycJwtAuthGuard)
+  @ApiOperation({
+    summary: "Complete Telegram onboarding — verify OTP and create user account",
+  })
+  @ApiBody({ type: RegisterTelegramUserDto })
+  async registerTelegramUser(
+    @Body() dto: RegisterTelegramUserDto,
+    @Request() req: any,
+  ) {
+    const { token, user } = await this.onboardService.registerTelegramUser(
+      req.user.telegramId,
+      dto,
+    );
+    const { phoneNumber: _p, pwaPasswordHash: _pw, telegramPhoneHash: _tp, dkPhoneHash: _dk, ...safeUser } = user as any;
+    return { token, user: safeUser };
+  }
 
   @Get("me")
   @ApiOperation({ summary: "Get my profile & balance" })

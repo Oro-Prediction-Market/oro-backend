@@ -71,6 +71,10 @@ export class User {
   @Column({ type: "varchar", nullable: true })
   phoneNumber: string | null;
 
+  @Index({ unique: true, sparse: true } as any)
+  @Column({ type: "varchar", nullable: true, unique: true })
+  email: string | null;
+
   /** Telegram chat_id bound during phone-verification handshake. */
   @Index({ unique: true, sparse: true } as any)
   @Column({ type: "varchar", nullable: true, unique: true })
