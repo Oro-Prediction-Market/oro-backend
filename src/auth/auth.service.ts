@@ -126,15 +126,48 @@ export class AuthService {
     const tgUser = this.validateTelegramInitData(rawInitData);
     const providerId = String(tgUser.id);
 
-    // Resolve referrer from code like "ref_<telegramId>" or
-    // "ref_<telegramId>_m_<marketId>" (ChallengeAFriend deep-link). Strip the
-    // _m_<marketId> suffix so only the telegramId is used for the lookup.
+    // Check for existing auth method or user
+    const authMethod = await this.authMethodRepo.findOne({
+      where: { provider: AuthProvider.TELEGRAM, providerId },
+      relations: ["user"],
+    });
+
+    const existingUser = authMethod
+      ? await this.userRepo.findOneBy({ id: authMethod.user?.id ?? authMethod.userId })
+      : await this.userRepo.findOneBy({ telegramId: providerId });
+
+    if (!existingUser) {
+      // Brand new user — issue a short-lived pre-KYC token.
+      // No DB record is created yet; registration happens via POST /users/telegram/register.
+      const token = this.jwtService.sign({
+        sub: providerId,
+        preKyc: true,
+        jti: randomUUID(),
+      });
+      return {
+        token,
+        user: null,
+        isNewUser: true,
+        requiresKYC: true,
+        telegramProfile: {
+          telegramId: providerId,
+          firstName: tgUser.first_name,
+          lastName: tgUser.last_name,
+          username: tgUser.username,
+          photoUrl: tgUser.photo_url,
+        },
+        referralCode,
+      };
+    }
+
+    // ── Returning user ────────────────────────────────────────────────────────
+
+    // Resolve referrer for late attribution (user already exists but has no referrer)
     let referredByUserId: string | null = null;
     if (referralCode) {
       const raw = referralCode.startsWith("ref_")
         ? referralCode.slice(4)
         : referralCode;
-      // Strip optional _m_<anything> market suffix
       const refTelegramId = raw.split("_m_")[0];
       if (refTelegramId && refTelegramId !== providerId) {
         const referrer = await this.userRepo.findOne({
@@ -145,126 +178,39 @@ export class AuthService {
       }
     }
 
-    // Find or create auth method
-    let authMethod = await this.authMethodRepo.findOne({
-      where: { provider: AuthProvider.TELEGRAM, providerId },
-      relations: ["user"],
-    });
+    const updateFields: any = {
+      telegramId: providerId,
+      telegramChatId: providerId,
+      firstName: tgUser.first_name,
+      lastName: tgUser.last_name,
+      photoUrl: tgUser.photo_url,
+    };
+    if (referredByUserId && !existingUser.referredByUserId) {
+      updateFields.referredByUserId = referredByUserId;
+    }
+    await this.userRepo.update(existingUser.id, updateFields);
 
     if (!authMethod) {
-      // Check if a user row already exists for this telegramId (orphaned — no auth_method yet)
-      let user = await this.userRepo.findOneBy({ telegramId: providerId });
-
-      if (!user) {
-        // Brand new user
-        user = this.userRepo.create({
-          telegramId: providerId,
-          telegramChatId: providerId,
-          firstName: tgUser.first_name,
-          lastName: tgUser.last_name,
-          username: tgUser.username,
-          photoUrl: tgUser.photo_url,
-          // Store referrer only on first registration — never overwrite
-          referredByUserId,
-        });
-        await this.userRepo.save(user);
-
-        // ── Welcome free credit (all environments) ──────────────────────────
-        // Nu 20 bonus credit so new users can predict without depositing first.
-        // Marked isBonus=true — winnings from this are capped at Nu 50 withdrawable.
-        await this.transactionRepo.save(
-          this.transactionRepo.create({
-            type: TransactionType.FREE_CREDIT,
-            amount: 20,
-            balanceBefore: 0,
-            balanceAfter: 20,
-            userId: user.id,
-            isBonus: true,
-            note: "Welcome bonus — free Nu 20 to make your first prediction!",
-          }),
-        );
-        await this.userRepo
-          .createQueryBuilder()
-          .update()
-          .set({
-            freeCreditGranted: true,
-            bonusBalance: 20,
-            bonusRealPayoutRemaining: () =>
-              `GREATEST("bonusRealPayoutRemaining", 50)`,
-          })
-          .where("id = :id", { id: user.id })
-          .execute();
-
-        // Send welcome DM — fire and forget, never block registration
-        this.sendWelcomeDM(user, referredByUserId, tgUser.first_name).catch(
-          () => {},
-        );
-
-        // Dev-only extra seed credits on top of the welcome bonus
-        if (process.env.NODE_ENV === "development") {
-          await this.transactionRepo.save(
-            this.transactionRepo.create({
-              type: TransactionType.DEPOSIT,
-              amount: 1000,
-              balanceBefore: 20,
-              balanceAfter: 1020,
-              userId: user.id,
-              note: "Starter credits (dev only)",
-            }),
-          );
-        }
-      } else {
-        // Orphaned user — sync telegramChatId + set referrer if not already set
-        const updateFields: any = { telegramChatId: providerId };
-        if (referredByUserId && !user.referredByUserId) {
-          updateFields.referredByUserId = referredByUserId;
-        }
-        await this.userRepo.update(user.id, updateFields);
-      }
-
-      authMethod = this.authMethodRepo.create({
-        provider: AuthProvider.TELEGRAM,
-        providerId,
-        metadata: tgUser,
-        user,
-        userId: user.id,
-      });
-      await this.authMethodRepo.save(authMethod);
+      await this.authMethodRepo.save(
+        this.authMethodRepo.create({
+          provider: AuthProvider.TELEGRAM,
+          providerId,
+          metadata: tgUser,
+          user: existingUser,
+          userId: existingUser.id,
+        }),
+      );
     } else {
-      // Update profile info + always sync telegramChatId
-      // In Telegram private chats, chat_id === user_id, so telegramId IS the chatId.
-      const updateFields: any = {
-        telegramId: providerId,
-        telegramChatId: providerId, // ← keep chat_id in sync on every login
-        firstName: tgUser.first_name,
-        lastName: tgUser.last_name,
-        username: tgUser.username,
-        photoUrl: tgUser.photo_url,
-      };
-      // Set referrer if user doesn't already have one (late referral attribution)
-      if (referredByUserId) {
-        const existingUser = await this.userRepo.findOne({
-          where: { id: authMethod.userId },
-          select: ["id", "referredByUserId"],
-        });
-        if (existingUser && !existingUser.referredByUserId) {
-          updateFields.referredByUserId = referredByUserId;
-        }
-      }
-      await this.userRepo.update(authMethod.userId, updateFields);
+      await this.authMethodRepo.update(authMethod.id, { metadata: tgUser as any });
     }
 
-    const freshUser = await this.userRepo.findOneBy({
-      id: authMethod.user?.id ?? authMethod.userId,
-    });
-    // freshUser cannot be null here — user was just saved/updated above
+    const freshUser = await this.userRepo.findOneBy({ id: existingUser.id });
     const token = this.jwtService.sign({
       sub: freshUser!.id,
       isAdmin: freshUser!.isAdmin,
       jti: randomUUID(),
     });
 
-    // Log user login in audit log
     await this.auditService.log({
       adminId: freshUser!.id,
       username: freshUser!.username || freshUser!.firstName || "Unknown",
@@ -279,7 +225,7 @@ export class AuthService {
       },
     });
 
-    return { token, user: stripSensitiveFields(freshUser!) };
+    return { token, user: stripSensitiveFields(freshUser!), isNewUser: false, requiresKYC: false };
   }
 
   // ── First-session welcome DM ──────────────────────────────────────────────
@@ -350,6 +296,11 @@ export class AuthService {
   // ── Admin login — verifies the Telegram account already has isAdmin=true ────
   async ensureAdminAndLogin(rawInitData: string) {
     const result = await this.loginWithTelegram(rawInitData);
+    if (!result.user) {
+      throw new UnauthorizedException(
+        "Admin login requires an existing account. Complete registration first.",
+      );
+    }
     const userId = result.user.id;
     if (!result.user.isAdmin) {
       // Auto-grant requires an explicit opt-in flag, not just a non-production NODE_ENV.

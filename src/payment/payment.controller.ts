@@ -3,6 +3,7 @@ import {
   Post,
   Body,
   Get,
+  Delete,
   Param,
   HttpCode,
   HttpStatus,
@@ -20,6 +21,7 @@ import { ConfigService } from "@nestjs/config";
 import { JwtAuthGuard } from "../auth/guards";
 import { DKBankPaymentService } from "./dkbank-payment.service";
 import { DKGatewayService } from "./services/dk-gateway/dk-gateway.service";
+import { BankLinkService } from "./bank-link.service";
 import { RedisService } from "../redis/redis.service";
 import { InitiatePaymentDto } from "./dto/initiate-payment.dto";
 import { ConfirmPaymentDto } from "./dto/confirm-payment.dto";
@@ -55,6 +57,22 @@ class ConfirmWithdrawalDto {
   otp: string;
 }
 
+class LinkBankAccountDto {
+  @Prop({ description: "Bhutanese CID (11 digits)", example: "10101000001" })
+  @IsString()
+  @IsNotEmpty()
+  cid: string;
+}
+
+class VerifyBankLinkDto {
+  @Prop({ description: "6-digit OTP sent to your DK Bank registered phone" })
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(4)
+  @MaxLength(8)
+  otp: string;
+}
+
 @ApiTags("Payments")
 @Controller("payments")
 @Throttle({ default: { limit: 8, ttl: 60_000 } }) // 8 req/min per IP on payment endpoints
@@ -63,6 +81,7 @@ export class PaymentController {
     private readonly configService: ConfigService,
     private readonly dkBankPaymentService: DKBankPaymentService,
     private readonly dkGatewayService: DKGatewayService,
+    private readonly bankLinkService: BankLinkService,
     private readonly redis: RedisService,
   ) {}
 
@@ -341,5 +360,99 @@ export class PaymentController {
       },
       environment: process.env.NODE_ENV || "development",
     };
+  }
+
+  // ── Bank account linking ────────────────────────────────────────────────────
+
+  @Post("bank/link")
+  @UseGuards(JwtAuthGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true }))
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      "Step 1: Link DK Bank account by CID — sends OTP to DK-registered phone",
+  })
+  @ApiBody({ type: LinkBankAccountDto })
+  @ApiResponse({
+    status: 200,
+    description: "OTP sent to DK-registered phone",
+    schema: {
+      example: {
+        accountName: "Sonam Tenzin",
+        maskedPhone: "****5678",
+        requiresOtp: true,
+      },
+    },
+  })
+  async linkBankAccount(
+    @Body() dto: LinkBankAccountDto,
+    @Request() req: any,
+  ) {
+    await this.enforceRateLimit(`bank:link:${req.user.userId}`, 5, 300);
+    return this.bankLinkService.linkBankAccount(req.user.userId, dto.cid);
+  }
+
+  @Post("bank/verify")
+  @UseGuards(JwtAuthGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true }))
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: "Step 2: Verify DK Bank OTP to complete bank account linking",
+  })
+  @ApiBody({ type: VerifyBankLinkDto })
+  @ApiResponse({ status: 200, description: "Bank account linked successfully" })
+  async verifyBankLink(
+    @Body() dto: VerifyBankLinkDto,
+    @Request() req: any,
+  ) {
+    await this.enforceRateLimit(`bank:verify:${req.user.userId}`, 8, 300);
+    const account = await this.bankLinkService.verifyBankLink(
+      req.user.userId,
+      dto.otp,
+    );
+    return {
+      id: account.id,
+      cid: account.cid,
+      accountNumber: account.accountNumber,
+      accountName: account.accountName,
+      maskedPhone: account.bankPhone
+        ? account.bankPhone.slice(0, -4).replace(/\d/g, "*") +
+          account.bankPhone.slice(-4)
+        : null,
+      isDefault: account.isDefault,
+      verifiedAt: account.verifiedAt,
+    };
+  }
+
+  @Get("bank/accounts")
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: "List verified linked bank accounts" })
+  @ApiResponse({ status: 200, description: "Linked accounts" })
+  async getLinkedAccounts(@Request() req: any) {
+    const accounts = await this.bankLinkService.getLinkedAccounts(
+      req.user.userId,
+    );
+    return accounts.map((a) => ({
+      id: a.id,
+      cid: a.cid,
+      accountNumber: a.accountNumber,
+      accountName: a.accountName,
+      maskedPhone: a.bankPhone
+        ? a.bankPhone.slice(0, -4).replace(/\d/g, "*") + a.bankPhone.slice(-4)
+        : null,
+      isDefault: a.isDefault,
+      verifiedAt: a.verifiedAt,
+    }));
+  }
+
+  @Delete("bank/accounts/:accountId")
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: "Unlink a bank account" })
+  async unlinkBankAccount(
+    @Param("accountId") accountId: string,
+    @Request() req: any,
+  ) {
+    await this.bankLinkService.unlinkAccount(req.user.userId, accountId);
   }
 }

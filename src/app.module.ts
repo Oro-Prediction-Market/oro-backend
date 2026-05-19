@@ -38,6 +38,7 @@ import { Reconciliation } from "./entities/reconciliation.entity";
 import { EventsModule } from "./events/events.module";
 import { SseModule } from "./sse/sse.module";
 import { UserEvent } from "./entities/user-event.entity";
+import { LinkedBankAccount } from "./entities/linked-bank-account.entity";
 import { TerModule } from "./ter/ter.module";
 import { BtcModule } from "./btc/btc.module";
 
@@ -102,6 +103,7 @@ import { BtcModule } from "./btc/btc.module";
           GroupMembership,
           Reconciliation,
           UserEvent,
+          LinkedBankAccount,
         ],
         synchronize: false,
         migrationsRun: true, // run pending migrations on app startup

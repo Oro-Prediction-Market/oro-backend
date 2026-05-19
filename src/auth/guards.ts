@@ -57,3 +57,21 @@ export class AdminGuard {
     return true;
   }
 }
+
+/** Guard for onboarding endpoints that require a pre-KYC token (new users only). */
+@Injectable()
+export class PreKycJwtAuthGuard extends AuthGuard("jwt") {
+  canActivate(context: ExecutionContext) {
+    return super.canActivate(context);
+  }
+
+  handleRequest(err: any, user: any) {
+    if (err || !user) throw err || new UnauthorizedException();
+    if (!user.preKyc) {
+      throw new UnauthorizedException(
+        "This endpoint requires a pre-KYC token. Complete onboarding first.",
+      );
+    }
+    return user;
+  }
+}
