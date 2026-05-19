@@ -26,14 +26,28 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
   async validate(payload: {
     sub: string;
-    isAdmin: boolean;
+    isAdmin?: boolean;
     jti?: string;
     exp?: number;
+    preKyc?: boolean;
   }) {
     // Check revocation blacklist — tokens revoked via logout are blocked immediately
     if (payload.jti) {
       const revoked = await this.redis.get(`jwt:blacklist:${payload.jti}`);
       if (revoked) throw new UnauthorizedException("Token has been revoked");
+    }
+
+    // Pre-KYC token: sub holds the telegramId, no user record exists yet.
+    // Only accepted by endpoints decorated with @UseGuards(PreKycJwtAuthGuard).
+    if (payload.preKyc) {
+      return {
+        userId: null as unknown as string,
+        telegramId: payload.sub,
+        isAdmin: false,
+        preKyc: true,
+        jti: payload.jti,
+        exp: payload.exp,
+      };
     }
 
     // Always re-check DB so revoked admin rights take effect immediately
