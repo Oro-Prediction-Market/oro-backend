@@ -781,6 +781,11 @@ export class AdminController {
 
     const qb = this.userRepo
       .createQueryBuilder("u")
+      .leftJoin(
+        "linked_bank_accounts",
+        "lba",
+        'lba."userId" = u.id AND lba."isDefault" = true AND lba."isVerified" = true',
+      )
       .select([
         "u.id",
         "u.firstName",
@@ -792,14 +797,14 @@ export class AdminController {
         "u.telegramChatId",
         "u.telegramStreak",
         "u.telegramLinkedAt",
-        "u.dkCid",
-        "u.dkAccountNumber",
-        "u.dkAccountName",
         "u.reputationTier",
         "u.totalPredictions",
         "u.createdAt",
         "u.updatedAt",
-      ]);
+      ])
+      .addSelect("COALESCE(lba.cid, u.\"dkCid\")", "dkCid")
+      .addSelect("COALESCE(lba.\"accountNumber\", u.\"dkAccountNumber\")", "dkAccountNumber")
+      .addSelect("COALESCE(lba.\"accountName\", u.\"dkAccountName\")", "dkAccountName");
 
     // ── Full-text search ────────────────────────────────────────────────────
     if (search && search.trim()) {
@@ -816,6 +821,8 @@ export class AdminController {
           OR LOWER(COALESCE(u.telegramId,''))    LIKE :term ESCAPE '\\'
           OR LOWER(COALESCE(u.dkCid,''))         LIKE :term ESCAPE '\\'
           OR LOWER(COALESCE(u.dkAccountName,'')) LIKE :term ESCAPE '\\'
+          OR LOWER(COALESCE(lba.cid,''))         LIKE :term ESCAPE '\\'
+          OR LOWER(COALESCE(lba."accountName",'')) LIKE :term ESCAPE '\\'
           OR LOWER(u.id::text)                   LIKE :term ESCAPE '\\'
         )`,
         { term },
@@ -829,8 +836,10 @@ export class AdminController {
       qb.andWhere("u.isAdmin = :isAdmin", { isAdmin: false });
 
     // ── DK-link filter ──────────────────────────────────────────────────────
-    if (dkStatus === "linked") qb.andWhere("u.dkCid IS NOT NULL");
-    if (dkStatus === "unlinked") qb.andWhere("u.dkCid IS NULL");
+    if (dkStatus === "linked")
+      qb.andWhere("(u.dkCid IS NOT NULL OR lba.cid IS NOT NULL)");
+    if (dkStatus === "unlinked")
+      qb.andWhere("u.dkCid IS NULL AND lba.cid IS NULL");
 
     // ── Sort ────────────────────────────────────────────────────────────────
     const dir = sortDir.toUpperCase() as "ASC" | "DESC";
@@ -852,7 +861,16 @@ export class AdminController {
 
     qb.skip(skip).take(take);
 
-    const [data, total] = await qb.getManyAndCount();
+    const total = await qb.getCount();
+    const { entities, raw } = await qb.getRawAndEntities();
+
+    // Merge COALESCE'd DK Bank fields from raw results into entity objects
+    const data = entities.map((user, i) => ({
+      ...user,
+      dkCid: raw[i]?.dkCid ?? user.dkCid ?? null,
+      dkAccountNumber: raw[i]?.dkAccountNumber ?? user.dkAccountNumber ?? null,
+      dkAccountName: raw[i]?.dkAccountName ?? user.dkAccountName ?? null,
+    }));
 
     return {
       data,
