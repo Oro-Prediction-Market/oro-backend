@@ -7,7 +7,7 @@ import {
 import { JwtService } from "@nestjs/jwt";
 import { InjectRepository } from "@nestjs/typeorm";
 import { randomInt, randomUUID } from "crypto";
-import { Repository } from "typeorm";
+import { IsNull, Repository } from "typeorm";
 import { AuthMethod, AuthProvider } from "../entities/auth-method.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { User } from "../entities/user.entity";
@@ -15,6 +15,7 @@ import { RedisService } from "../redis/redis.service";
 import { SmsService } from "../shared/services/sms.service";
 import { EmailService } from "../shared/services/email.service";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
+import { TelegramVerificationService } from "../telegram/telegram-verification.service";
 
 interface RegisterDto {
   username: string;
@@ -41,6 +42,7 @@ export class OnboardService {
     private readonly emailService: EmailService,
     private readonly telegramSimple: TelegramSimpleService,
     private readonly jwtService: JwtService,
+    private readonly telegramVerification: TelegramVerificationService,
   ) {}
 
   async isUsernameAvailable(username: string): Promise<boolean> {
@@ -148,9 +150,6 @@ export class OnboardService {
     await this.verifyOtp(telegramId, dto.otp);
 
     const lower = dto.username.toLowerCase();
-    if (!(await this.isUsernameAvailable(lower))) {
-      throw new BadRequestException("Username is already taken.");
-    }
 
     // Race-condition guard: user may have been created by a concurrent request
     const already = await this.userRepo.findOneBy({ telegramId });
@@ -161,6 +160,35 @@ export class OnboardService {
         jti: randomUUID(),
       });
       return { token, user: already };
+    }
+
+    // ── Look for an existing PWA-only user (BhutanApp-created) to merge into ──
+    // Matches by phone (exact + hashed) or email. Only candidates with no
+    // telegramId yet — verified TMA accounts are never silently absorbed.
+    let existingPwa: User | null = null;
+    if (dto.phoneNumber) {
+      const phoneHash = this.telegramVerification.hashPhone(dto.phoneNumber);
+      existingPwa = await this.userRepo.findOne({
+        where: [
+          { phoneNumber: dto.phoneNumber, telegramId: IsNull() },
+          { dkPhoneHash: phoneHash, telegramId: IsNull() },
+          { telegramPhoneHash: phoneHash, telegramId: IsNull() },
+        ],
+      });
+    }
+    if (!existingPwa && dto.email) {
+      existingPwa = await this.userRepo.findOne({
+        where: { email: dto.email.toLowerCase(), telegramId: IsNull() },
+      });
+    }
+
+    // Username availability — allow the matched PWA user to keep / take their own
+    const usernameOwner = await this.userRepo.findOne({
+      where: { username: lower },
+      select: ["id"],
+    });
+    if (usernameOwner && (!existingPwa || usernameOwner.id !== existingPwa.id)) {
+      throw new BadRequestException("Username is already taken.");
     }
 
     // Resolve referrer
@@ -183,6 +211,81 @@ export class OnboardService {
     const firstName = nameParts[0];
     const lastName = nameParts.slice(1).join(" ") || null;
 
+    // ── MERGE PATH: attach Telegram identity to existing PWA user ─────────────
+    if (existingPwa) {
+      const phoneHash = dto.phoneNumber
+        ? this.telegramVerification.hashPhone(dto.phoneNumber)
+        : null;
+
+      await this.userRepo.update(existingPwa.id, {
+        telegramId,
+        telegramChatId: telegramId,
+        username: lower,
+        firstName,
+        lastName,
+        phoneNumber: dto.phoneNumber ?? existingPwa.phoneNumber,
+        email: dto.email ?? existingPwa.email,
+        photoUrl: dto.photoUrl ?? existingPwa.photoUrl,
+        ...(existingPwa.referredByUserId ? {} : { referredByUserId }),
+        ...(phoneHash ? { telegramPhoneHash: phoneHash } : {}),
+        // Backfill starter reputation if missing — PWA users created before
+        // we set this explicitly may have null here.
+        ...(existingPwa.reputationScore == null
+          ? { reputationScore: 0.5 }
+          : {}),
+        telegramLinkedAt: new Date(),
+      });
+
+      await this.authMethodRepo.save(
+        this.authMethodRepo.create({
+          provider: AuthProvider.TELEGRAM,
+          providerId: telegramId,
+          metadata: { mergedFromPwa: true },
+          user: existingPwa,
+          userId: existingPwa.id,
+        }),
+      );
+
+      // Welcome bonus — only if not previously granted (avoid double-grant)
+      if (!existingPwa.freeCreditGranted) {
+        await this.transactionRepo.save(
+          this.transactionRepo.create({
+            type: TransactionType.FREE_CREDIT,
+            amount: 20,
+            balanceBefore: 0,
+            balanceAfter: 20,
+            userId: existingPwa.id,
+            isBonus: true,
+            note: "Welcome bonus — free Nu 20 to make your first prediction!",
+          }),
+        );
+        await this.userRepo
+          .createQueryBuilder()
+          .update()
+          .set({
+            freeCreditGranted: true,
+            bonusBalance: 20,
+            bonusRealPayoutRemaining: () =>
+              `GREATEST("bonusRealPayoutRemaining", 50)`,
+          })
+          .where("id = :id", { id: existingPwa.id })
+          .execute();
+      }
+
+      this.logger.log(
+        `[Onboard] Merged Telegram identity into existing PWA user ${existingPwa.id} (tg: ${telegramId})`,
+      );
+
+      const fresh = await this.userRepo.findOneBy({ id: existingPwa.id });
+      const token = this.jwtService.sign({
+        sub: fresh!.id,
+        isAdmin: fresh!.isAdmin,
+        jti: randomUUID(),
+      });
+      return { token, user: fresh! };
+    }
+
+    // ── CREATE PATH: brand new user ───────────────────────────────────────────
     const user = this.userRepo.create({
       telegramId,
       telegramChatId: telegramId,

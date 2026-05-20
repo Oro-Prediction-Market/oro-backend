@@ -18,6 +18,7 @@ import { SmsService } from "../shared/services/sms.service";
 import { EmailService } from "../shared/services/email.service";
 import { DKGatewayService } from "../payment/services/dk-gateway/dk-gateway.service";
 import { DKGatewayAuthToken } from "../entities/dk-gateway-auth-token.entity";
+import { TelegramModule } from "../telegram/telegram.module";
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { DKGatewayAuthToken } from "../entities/dk-gateway-auth-token.entity";
       DKGatewayAuthToken,
     ]),
     ScheduleModule.forRoot(),
+    TelegramModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

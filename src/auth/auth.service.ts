@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual, randomUUID, randomInt } from "crypto";
+import * as jwt from "jsonwebtoken";
 import * as bcrypt from "bcryptjs";
 import {
   Injectable,
@@ -20,6 +21,7 @@ import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import { AuditService } from "../admin/audit.service";
 import { AuditAction, AuditLog, RoleType } from "../entities/audit-log.entity";
 import { RedisService } from "../redis/redis.service";
+import { SmsService } from "../shared/services/sms.service";
 
 function stripSensitiveFields(
   user: User,
@@ -66,6 +68,7 @@ export class AuthService {
     private auditService: AuditService,
     @InjectRepository(AuditLog) private auditLogRepo: Repository<AuditLog>,
     private redis: RedisService,
+    private smsService: SmsService,
   ) {}
 
   // ── HMAC-SHA-256 Telegram initData validation ──────────────────────────────
@@ -402,6 +405,10 @@ export class AuthService {
         // user to clobber it would let anyone wipe a verified account just by
         // knowing its CID. Unverified orphans are still cleared (legitimate
         // merge scenario where the same person registers twice).
+        // Track orphans already drained, in case orphanByCid and orphanByAccount
+        // resolve to the same row (a common case — same user, both fields set).
+        const drained = new Set<string>();
+
         const orphanByCid = await this.userRepo.findOneBy({ dkCid: cid });
         if (orphanByCid && orphanByCid.id !== callerUserId) {
           const orphanVerified =
@@ -414,6 +421,8 @@ export class AuthService {
                 "If this is your CID, please contact support.",
             );
           }
+          await this.transferOrphanBalance(orphanByCid.id, callerUserId);
+          drained.add(orphanByCid.id);
           this.logger.log(
             `[Auth] Clearing unverified orphan ${orphanByCid.id} before linking CID to ${callerUserId}`,
           );
@@ -437,6 +446,10 @@ export class AuthService {
               "This DK Bank account is already linked to a verified account. " +
                 "If this is your account, please contact support.",
             );
+          }
+          if (!drained.has(orphanByAccount.id)) {
+            await this.transferOrphanBalance(orphanByAccount.id, callerUserId);
+            drained.add(orphanByAccount.id);
           }
           await this.userRepo.update(orphanByAccount.id, {
             dkCid: null as any,
@@ -950,6 +963,552 @@ export class AuthService {
         payload: { meta: { jti } },
       }),
     );
+  }
+
+  // ── BhutanApp OAuth ───────────────────────────────────────────────────────
+  /**
+   * Login or register via BhutanApp OAuth.
+   * The CID (externalUserId) is the Bhutanese national ID — same field as dkCid.
+   * Existing DK Bank users are found by CID and logged in without creating a duplicate.
+   */
+  async loginWithBhutanApp(dto: {
+    token: string;
+    externalUserId: string;
+    fullName: string;
+    username?: string;
+    phoneNumber?: string;
+    email?: string;
+  }) {
+    // ── Verify BhutanApp JWT signature (RS256) ────────────────────────────────
+    const rawKey = process.env.BHUTANAPP_JWT_PUBLIC_KEY;
+    if (!rawKey) {
+      throw new Error("BHUTANAPP_JWT_PUBLIC_KEY is not configured");
+    }
+    // .env stores the key with literal \n — convert to real newlines
+    const publicKey = rawKey.replace(/\\n/g, "\n");
+
+    let claims: jwt.JwtPayload;
+    try {
+      claims = jwt.verify(dto.token, publicKey, {
+        algorithms: ["RS256"],
+      }) as jwt.JwtPayload;
+    } catch (err: any) {
+      this.logger.warn(`[Auth] BhutanApp token verification failed: ${err.message}`);
+      throw new UnauthorizedException("Invalid or expired BhutanApp token");
+    }
+
+    // Use the CID from the verified token claims — not blindly from the request body
+    const cid = (claims.sub ?? claims.cid ?? dto.externalUserId ?? "").toString().trim();
+    if (cid.length !== 11) {
+      throw new UnauthorizedException("BhutanApp token does not contain a valid CID");
+    }
+
+    // ── Look up by CID first — prevents duplicates for existing DK Bank users ─
+    let user = await this.userRepo.findOneBy({ dkCid: cid });
+
+    // ── Fallback: phone-hash match against existing TMA users ──────────────
+    // If the user has a TMA account where they verified their Telegram phone
+    // (but never linked DK Bank), there's no dkCid match — so try to find
+    // them via the phone hash instead. Mirrors the pattern in loginWithDKBank.
+    if (!user) {
+      // Prefer DK Bank's canonical phone (authoritative) over the
+      // BhutanApp-supplied one. DK Bank lookup may fail if the user isn't
+      // a DK Bank customer — fall back to dto.phoneNumber in that case.
+      let phoneForMatch: string | null = null;
+      try {
+        const account = await this.dkGateway.lookupAccountByCID(cid);
+        phoneForMatch = account.phoneNumber || null;
+      } catch (err) {
+        this.logger.debug(
+          `[Auth] BhutanApp login: DK Bank lookup failed for CID ${cid} — ${(err as Error).message}`,
+        );
+        phoneForMatch = dto.phoneNumber || null;
+      }
+
+      if (phoneForMatch) {
+        const phoneHash = this.telegramVerification.hashPhone(phoneForMatch);
+        const byPhone = await this.userRepo.findOneBy({
+          telegramPhoneHash: phoneHash,
+        });
+        // Only link if the matched user has no conflicting dkCid (i.e. they
+        // either have no CID, or already have THIS one). Different CID on the
+        // same phone means a collision we should not silently merge.
+        if (byPhone && (!byPhone.dkCid || byPhone.dkCid === cid)) {
+          if (!byPhone.dkCid) {
+            await this.userRepo.update(byPhone.id, { dkCid: cid });
+          }
+          user = await this.userRepo.findOneBy({ id: byPhone.id });
+          this.logger.log(
+            `[Auth] BhutanApp login auto-linked to TMA user ${user!.id} via phone hash`,
+          );
+        }
+      }
+    }
+
+    if (user) {
+      // Existing user — update profile fields BhutanApp provided if missing
+      const updates: Partial<User> = {};
+      if (!user.email && dto.email) updates.email = dto.email;
+      if (!user.phoneNumber && dto.phoneNumber) updates.phoneNumber = dto.phoneNumber;
+      if (Object.keys(updates).length) await this.userRepo.update(user.id, updates);
+
+      // Ensure BhutanApp auth_method row exists (idempotent)
+      const existing = await this.authMethodRepo.findOne({
+        where: { provider: AuthProvider.BHUTANAPP, providerId: cid },
+      });
+      if (!existing) {
+        await this.authMethodRepo.save(
+          this.authMethodRepo.create({
+            provider: AuthProvider.BHUTANAPP,
+            providerId: cid,
+            metadata: { fullName: dto.fullName, username: dto.username },
+            user,
+            userId: user.id,
+          }),
+        );
+      }
+
+      const fresh = await this.userRepo.findOneBy({ id: user.id });
+      const token = this.jwtService.sign({
+        sub: fresh!.id,
+        isAdmin: fresh!.isAdmin,
+        jti: randomUUID(),
+      });
+      return { token, user: stripSensitiveFields(fresh!) };
+    }
+
+    // ── Brand new user — BhutanApp is the primary identity ────────────────────
+    const nameParts = dto.fullName.trim().split(" ");
+    user = this.userRepo.create({
+      firstName: nameParts[0] || dto.fullName,
+      lastName: nameParts.slice(1).join(" ") || null,
+      dkCid: cid,
+      // Do not copy BhutanApp username — it may collide with an existing oro username.
+      // Users can set their own username in settings.
+      phoneNumber: dto.phoneNumber || null,
+      email: dto.email || null,
+      // Mirror Telegram onboarding: explicit starter reputation so callers
+      // can sort/filter by score without null-handling everywhere. The DB
+      // default exists but TypeORM may not apply it when nullable=true.
+      reputationScore: 0.5,
+    });
+    await this.userRepo.save(user);
+
+    await this.authMethodRepo.save(
+      this.authMethodRepo.create({
+        provider: AuthProvider.BHUTANAPP,
+        providerId: cid,
+        metadata: { fullName: dto.fullName, username: dto.username },
+        user,
+        userId: user.id,
+      }),
+    );
+
+    // Welcome bonus — Nu 20 free credit so first-time PWA users can predict
+    // without needing to deposit. Mirrors the TMA onboarding bonus.
+    await this.transactionRepo.save(
+      this.transactionRepo.create({
+        type: TransactionType.FREE_CREDIT,
+        amount: 20,
+        balanceBefore: 0,
+        balanceAfter: 20,
+        userId: user.id,
+        isBonus: true,
+        note: "Welcome bonus — free Nu 20 to make your first prediction!",
+      }),
+    );
+    await this.userRepo
+      .createQueryBuilder()
+      .update()
+      .set({
+        freeCreditGranted: true,
+        bonusBalance: 20,
+        bonusRealPayoutRemaining: () =>
+          `GREATEST("bonusRealPayoutRemaining", 50)`,
+      })
+      .where("id = :id", { id: user.id })
+      .execute();
+
+    this.logger.log(`[Auth] New user created via BhutanApp — CID ${cid}, id ${user.id}`);
+
+    const token = this.jwtService.sign({
+      sub: user.id,
+      isAdmin: user.isAdmin,
+      jti: randomUUID(),
+    });
+    return { token, user: stripSensitiveFields(user) };
+  }
+
+  // ── Link CID (PWA account merge) ─────────────────────────────────────────
+  /**
+   * Called from the PWA wallet when a BhutanApp-authenticated user enters their
+   * 11-digit CID to link to their existing DK Bank / TMA account.
+   *
+   * - If a different user already owns this CID: transfers balance and the
+   *   BhutanApp auth_method to that user, then returns a JWT for that user.
+   * - Otherwise: updates the caller's DK Bank fields and returns a refreshed JWT.
+   */
+  async linkCidAccount(callerUserId: string, cid: string) {
+    const cid11 = cid.trim();
+    if (cid11.length !== 11 || !/^\d{11}$/.test(cid11)) {
+      throw new BadRequestException("CID must be exactly 11 digits");
+    }
+
+    const caller = await this.userRepo.findOneBy({ id: callerUserId });
+    if (!caller) throw new UnauthorizedException("User not found");
+
+    // Look up the DK Bank account — confirms the CID is real
+    const account = await this.dkGateway.lookupAccountByCID(cid11);
+
+    // Find any OTHER user that already owns this CID or matching phone.
+    // The caller (BhutanApp user Y) may already have dkCid set on themselves
+    // from login — exclude them so we don't "merge into self" and miss the
+    // real TMA user X (who'd only be findable via phone hash).
+    let target: User | null = await this.userRepo.findOneBy({ dkCid: cid11 });
+    if (target?.id === callerUserId) target = null;
+
+    if (!target && account.phoneNumber) {
+      const hash = this.telegramVerification.hashPhone(account.phoneNumber);
+      const byTgPhone = await this.userRepo.findOneBy({
+        telegramPhoneHash: hash,
+      });
+      if (byTgPhone && byTgPhone.id !== callerUserId) {
+        target = byTgPhone;
+      } else {
+        const byDkPhone = await this.userRepo.findOneBy({
+          dkPhoneHash: hash,
+        });
+        if (byDkPhone && byDkPhone.id !== callerUserId) target = byDkPhone;
+      }
+    }
+
+    if (target && target.id !== callerUserId) {
+      // ── SECURITY: refuse to merge into an already-verified TMA account ──────
+      // Same guard as loginWithDKBank — prevents account takeover by anyone
+      // who happens to know a victim's CID. A truly verified user has both
+      // telegram & DK phone hashes that match, proving phone-level ownership.
+      const targetVerified =
+        target.telegramPhoneHash &&
+        target.dkPhoneHash &&
+        target.telegramPhoneHash === target.dkPhoneHash;
+      if (targetVerified) {
+        throw new BadRequestException(
+          "This CID is already linked to a verified account. " +
+            "Please log in via your Telegram account or contact support.",
+        );
+      }
+
+      // ── Merge caller INTO target (target is an unverified orphan) ──────────
+      // Wrap balance transfer + auth_method move in a single DB transaction
+      // so they're atomic — no half-merged state if anything fails.
+      await this.userRepo.manager.transaction(async (tx) => {
+        const txRepo = tx.getRepository(Transaction);
+        const amRepo = tx.getRepository(AuthMethod);
+        const uRepo = tx.getRepository(User);
+
+        const callerRow = await txRepo
+          .createQueryBuilder("t")
+          .select("COALESCE(SUM(t.amount), 0)", "bal")
+          .where("t.userId = :id", { id: callerUserId })
+          .getRawOne<{ bal: string }>();
+        const targetRow = await txRepo
+          .createQueryBuilder("t")
+          .select("COALESCE(SUM(t.amount), 0)", "bal")
+          .where("t.userId = :id", { id: target!.id })
+          .getRawOne<{ bal: string }>();
+
+        const callerBalance = Number(callerRow?.bal ?? 0);
+        const targetBalance = Number(targetRow?.bal ?? 0);
+
+        if (callerBalance > 0) {
+          await txRepo.save(
+            txRepo.create({
+              type: TransactionType.WITHDRAWAL,
+              amount: -callerBalance,
+              balanceBefore: callerBalance,
+              balanceAfter: 0,
+              userId: callerUserId,
+              note: "Balance transferred to linked account",
+            }),
+          );
+          await txRepo.save(
+            txRepo.create({
+              type: TransactionType.DEPOSIT,
+              amount: callerBalance,
+              balanceBefore: targetBalance,
+              balanceAfter: targetBalance + callerBalance,
+              userId: target!.id,
+              note: "Balance received from BhutanApp account merge",
+            }),
+          );
+        }
+
+        await amRepo.update(
+          { provider: AuthProvider.BHUTANAPP, userId: callerUserId },
+          { userId: target!.id },
+        );
+
+        // CRITICAL: dkCid and dkAccountNumber are UNIQUE in the DB. The caller
+        // (BhutanApp user Y) has dkCid set from login — we must clear it
+        // BEFORE writing the same value onto the target, otherwise the unique
+        // constraint fires and the whole transaction rolls back.
+        await uRepo.update(callerUserId, {
+          dkCid: null as any,
+          dkAccountNumber: null as any,
+          dkAccountName: null as any,
+          phoneNumber: null as any,
+          dkPhoneHash: null as any,
+        });
+
+        await uRepo.update(target!.id, {
+          dkCid: cid11,
+          dkAccountNumber: account.accountNumber,
+          dkAccountName: account.accountName,
+          phoneNumber: account.phoneNumber || null,
+        });
+      });
+
+      // dkPhoneHash + audit log happen outside the txn — they're best-effort
+      await this.telegramVerification.storeDKPhoneHash(
+        target.id,
+        account.phoneNumber,
+      );
+
+      await this.auditService
+        .log({
+          adminId: target.id,
+          username: target.username || target.firstName || "Unknown",
+          isAdmin: target.isAdmin,
+          action: AuditAction.USER_LOGIN,
+          entityType: "user",
+          entityId: target.id,
+          meta: {
+            event: "pwa_account_merge",
+            mergedFromUserId: callerUserId,
+            cid: cid11,
+          },
+        })
+        .catch(() => {});
+
+      this.logger.log(
+        `[Auth] PWA merge: caller ${callerUserId} merged into ${target.id} via CID ${cid11}`,
+      );
+
+      const fresh = await this.userRepo.findOneBy({ id: target.id });
+      const token = this.jwtService.sign({
+        sub: fresh!.id,
+        isAdmin: fresh!.isAdmin,
+        jti: randomUUID(),
+      });
+      return { token, user: stripSensitiveFields(fresh!), merged: true };
+    }
+
+    // ── No other user owns this CID — update caller's own DK fields ──────────
+    await this.userRepo.update(callerUserId, {
+      dkCid: cid11,
+      dkAccountNumber: account.accountNumber,
+      dkAccountName: account.accountName,
+      phoneNumber: account.phoneNumber || null,
+    });
+    await this.telegramVerification.storeDKPhoneHash(
+      callerUserId,
+      account.phoneNumber,
+    );
+
+    // Upsert the DKBANK auth_method
+    const existing = await this.authMethodRepo.findOne({
+      where: { provider: AuthProvider.DKBANK, providerId: account.accountNumber },
+    });
+    if (!existing) {
+      await this.authMethodRepo.save(
+        this.authMethodRepo.create({
+          provider: AuthProvider.DKBANK,
+          providerId: account.accountNumber,
+          metadata: { cid: cid11, accountName: account.accountName },
+          userId: callerUserId,
+        }),
+      );
+    }
+
+    const fresh = await this.userRepo.findOneBy({ id: callerUserId });
+    const token = this.jwtService.sign({
+      sub: fresh!.id,
+      isAdmin: fresh!.isAdmin,
+      jti: randomUUID(),
+    });
+    return { token, user: stripSensitiveFields(fresh!), merged: false };
+  }
+
+  // ── PWA phone verification (SMS OTP) ──────────────────────────────────────
+  /**
+   * Sends a 6-digit SMS OTP to the supplied phone number. The OTP is stored
+   * in Redis keyed by the user's id (5-minute expiry, 3 attempts max).
+   * Used by PWA users to verify a phone they can later receive withdrawal
+   * OTPs on (PWA has no Telegram chat to deliver to).
+   */
+  async sendPwaPhoneOtp(userId: string, phoneNumber: string) {
+    const cleaned = phoneNumber.trim();
+    if (!/^\+?\d{8,15}$/.test(cleaned.replace(/[\s\-]/g, ""))) {
+      throw new BadRequestException("Invalid phone number format.");
+    }
+
+    // ── Trust check: phone MUST match the DK Bank record for this CID ──────
+    // Otherwise verifying any phone they happen to own proves nothing about
+    // the DK Bank account. Same security model as TMA's phone-share flow.
+    const user = await this.userRepo.findOneBy({ id: userId });
+    if (!user) throw new UnauthorizedException("User not found");
+    if (!user.dkCid) {
+      throw new BadRequestException(
+        "Link your DK Bank account first before verifying a phone.",
+      );
+    }
+    if (!user.dkPhoneHash) {
+      throw new BadRequestException(
+        "Your DK Bank account has no registered phone number. " +
+          "Please update your contact info with DK Bank before verifying.",
+      );
+    }
+    const enteredHash = this.telegramVerification.hashPhone(cleaned);
+    if (enteredHash !== user.dkPhoneHash) {
+      throw new BadRequestException(
+        "This phone number does not match the one registered with " +
+          "DK Bank for your CID. Please use your DK Bank phone number.",
+      );
+    }
+
+    // Per-user throttle: one OTP per 60s to prevent SMS-spam abuse
+    const { allowed } = await this.redis.rateLimit(
+      `pwa-phone-otp:send:${userId}`,
+      1,
+      60,
+    );
+    if (!allowed) {
+      throw new BadRequestException(
+        "Please wait a minute before requesting another code.",
+      );
+    }
+
+    const otp = randomInt(100000, 1000000).toString();
+    const redisKey = `pwa_phone_otp:${userId}`;
+    await this.redis.setJsonEx(redisKey, 300, {
+      otp,
+      phoneNumber: cleaned,
+      attempts: 0,
+    });
+
+    const message = `Your Oro verification code is ${otp}. It expires in 5 minutes. Do not share it with anyone.`;
+    const sent = await this.smsService.sendSms(cleaned, message);
+    if (!sent) {
+      // Keep the OTP record so the user can retry verify, but signal the
+      // delivery failure clearly.
+      throw new BadRequestException(
+        "Could not deliver SMS. Please check the number and try again.",
+      );
+    }
+
+    this.logger.log(`[PwaPhoneOtp] Sent OTP to user ${userId}`);
+    return { ok: true, message: "Verification code sent." };
+  }
+
+  /**
+   * Verifies the OTP, marks the phone as the user's verified phone
+   * (telegramPhoneHash + raw phoneNumber + telegramLinkedAt), and returns
+   * the refreshed user.
+   */
+  async verifyPwaPhoneOtp(userId: string, otp: string) {
+    const redisKey = `pwa_phone_otp:${userId}`;
+    const stored = await this.redis.getJson<{
+      otp: string;
+      phoneNumber: string;
+      attempts: number;
+    }>(redisKey);
+    if (!stored) {
+      throw new UnauthorizedException(
+        "Code expired or not found. Request a new one.",
+      );
+    }
+
+    if (stored.otp !== otp) {
+      stored.attempts++;
+      if (stored.attempts >= 3) {
+        await this.redis.del(redisKey);
+        throw new UnauthorizedException(
+          "Too many incorrect attempts. Request a new code.",
+        );
+      }
+      await this.redis.setJsonEx(redisKey, 300, stored);
+      throw new UnauthorizedException(
+        `Incorrect code. ${3 - stored.attempts} attempts left.`,
+      );
+    }
+
+    await this.redis.del(redisKey);
+
+    const phoneHash = this.telegramVerification.hashPhone(stored.phoneNumber);
+    await this.userRepo.update(userId, {
+      phoneNumber: stored.phoneNumber,
+      telegramPhoneHash: phoneHash,
+      telegramLinkedAt: new Date(),
+    });
+
+    this.logger.log(`[PwaPhoneOtp] User ${userId} verified phone`);
+
+    const fresh = await this.userRepo.findOneBy({ id: userId });
+    return { ok: true, user: stripSensitiveFields(fresh!) };
+  }
+
+  // ── Helper: transfer all balance from one user to another ─────────────────
+  /**
+   * Drains `fromId`'s transaction-summed balance and credits it to `toId`.
+   * Used during account merges so the orphan PWA user's funds follow them
+   * to the linked TMA user record. Returns the amount moved (0 if nothing).
+   */
+  private async transferOrphanBalance(
+    fromId: string,
+    toId: string,
+  ): Promise<number> {
+    const fromRow = await this.transactionRepo
+      .createQueryBuilder("t")
+      .select("COALESCE(SUM(t.amount), 0)", "bal")
+      .where("t.userId = :id", { id: fromId })
+      .getRawOne<{ bal: string }>();
+    const balance = Number(fromRow?.bal ?? 0);
+    if (balance <= 0) return 0;
+
+    const toRow = await this.transactionRepo
+      .createQueryBuilder("t")
+      .select("COALESCE(SUM(t.amount), 0)", "bal")
+      .where("t.userId = :id", { id: toId })
+      .getRawOne<{ bal: string }>();
+    const targetBalance = Number(toRow?.bal ?? 0);
+
+    await this.transactionRepo.save([
+      this.transactionRepo.create({
+        type: TransactionType.WITHDRAWAL,
+        amount: -balance,
+        balanceBefore: balance,
+        balanceAfter: 0,
+        userId: fromId,
+        note: "Balance transferred to linked account",
+      }),
+      this.transactionRepo.create({
+        type: TransactionType.DEPOSIT,
+        amount: balance,
+        balanceBefore: targetBalance,
+        balanceAfter: targetBalance + balance,
+        userId: toId,
+        note: "Balance received from account merge",
+      }),
+    ]);
+
+    // Bust both users' cached balances
+    await this.redis.del(`oro:cache:balance:${fromId}`).catch(() => {});
+    await this.redis.del(`oro:cache:balance:${toId}`).catch(() => {});
+
+    this.logger.log(
+      `[Auth] Transferred Nu ${balance} from ${fromId} to ${toId}`,
+    );
+    return balance;
   }
 
   // ── Auth failure tracking ─────────────────────────────────────────────────
