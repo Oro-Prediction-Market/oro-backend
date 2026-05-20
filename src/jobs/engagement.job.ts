@@ -1,7 +1,15 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { InjectRepository, InjectDataSource } from "@nestjs/typeorm";
-import { Repository, DataSource, Not, IsNull, MoreThan, Between, LessThan } from "typeorm";
+import {
+  Repository,
+  DataSource,
+  Not,
+  IsNull,
+  MoreThan,
+  Between,
+  LessThan,
+} from "typeorm";
 import { User } from "../entities/user.entity";
 import { Market, MarketStatus } from "../entities/market.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
@@ -37,10 +45,7 @@ export class EngagementJob {
    */
   @Cron("0 3 * * *")
   async reEngageLapsedUsers(): Promise<void> {
-    await Promise.all([
-      this.messageWindow(14),
-      this.messageWindow(30),
-    ]);
+    await Promise.all([this.messageWindow(14), this.messageWindow(30)]);
   }
 
   /**
@@ -214,7 +219,8 @@ export class EngagementJob {
         .update(User)
         .set({
           bonusBalance: () => `"bonusBalance" + ${amount}`,
-          bonusRealPayoutRemaining: () => `GREATEST("bonusRealPayoutRemaining", 50)`,
+          bonusRealPayoutRemaining: () =>
+            `GREATEST("bonusRealPayoutRemaining", 50)`,
         })
         .where("id = :userId", { userId })
         .execute();
@@ -281,20 +287,25 @@ export class EngagementJob {
         const chatId = Number(creator.telegramId);
         const name = creator.firstName?.trim() || "Predictor";
         const marketTitle = ch.market?.title ?? "your market";
-        const refundLine = wager > 0 ? ` Your Nu ${wager} wager has been refunded.` : "";
+        const refundLine =
+          wager > 0 ? ` Your Nu ${wager} wager has been refunded.` : "";
 
         await this.telegram
           .sendMessage(
             chatId,
             `⏱ <b>Your duel expired with no challenger.</b>${refundLine}\n\n` +
-            `<b>${marketTitle}</b> is still open — want to challenge someone else?`,
+              `<b>${marketTitle}</b> is still open — want to challenge someone else?`,
           )
           .catch((err: Error) =>
-            this.logger.warn(`[DuelExpiry] DM failed for user ${ch.creatorId}: ${err.message}`),
+            this.logger.warn(
+              `[DuelExpiry] DM failed for user ${ch.creatorId}: ${err.message}`,
+            ),
           );
       }
     }
 
-    this.logger.log(`[DuelExpiry] Processed ${stale.length} expired challenge(s)`);
+    this.logger.log(
+      `[DuelExpiry] Processed ${stale.length} expired challenge(s)`,
+    );
   }
 }
