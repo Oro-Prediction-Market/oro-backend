@@ -1,7 +1,7 @@
 # Oro Prediction Market — Terms and Conditions
 
 **Effective Date:** 1 May 2026
-**Last Updated:** 1 May 2026
+**Last Updated:** 20 May 2026
 **Platform:** Oro Prediction Market (Telegram Mini App & Progressive Web App)
 **Operator:** Oro Prediction Market
 **Contact:** Available through the Oro Telegram channel at https://t.me/OroPredictionMarket
@@ -14,7 +14,7 @@ By accessing or using the Oro Prediction Market platform ("Oro", "the Platform",
 
 If you do not agree with any part of these Terms, you must immediately discontinue use of the Platform.
 
-These Terms constitute a legally binding agreement between you and Oro. We reserve the right to update or modify these Terms at any time. Continued use of the Platform after any changes constitutes your acceptance of the revised Terms. We will notify users of material changes through the official Telegram channel.
+These Terms constitute a legally binding agreement predict between you and Oro. We reserve the right to update or modify these Terms at any time. Continued use of the Platform after any changes constitutes your acceptance of the revised Terms. We will notify users of material changes through the official Telegram channel.
 
 ---
 
@@ -70,7 +70,7 @@ You are responsible for maintaining the security of your Telegram account and an
 
 ### 4.1 How Markets Work
 
-Oro uses a **parimutuel pool model**. All stakes placed on a market are pooled together. When the market resolves, the total pool (minus the platform fee) is distributed proportionally among users who bet on the winning outcome, based on their share of the total stake on that outcome.
+Oro uses a **parimutuel pool model**. All stakes placed on a market are pooled together. When the market resolves, the total pool (minus the platform fee) is distributed proportionally among users who predict on the winning outcome, based on their share of the total stake on that outcome.
 
 ### 4.2 Market Categories
 
@@ -84,19 +84,19 @@ Oro hosts prediction markets across the following categories:
 
 ### 4.3 Platform Fee (House Edge)
 
-A **platform fee** is deducted from the total pool before distributing payouts to winners. The applicable fee is displayed on each market before you place a bet. The default platform fee is **10% of the total pool**. Individual markets may carry a different fee, which will always be disclosed.
+A **platform fee** is deducted from the total pool before distributing payouts to winners. The applicable fee is displayed on each market before you place a prediction. The default platform fee is **10% of the total pool**. Individual markets may carry a different fee, which will always be disclosed.
 
 ### 4.4 Dynamic Odds
 
-Odds in a parimutuel market are **not fixed**. They change in real time as more bets are placed. The payout multiplier you see when placing a bet is indicative only — your final payout depends on the total pool composition at the time the market closes. Oro does not guarantee any specific return.
+Odds in a parimutuel market are **not fixed**. They change in real time as more predictions are placed. The payout multiplier you see when placing a prediction is indicative only — your final payout depends on the total pool composition at the time the market closes. Oro does not guarantee any specific return.
 
-### 4.5 Minimum Bet
+### 4.5 Minimum Prediction Cost
 
-The minimum bet per position is **Nu 50**. Bets below this amount will be rejected.
+The minimum prediction per position is **Nu 50**. prediction below this amount will be rejected.
 
 ### 4.6 Market Closing
 
-Markets close at the deadline set by the administrator. No bets can be placed after a market closes. The closing time is displayed on each market.
+Markets close at the deadline set by the administrator. No prediction can be placed after a market closes. The closing time is displayed on each market.
 
 ### 4.7 Market Resolution
 
@@ -118,7 +118,7 @@ Oro reserves the right to cancel a market if the underlying event is cancelled, 
 
 ### 5.1 In-App Wallet
 
-Each Oro account has an in-app wallet balance, denominated in **Bhutanese Ngultrum (Nu / BTN)**. This balance is used exclusively within the Oro platform to place bets and receive payouts.
+Each Oro account has an in-app wallet balance, denominated in **Bhutanese Ngultrum (Nu / BTN)**. This balance is used exclusively within the Oro platform to place prediction and receive payouts.
 
 ### 5.2 Deposits
 
@@ -147,11 +147,16 @@ Withdrawals are authorised via an OTP sent to your Telegram account. Once confir
 
 ### 5.4 Bonus Balance
 
-A portion of your wallet balance may consist of **bonus credits** (marked separately). Bonus credits are subject to the following restrictions:
+A portion of your wallet balance may consist of **bonus credits** (marked separately). Bonus credits are **not real money** — they are promotional play credits provided by Oro to enhance your experience. Bonus credits are subject to the following rules:
 
-- Bonus credits **cannot be directly withdrawn** to your DK Bank account.
-- Winnings generated from bets placed using bonus credits are capped at **Nu 50** withdrawable per bonus grant.
-- Excess winnings beyond the cap are locked as bonus balance and may only be used for further betting.
+- Bonus credits **cannot be withdrawn** to your DK Bank account under any circumstances.
+- Bonus credits allow you to participate in prediction markets and experience the platform without risking real funds.
+- **If you win** a market position that was funded with bonus credits, you **do not receive a real money payout**. Winnings from bonus-funded positions are returned as bonus credits only and remain non-withdrawable.
+- **If you lose** a market position that was funded with bonus credits, the opposing winners (who predict with real money) **still receive their full real money payout**. The platform absorbs the cost of covering these payouts on behalf of losing bonus positions.
+- Bonus credits cannot be transferred predictween users.
+- Oro reserves the right to expire, revoke, or modify bonus credit grants at any time.
+
+**In summary:** Bonus credits let you play for free, but winnings from bonus predicts are not redeemable as real money. However, real-money participants who win against bonus-funded positions are paid out normally by the platform.
 
 ### 5.5 Rate Limits
 
@@ -180,8 +185,8 @@ All transactions are logged in your in-app transaction history. You are responsi
 
 All new users receive a **Nu 20 welcome bonus** upon first registration. This credit is:
 
-- Immediately available to use for placing bets
-- Marked as bonus credit (subject to the bonus withdrawal restrictions in Section 5.4)
+- Immediately available to use for placing prediction
+- Marked as bonus credit (subject to the bonus credit rules in Section 5.4 — not redeemable as real money)
 - Non-transferable and non-refundable
 - Granted once per user — duplicate accounts will not receive additional bonuses
 
@@ -191,13 +196,13 @@ Users may refer new users to Oro using their unique referral link. The referral 
 
 | Event                                     | Reward                                                     |
 | ----------------------------------------- | ---------------------------------------------------------- |
-| Referred user makes their first bet       | **Nu 25 flat bonus** + **5% of referred user's first bet** |
+| Referred user makes their first predictions       | **Nu 25 flat bonus** + **5% of referred user's first predict** |
 | Maximum reward per referral               | **Nu 75**                                                  |
 | Milestone reward (10 converted referrals) | **Nu 500 prize**                                           |
 
 **Conditions:**
 
-- A referral is only counted once the referred user successfully places their first bet.
+- A referral is only counted once the referred user successfully places their first prediction.
 - Self-referrals (using your own referral link) are automatically rejected.
 - Referral bonuses are credited to the referring user's wallet.
 - Oro reserves the right to modify, suspend, or terminate the referral programme at any time.
@@ -241,7 +246,7 @@ You agree not to engage in any of the following:
 1. **Fraud and Manipulation** — Attempting to manipulate market outcomes, colluding with other users, or engaging in any form of market manipulation.
 2. **Multiple Accounts** — Creating more than one account to circumvent limits, exploit bonuses, or game the referral programme.
 3. **Identity Misrepresentation** — Using another person's CID, DK Bank account, or Telegram account.
-4. **Automated Bots** — Using automated scripts, bots, or any non-human means to place bets or interact with the Platform (except through official Telegram bot commands as intended).
+4. **Automated Bots** — Using automated scripts, bots, or any non-human means to place prediction or interact with the Platform (except through official Telegram bot commands as intended).
 5. **Exploitation of Bugs** — Deliberately exploiting any technical error, vulnerability, or bug in the Platform. You must report any discovered bugs to Oro immediately.
 6. **Money Laundering** — Using Oro in any way that constitutes or facilitates money laundering or financing of illegal activities.
 7. **Chargebacks** — Initiating chargebacks or payment reversals through DK Bank after funds have been credited to your Oro wallet.
@@ -260,7 +265,7 @@ Oro is a prediction market platform. Participation involves real financial risk.
 
 ### 9.2 Voluntary Limits
 
-We encourage users to set personal limits on their spending. If you believe you may have a problem with gambling or compulsive betting, please seek assistance from a qualified support service before using this platform.
+We encourage users to set personal limits on their spending. If you believe you may have a problem with spending or compulsive predictting, please seek assistance from a qualified support service before using this platform.
 
 ### 9.3 Self-Exclusion
 
@@ -290,7 +295,7 @@ Oro collects and stores the following data to operate the Platform:
 - A hashed (one-way HMAC) representation of your phone number — your actual phone number is never stored in plain text
 - Your 11-digit CID and DK Bank account number (required for payment processing)
 - In-app transaction history
-- Bet history and market positions
+- Predict history and market positions
 - Device and session data for security purposes
 
 ### 11.2 How We Use Your Data
@@ -324,7 +329,7 @@ Oro is provided on an **"as is" and "as available"** basis. We do not guarantee 
 
 ### 12.2 Financial Risk
 
-**All participation in prediction markets involves financial risk.** Oro does not guarantee any return on bets placed. You may lose some or all of the money you deposit. You acknowledge that you participate at your own risk.
+**All participation in prediction markets involves financial risk.** Oro does not guarantee any return on prediction placed. You may lose some or all of the money you deposit. You acknowledge that you participate at your own risk.
 
 ### 12.3 Third-Party Services
 
@@ -358,7 +363,7 @@ Upon termination, any **real money balance** (non-bonus funds) remaining in your
 
 ### 13.3 Termination by User
 
-You may request account closure at any time by contacting us via the official Telegram channel. Pending bets will be settled before closure is processed.
+You may request account closure at any time by contacting us via the official Telegram channel. Pending prediction will be settled before closure is processed.
 
 ---
 
