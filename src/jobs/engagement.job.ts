@@ -132,6 +132,22 @@ export class EngagementJob {
         const msg = this.buildMessage(name, daysMissed, creditAmount);
 
         if (creditAmount > 0) {
+          // Dedup guard: skip if this user already received this milestone credit
+          const alreadyCredited = await this.txRepo.findOne({
+            where: {
+              userId: user.id,
+              type: TransactionType.FREE_CREDIT,
+              note: `Re-engagement credit (${daysMissed}d inactive)`,
+            },
+            select: ["id"],
+          });
+          if (alreadyCredited) {
+            this.logger.debug(
+              `[ReEngagement] Skipping ${user.id} — already credited for ${daysMissed}d`,
+            );
+            continue;
+          }
+
           await this.creditUser(
             user.id,
             creditAmount,
