@@ -183,7 +183,6 @@ describe("AuthService.validateTelegramInitData", () => {
       makeAuditService() as any,
       makeAuditLogRepo() as any,
       makeRedis() as any,
-      { sendSms: jest.fn().mockResolvedValue(true) } as any,
     );
   });
 
@@ -259,7 +258,6 @@ describe("AuthService.loginWithTelegram", () => {
       makeAuditService() as any,
       makeAuditLogRepo() as any,
       makeRedis() as any,
-      { sendSms: jest.fn().mockResolvedValue(true) } as any,
     );
   });
 
@@ -355,7 +353,6 @@ describe("AuthService.loginWithTelegram", () => {
       makeAuditService() as any,
       makeAuditLogRepo() as any,
       makeRedis() as any,
-      { sendSms: jest.fn().mockResolvedValue(true) } as any,
     );
 
     authMethodRepo.findOne.mockResolvedValue(null);
@@ -393,7 +390,6 @@ describe("AuthService.loginWithTelegram", () => {
       makeAuditService() as any,
       makeAuditLogRepo() as any,
       makeRedis() as any,
-      { sendSms: jest.fn().mockResolvedValue(true) } as any,
     );
 
     authMethodRepo.findOne.mockResolvedValue(null);
@@ -426,7 +422,6 @@ describe("AuthService.loginWithTelegram", () => {
       makeAuditService() as any,
       makeAuditLogRepo() as any,
       makeRedis() as any,
-      { sendSms: jest.fn().mockResolvedValue(true) } as any,
     );
 
     authMethodRepo.findOne.mockResolvedValue(null);
@@ -513,7 +508,6 @@ describe("AuthService.loginWithTelegram — referral attribution", () => {
       makeAuditService() as any,
       makeAuditLogRepo() as any,
       makeRedis() as any,
-      { sendSms: jest.fn().mockResolvedValue(true) } as any,
     );
   });
 
@@ -632,7 +626,6 @@ describe("AuthService.loginWithDKBank", () => {
       makeAuditService() as any,
       makeAuditLogRepo() as any,
       makeRedis() as any,
-      { sendSms: jest.fn().mockResolvedValue(true) } as any,
     );
   });
 

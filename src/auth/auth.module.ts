@@ -17,7 +17,6 @@ import { Position } from "../entities/position.entity";
 import { DKGatewayService } from "../payment/services/dk-gateway/dk-gateway.service";
 import { TelegramModule } from "../telegram/telegram.module";
 import { AuditService } from "../admin/audit.service";
-import { SmsService } from "../shared/services/sms.service";
 
 @Module({
   imports: [
@@ -48,7 +47,7 @@ import { SmsService } from "../shared/services/sms.service";
     }),
     TelegramModule,
   ],
-  providers: [AuthService, JwtStrategy, DKGatewayService, AuditService, SmsService],
+  providers: [AuthService, JwtStrategy, DKGatewayService, AuditService], // Add AuditService
   controllers: [AuthController],
   exports: [AuthService, JwtModule],
 })

@@ -34,7 +34,6 @@ import { TelegramAuthDto } from "./dto/telegram-auth.dto";
 import { DKBankAuthDto } from "./dto/dkbank-auth.dto";
 import { ManualLoginRequestDto } from "./dto/manual-login-request.dto";
 import { ManualLoginVerifyDto } from "./dto/manual-login-verify.dto";
-import { BhutanAppAuthDto } from "./dto/bhutanapp-auth.dto";
 import { TelegramVerificationService } from "../telegram/telegram-verification.service";
 import { AuditAction } from "../entities/audit-log.entity";
 
@@ -83,27 +82,6 @@ class PwaStatusDto {
   @ApiProperty({ description: "11-digit CID", example: "11000000000" })
   @IsString()
   cid: string;
-}
-
-class LinkCidDto {
-  @ApiProperty({ description: "11-digit Bhutanese CID", example: "11000000000" })
-  @IsString()
-  @MinLengthValidator(11)
-  cid: string;
-}
-
-class SendPwaPhoneOtpDto {
-  @ApiProperty({ description: "Phone number to send the OTP to", example: "+97517123456" })
-  @IsString()
-  @MinLengthValidator(8)
-  phoneNumber: string;
-}
-
-class VerifyPwaPhoneOtpDto {
-  @ApiProperty({ description: "6-digit OTP received via SMS", example: "123456" })
-  @IsString()
-  @MinLengthValidator(6)
-  otp: string;
 }
 
 class VerifyDKAccountDto {
@@ -188,70 +166,6 @@ export class AuthController {
       }
       throw e;
     }
-  }
-
-  @Post("bhutanapp")
-  @HttpCode(200)
-  @Public()
-  @Throttle({ default: { limit: 10, ttl: 60_000 } })
-  @ApiOperation({ summary: "Login or register via BhutanApp OAuth (QR/OTP flow)" })
-  @ApiBody({ type: BhutanAppAuthDto })
-  async bhutanAppLogin(@Body() dto: BhutanAppAuthDto) {
-    return this.authService.loginWithBhutanApp(dto);
-  }
-
-  /**
-   * Called from the PWA wallet when a BhutanApp user enters their CID.
-   * Looks up DK Bank, finds any existing account with that CID, and merges
-   * the caller into that account (transferring balance + auth methods).
-   */
-  @Post("link-cid")
-  @HttpCode(200)
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @Throttle({ default: { limit: 5, ttl: 60_000 } })
-  @ApiOperation({ summary: "Link CID to the current PWA user (merges with existing TMA account if found)" })
-  @ApiBody({ type: LinkCidDto })
-  async linkCid(@Body() dto: LinkCidDto, @Request() req: any) {
-    return this.authService.linkCidAccount(req.user.userId, dto.cid);
-  }
-
-  /**
-   * PWA phone verification — step 1: send a 6-digit OTP via SMS to the
-   * supplied number. Stored 5 minutes in Redis. PWA users have no Telegram
-   * chat, so SMS is the only delivery channel for security codes.
-   */
-  @Post("pwa/send-phone-otp")
-  @HttpCode(200)
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @Throttle({ default: { limit: 3, ttl: 300_000 } })
-  @ApiOperation({ summary: "Send SMS verification OTP to a phone number (PWA users)" })
-  @ApiBody({ type: SendPwaPhoneOtpDto })
-  async sendPwaPhoneOtp(
-    @Body() dto: SendPwaPhoneOtpDto,
-    @Request() req: any,
-  ) {
-    return this.authService.sendPwaPhoneOtp(req.user.userId, dto.phoneNumber);
-  }
-
-  /**
-   * PWA phone verification — step 2: verify the OTP. On success the phone is
-   * stored on the user (telegramPhoneHash + raw phoneNumber + telegramLinkedAt)
-   * and can be used for withdrawal OTP delivery.
-   */
-  @Post("pwa/verify-phone-otp")
-  @HttpCode(200)
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @Throttle({ default: { limit: 10, ttl: 60_000 } })
-  @ApiOperation({ summary: "Verify the SMS OTP and mark phone as verified (PWA users)" })
-  @ApiBody({ type: VerifyPwaPhoneOtpDto })
-  async verifyPwaPhoneOtp(
-    @Body() dto: VerifyPwaPhoneOtpDto,
-    @Request() req: any,
-  ) {
-    return this.authService.verifyPwaPhoneOtp(req.user.userId, dto.otp);
   }
 
   @Post("logout")
