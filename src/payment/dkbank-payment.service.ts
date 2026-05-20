@@ -147,16 +147,23 @@ export class DKBankPaymentService {
     // Require a verified linked account whose CID matches the submitted CID.
     // Ownership was already proven via OTP during bank linking — no phone-hash
     // comparison needed.
-    const linkedAccount = await this.lbaRepo.findOne({
+    let linkedAccount = await this.lbaRepo.findOne({
       where: { userId, isVerified: true, isDefault: true },
     });
+    // Fallback: if no verified LinkedBankAccount but user has dkCid (set during onboarding link)
     if (!linkedAccount) {
+      linkedAccount = await this.lbaRepo.findOne({
+        where: { userId, cid: cid },
+      });
+    }
+    if (!linkedAccount && user.dkCid === cid) {
+      // User linked during onboarding but record may not exist — allow based on user.dkCid
+    } else if (!linkedAccount) {
       throw new BadRequestException(
         "You have not linked a DK Bank account yet. " +
           "Please go to Wallet → Link DK Bank Account first.",
       );
-    }
-    if (linkedAccount.cid !== cid) {
+    } else if (linkedAccount.cid !== cid) {
       this.logger.warn(
         `[Payment] CID mismatch for user ${userId}: submitted=${cid} linked=${linkedAccount.cid}`,
       );
@@ -713,9 +720,16 @@ export class DKBankPaymentService {
     const user = await this.userRepo.findOne({ where: { id: userId } });
     if (!user) throw new NotFoundException("User not found");
 
-    const linkedAccount = await this.lbaRepo.findOne({
+    let linkedAccount = await this.lbaRepo.findOne({
       where: { userId, isVerified: true, isDefault: true },
     });
+    // Fallback: find any linked account for this user (may not be verified yet)
+    if (!linkedAccount) {
+      linkedAccount = await this.lbaRepo.findOne({
+        where: { userId },
+        order: { createdAt: "DESC" },
+      });
+    }
     if (!linkedAccount || !linkedAccount.accountNumber) {
       throw new BadRequestException(
         "You have not linked a DK Bank account yet. " +

@@ -44,6 +44,8 @@ export class BankLinkService {
   async linkBankAccount(
     userId: string,
     cid: string,
+    expectedPhone?: string,
+    skipOtp?: boolean,
   ): Promise<{
     accountName: string;
     maskedPhone: string;
@@ -86,6 +88,24 @@ export class BankLinkService {
       );
     }
 
+    this.logger.log(
+      `[BankLink] CID=${cleanCid} → accountName="${accountName}", bankPhone="${bankPhone}", accountNumber="${accountNumber}"`,
+    );
+
+    // If expectedPhone is provided (from onboarding), verify it matches DK Bank's phone
+    if (expectedPhone) {
+      const normalizedExpected = this.stripToLocal(expectedPhone);
+      const normalizedBank = this.stripToLocal(bankPhone);
+      this.logger.log(
+        `[BankLink] Phone match check: user="${normalizedExpected}" vs DK="${normalizedBank}"`,
+      );
+      if (normalizedExpected !== normalizedBank) {
+        throw new BadRequestException(
+          `Phone number mismatch. The phone number registered with your DK Bank account does not match the phone you provided. DK Bank has: ${this.maskPhone(bankPhone)}`,
+        );
+      }
+    }
+
     // Upsert: reuse existing unverified record for this user/cid, or create new
     let account = await this.lbaRepo.findOne({
       where: { userId, cid: cleanCid },
@@ -106,6 +126,29 @@ export class BankLinkService {
     account.bankPhone = bankPhone;
     account.linkAttempts = 0;
     await this.lbaRepo.save(account);
+
+    // Eagerly save CID + account name on user so wallet/profile shows linked info even before OTP
+    await this.userRepo.update(userId, {
+      dkCid: cleanCid,
+      dkAccountNumber: accountNumber,
+      dkAccountName: accountName,
+    });
+
+    // If skipOtp (e.g. during onboarding where identity is already verified), auto-verify
+    if (skipOtp) {
+      account.isVerified = true;
+      account.verifiedAt = new Date();
+      account.isDefault = true;
+      await this.lbaRepo.save(account);
+      this.logger.log(
+        `[BankLink] Skipped OTP — auto-verified for user ${userId}, CID=${cleanCid}`,
+      );
+      return {
+        accountName,
+        maskedPhone: this.maskPhone(bankPhone),
+        requiresOtp: false,
+      };
+    }
 
     // Generate and send OTP to the DK-registered phone
     const otp = randomInt(100000, 1000000).toString();
@@ -285,5 +328,18 @@ export class BankLinkService {
   private maskPhone(phone: string): string {
     if (phone.length <= 4) return "****";
     return phone.slice(0, -4).replace(/\d/g, "*") + phone.slice(-4);
+  }
+
+  /**
+   * Strip a phone number down to the local 8-digit Bhutanese number for comparison.
+   * E.g. "+97517123456" → "17123456", "97517123456" → "17123456", "17123456" → "17123456"
+   */
+  private stripToLocal(phone: string): string {
+    let cleaned = phone.replace(/[\s\-()+ ]/g, "");
+    // Remove country code 975
+    if (cleaned.startsWith("975") && cleaned.length === 11) {
+      cleaned = cleaned.substring(3);
+    }
+    return cleaned;
   }
 }

@@ -111,8 +111,14 @@ export class User {
 
   // Reputation
 
-  /** Overall accuracy score 0.0–1.0 (confidence-adjusted). Null until first market settles. */
-  @Column({ type: "decimal", precision: 5, scale: 4, nullable: true })
+  /** Overall accuracy score 0.0–1.0 (confidence-adjusted). Starts at 0.5 for new users. */
+  @Column({
+    type: "decimal",
+    precision: 5,
+    scale: 4,
+    nullable: true,
+    default: 0.5,
+  })
   reputationScore: number | null;
 
   /** 'rookie' | 'sharpshooter' | 'hot_hand' | 'legend' */

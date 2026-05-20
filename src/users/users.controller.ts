@@ -35,6 +35,7 @@ import { StreakService } from "./streak.service";
 import { SeasonService } from "./season.service";
 import { OnboardService } from "./onboard.service";
 import { ParimutuelEngine } from "../markets/parimutuel.engine";
+import { DKGatewayService } from "../payment/services/dk-gateway/dk-gateway.service";
 
 class SendOnboardOtpDto {
   @ApiProperty({ description: "Phone number (E.164)", required: false })
@@ -46,13 +47,26 @@ class SendOnboardOtpDto {
   @IsOptional()
   @IsString()
   email?: string;
+
+  @ApiProperty({
+    description: "CID to validate against DK Bank phone",
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  cid?: string;
 }
 
 class RegisterTelegramUserDto {
-  @ApiProperty({ example: "sonam_t", description: "3–50 chars, letters/numbers/underscores" })
+  @ApiProperty({
+    example: "sonam_t",
+    description: "3–50 chars, letters/numbers/underscores",
+  })
   @IsString()
   @Length(3, 50)
-  @Matches(/^[a-zA-Z0-9_]+$/, { message: "Letters, numbers and underscores only" })
+  @Matches(/^[a-zA-Z0-9_]+$/, {
+    message: "Letters, numbers and underscores only",
+  })
   username: string;
 
   @ApiProperty({ example: "Sonam Tenzin" })
@@ -60,7 +74,10 @@ class RegisterTelegramUserDto {
   @Length(1, 255)
   fullName: string;
 
-  @ApiProperty({ example: "123456", description: "6-digit code from Telegram bot" })
+  @ApiProperty({
+    example: "123456",
+    description: "6-digit code from Telegram bot",
+  })
   @IsString()
   @Length(6, 6)
   otp: string;
@@ -75,10 +92,18 @@ class RegisterTelegramUserDto {
   @IsString()
   email?: string;
 
-  @ApiProperty({ required: false, description: "Referral code from startParam" })
+  @ApiProperty({
+    required: false,
+    description: "Referral code from startParam",
+  })
   @IsOptional()
   @IsString()
   referralCode?: string;
+
+  @ApiProperty({ required: false, description: "Telegram profile photo URL" })
+  @IsOptional()
+  @IsString()
+  photoUrl?: string;
 }
 
 // ─── Response schemas for Swagger ────────────────────────────────────────────
@@ -159,6 +184,7 @@ export class UsersController {
     private readonly config: ConfigService,
     private readonly seasonService: SeasonService,
     private readonly onboardService: OnboardService,
+    private readonly dkGateway: DKGatewayService,
   ) {}
 
   // ── Onboarding ────────────────────────────────────────────────────────────
@@ -176,7 +202,8 @@ export class UsersController {
   @HttpCode(200)
   @UseGuards(PreKycJwtAuthGuard)
   @ApiOperation({
-    summary: "Send OTP via Telegram bot during onboarding (pre-KYC token required)",
+    summary:
+      "Send OTP via Telegram bot during onboarding (pre-KYC token required)",
   })
   @ApiBody({ type: SendOnboardOtpDto })
   @ApiOkResponse({ schema: { properties: { sent: { type: "boolean" } } } })
@@ -184,6 +211,35 @@ export class UsersController {
     if (!dto.phoneNumber && !dto.email) {
       throw new BadRequestException("phoneNumber or email is required");
     }
+
+    // If CID and phone are provided, validate they match in DK Bank before sending OTP
+    if (dto.cid && dto.phoneNumber) {
+      const cleanCid = dto.cid.trim().replace(/\D/g, "");
+      if (cleanCid.length === 11) {
+        try {
+          const result = await this.dkGateway.lookupAccountByCID(cleanCid);
+          const bankPhone = result.phoneNumber;
+          if (bankPhone) {
+            const stripToLocal = (p: string) => {
+              let c = p.replace(/[\s\-()+ ]/g, "");
+              if (c.startsWith("975") && c.length === 11) c = c.substring(3);
+              return c;
+            };
+            const normalizedUser = stripToLocal(dto.phoneNumber);
+            const normalizedBank = stripToLocal(bankPhone);
+            if (normalizedUser !== normalizedBank) {
+              throw new BadRequestException(
+                `Phone number does not match your DK Bank account. The phone registered with CID ${cleanCid.slice(0, 3)}***${cleanCid.slice(-3)} is different from what you entered.`,
+              );
+            }
+          }
+        } catch (e: any) {
+          if (e instanceof BadRequestException) throw e;
+          // If DK lookup fails, let it pass — bank linking will catch it later
+        }
+      }
+    }
+
     await this.onboardService.sendOnboardOtp(
       req.user.telegramId,
       dto.phoneNumber,
@@ -196,7 +252,8 @@ export class UsersController {
   @HttpCode(200)
   @UseGuards(PreKycJwtAuthGuard)
   @ApiOperation({
-    summary: "Complete Telegram onboarding — verify OTP and create user account",
+    summary:
+      "Complete Telegram onboarding — verify OTP and create user account",
   })
   @ApiBody({ type: RegisterTelegramUserDto })
   async registerTelegramUser(
@@ -207,7 +264,13 @@ export class UsersController {
       req.user.telegramId,
       dto,
     );
-    const { phoneNumber: _p, pwaPasswordHash: _pw, telegramPhoneHash: _tp, dkPhoneHash: _dk, ...safeUser } = user as any;
+    const {
+      phoneNumber: _p,
+      pwaPasswordHash: _pw,
+      telegramPhoneHash: _tp,
+      dkPhoneHash: _dk,
+      ...safeUser
+    } = user as any;
     return { token, user: safeUser };
   }
 

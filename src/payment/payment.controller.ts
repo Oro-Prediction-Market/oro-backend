@@ -31,6 +31,7 @@ import {
   IsNotEmpty,
   IsString,
   IsUUID,
+  IsOptional,
   MinLength,
   MaxLength,
 } from "class-validator";
@@ -62,6 +63,23 @@ class LinkBankAccountDto {
   @IsString()
   @IsNotEmpty()
   cid: string;
+
+  @Prop({
+    description: "Phone number to verify against DK Bank records (optional)",
+    example: "+97517123456",
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  phone?: string;
+
+  @Prop({
+    description:
+      "Skip OTP verification (used during onboarding where identity is already verified)",
+    required: false,
+  })
+  @IsOptional()
+  skipOtp?: boolean;
 }
 
 class VerifyBankLinkDto {
@@ -222,7 +240,11 @@ export class PaymentController {
     // Same rate limits as client-inquiry: 3/min per IP, 10/hr per CID
     const ip = req.ip || req.connection?.remoteAddress || "unknown";
     await this.enforceRateLimit(`account-inquiry:ip:${ip}`, 3, 60);
-    await this.enforceRateLimit(`account-inquiry:cid:${dto.id_number}`, 10, 3600);
+    await this.enforceRateLimit(
+      `account-inquiry:cid:${dto.id_number}`,
+      10,
+      3600,
+    );
 
     const { accountNumber, accountName } =
       await this.dkGatewayService.lookupAccountByCID(dto.id_number);
@@ -248,7 +270,11 @@ export class PaymentController {
     const ip = req.ip || req.connection?.remoteAddress || "unknown";
     await this.enforceRateLimit(`client-inquiry:ip:${ip}`, 3, 60);
     // Per-CID limit: 10 per hour — stops bulk scanning across rotating IPs
-    await this.enforceRateLimit(`client-inquiry:cid:${dto.id_number}`, 10, 3600);
+    await this.enforceRateLimit(
+      `client-inquiry:cid:${dto.id_number}`,
+      10,
+      3600,
+    );
 
     const raw = await this.dkGatewayService.clientInquiry(dto);
 
@@ -256,7 +282,12 @@ export class PaymentController {
     // Callers only need the name to show a confirmation prompt to the user.
     if (Array.isArray(raw?.response_data)) {
       raw.response_data = raw.response_data.map(
-        ({ account_number: _a, phone_number: _p, national_id: _n, ...safe }: any) => safe,
+        ({
+          account_number: _a,
+          phone_number: _p,
+          national_id: _n,
+          ...safe
+        }: any) => safe,
       );
     }
 
@@ -384,12 +415,14 @@ export class PaymentController {
       },
     },
   })
-  async linkBankAccount(
-    @Body() dto: LinkBankAccountDto,
-    @Request() req: any,
-  ) {
+  async linkBankAccount(@Body() dto: LinkBankAccountDto, @Request() req: any) {
     await this.enforceRateLimit(`bank:link:${req.user.userId}`, 5, 300);
-    return this.bankLinkService.linkBankAccount(req.user.userId, dto.cid);
+    return this.bankLinkService.linkBankAccount(
+      req.user.userId,
+      dto.cid,
+      dto.phone,
+      dto.skipOtp,
+    );
   }
 
   @Post("bank/verify")
@@ -401,10 +434,7 @@ export class PaymentController {
   })
   @ApiBody({ type: VerifyBankLinkDto })
   @ApiResponse({ status: 200, description: "Bank account linked successfully" })
-  async verifyBankLink(
-    @Body() dto: VerifyBankLinkDto,
-    @Request() req: any,
-  ) {
+  async verifyBankLink(@Body() dto: VerifyBankLinkDto, @Request() req: any) {
     await this.enforceRateLimit(`bank:verify:${req.user.userId}`, 8, 300);
     const account = await this.bankLinkService.verifyBankLink(
       req.user.userId,

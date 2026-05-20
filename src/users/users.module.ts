@@ -16,10 +16,20 @@ import { OnboardService } from "./onboard.service";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import { SmsService } from "../shared/services/sms.service";
 import { EmailService } from "../shared/services/email.service";
+import { DKGatewayService } from "../payment/services/dk-gateway/dk-gateway.service";
+import { DKGatewayAuthToken } from "../entities/dk-gateway-auth-token.entity";
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([User, AuthMethod, Payment, Transaction, Position, Season]),
+    TypeOrmModule.forFeature([
+      User,
+      AuthMethod,
+      Payment,
+      Transaction,
+      Position,
+      Season,
+      DKGatewayAuthToken,
+    ]),
     ScheduleModule.forRoot(),
     JwtModule.registerAsync({
       imports: [ConfigModule],
@@ -31,7 +41,15 @@ import { EmailService } from "../shared/services/email.service";
     }),
   ],
   controllers: [UsersController],
-  providers: [StreakService, SeasonService, OnboardService, TelegramSimpleService, SmsService, EmailService],
+  providers: [
+    StreakService,
+    SeasonService,
+    OnboardService,
+    TelegramSimpleService,
+    SmsService,
+    EmailService,
+    DKGatewayService,
+  ],
   exports: [StreakService, SeasonService],
 })
 export class UsersModule {}

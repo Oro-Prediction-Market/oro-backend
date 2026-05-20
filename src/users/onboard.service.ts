@@ -23,6 +23,7 @@ interface RegisterDto {
   phoneNumber?: string;
   email?: string;
   referralCode?: string;
+  photoUrl?: string;
 }
 
 @Injectable()
@@ -68,14 +69,26 @@ export class OnboardService {
 
     if (phone) {
       const sent = await this.smsService.sendOtp(phone, otp);
-      if (!sent) this.logger.warn(`[Onboard] SMS delivery failed for ${phone}, falling back to Telegram`);
-      else { this.logger.log(`[Onboard] OTP sent via SMS to ${phone}`); return; }
+      if (!sent)
+        this.logger.warn(
+          `[Onboard] SMS delivery failed for ${phone}, falling back to Telegram`,
+        );
+      else {
+        this.logger.log(`[Onboard] OTP sent via SMS to ${phone}`);
+        return;
+      }
     }
 
     if (email) {
       const sent = await this.emailService.sendOtp(email, otp);
-      if (!sent) this.logger.warn(`[Onboard] Email delivery failed for ${email}, falling back to Telegram`);
-      else { this.logger.log(`[Onboard] OTP sent via email to ${email}`); return; }
+      if (!sent)
+        this.logger.warn(
+          `[Onboard] Email delivery failed for ${email}, falling back to Telegram`,
+        );
+      else {
+        this.logger.log(`[Onboard] OTP sent via email to ${email}`);
+        return;
+      }
     }
 
     // Fallback: deliver via Telegram DM if SMS/email unavailable or disabled
@@ -86,7 +99,9 @@ export class OnboardService {
       `Verifying account for ${target}.\n` +
       `Valid for 5 minutes. Do not share this code.`;
     await this.telegramSimple.sendMessage(Number(telegramId), message);
-    this.logger.log(`[Onboard] OTP sent via Telegram fallback to ${telegramId}`);
+    this.logger.log(
+      `[Onboard] OTP sent via Telegram fallback to ${telegramId}`,
+    );
   }
 
   private async verifyOtp(telegramId: string, otp: string): Promise<void> {
@@ -104,7 +119,9 @@ export class OnboardService {
       );
     }
 
-    this.logger.debug(`[OTP] stored="${stored.otp}" (len=${String(stored.otp).length}) received="${otp}" (len=${String(otp).length})`);
+    this.logger.debug(
+      `[OTP] stored="${stored.otp}" (len=${String(stored.otp).length}) received="${otp}" (len=${String(otp).length})`,
+    );
 
     if (String(stored.otp).trim() !== String(otp).trim()) {
       stored.attempts++;
@@ -174,7 +191,9 @@ export class OnboardService {
       lastName,
       phoneNumber: dto.phoneNumber ?? null,
       email: dto.email ?? null,
+      photoUrl: dto.photoUrl ?? null,
       referredByUserId,
+      reputationScore: 0.5,
     });
     await this.userRepo.save(user);
 
@@ -196,7 +215,8 @@ export class OnboardService {
       .set({
         freeCreditGranted: true,
         bonusBalance: 20,
-        bonusRealPayoutRemaining: () => `GREATEST("bonusRealPayoutRemaining", 50)`,
+        bonusRealPayoutRemaining: () =>
+          `GREATEST("bonusRealPayoutRemaining", 50)`,
       })
       .where("id = :id", { id: user.id })
       .execute();
@@ -225,7 +245,9 @@ export class OnboardService {
       );
     }
 
-    this.logger.log(`[Onboard] User registered: ${user.id} (tg: ${telegramId})`);
+    this.logger.log(
+      `[Onboard] User registered: ${user.id} (tg: ${telegramId})`,
+    );
 
     const token = this.jwtService.sign({
       sub: user.id,
