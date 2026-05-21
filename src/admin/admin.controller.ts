@@ -1520,15 +1520,30 @@ export class AdminController {
       "Backfill revenue distributions for all settled markets that don't have one yet",
   })
   async backfillRevenue() {
-    // Find all settlements with houseAmount > 0 that don't have a distribution record
+    // First: delete any duplicate distributions (keep only the earliest per market)
+    await this.dataSource.query(`
+      DELETE FROM revenue_distributions
+      WHERE id NOT IN (
+        SELECT DISTINCT ON ("marketId") id
+        FROM revenue_distributions
+        ORDER BY "marketId", "createdAt" ASC
+      )
+    `);
+
+    // Find canonical (first) settlement per market that doesn't have a distribution yet
     const missing = await this.dataSource.query(`
       SELECT s.id as "settlementId", s."marketId", s."houseAmount", 
              m."houseEdgePct", s."totalPool"
-      FROM settlements s
+      FROM (
+        SELECT DISTINCT ON (sel."marketId") sel.*
+        FROM settlements sel
+        INNER JOIN markets m ON m.id = sel."marketId"
+        ORDER BY sel."marketId", sel."settledAt" ASC
+      ) s
       INNER JOIN markets m ON m.id = s."marketId"
-      WHERE s."houseAmount" > 0
+      WHERE CAST(s."houseAmount" AS float) > 0
         AND NOT EXISTS (
-          SELECT 1 FROM revenue_distributions rd WHERE rd."settlementId" = s.id
+          SELECT 1 FROM revenue_distributions rd WHERE rd."marketId" = s."marketId"
         )
       ORDER BY s."settledAt" ASC
     `);
