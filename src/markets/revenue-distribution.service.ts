@@ -185,33 +185,87 @@ export class RevenueDistributionService {
     }
   }
 
-  /** Process all pending distributions (batch). Admin-triggered. */
+  /** Process all pending distributions as ONE combined transfer. Admin-triggered. */
   async processAllPending(): Promise<{
     processed: number;
     succeeded: number;
     failed: number;
     totalAmount: number;
+    paymentReference?: string;
   }> {
     const pending = await this.distributionRepo.find({
       where: { status: DistributionStatus.PENDING },
       order: { createdAt: "ASC" },
     });
 
-    let succeeded = 0;
-    let failed = 0;
-    let totalAmount = 0;
-
-    for (const dist of pending) {
-      const result = await this.executeTransfer(dist.id);
-      if (result.success) {
-        succeeded++;
-        totalAmount += Number(dist.amount);
-      } else {
-        failed++;
-      }
+    if (pending.length === 0) {
+      return { processed: 0, succeeded: 0, failed: 0, totalAmount: 0 };
     }
 
-    return { processed: pending.length, succeeded, failed, totalAmount };
+    // Sum all pending amounts into one transfer
+    const totalAmount = pending.reduce((sum, d) => sum + Number(d.amount), 0);
+    const accountNo = pending[0].publicAccountNo || this.getActiveAccountNo();
+
+    if (!accountNo) {
+      return {
+        processed: pending.length,
+        succeeded: 0,
+        failed: pending.length,
+        totalAmount: 0,
+      };
+    }
+
+    try {
+      const result = await this.dkGateway.transferToAccount({
+        accountNumber: accountNo,
+        accountName: "Oro Public Account",
+        amount: totalAmount,
+        reference: `REV-BATCH-${Date.now()}`,
+        description: `Oro house edge batch: ${pending.length} markets, total ${totalAmount.toFixed(2)} Nu`,
+      });
+
+      if (result.status === "SUCCESS") {
+        const ref =
+          result.txnId || result.inquiryId || result.txnStatusId || "DK-OK";
+        const now = new Date();
+        // Mark all as completed
+        for (const dist of pending) {
+          await this.distributionRepo.update(dist.id, {
+            status: DistributionStatus.COMPLETED,
+            paymentReference: ref,
+            paidAt: now,
+          });
+        }
+        this.logger.log(
+          `[Revenue] Batch transfer OK: ${totalAmount.toFixed(2)} Nu (${pending.length} distributions) -> ${accountNo}, ref: ${ref}`,
+        );
+        return {
+          processed: pending.length,
+          succeeded: pending.length,
+          failed: 0,
+          totalAmount,
+          paymentReference: ref,
+        };
+      } else {
+        this.logger.error(
+          `[Revenue] Batch transfer failed: ${result.statusDesc}`,
+        );
+        return {
+          processed: pending.length,
+          succeeded: 0,
+          failed: pending.length,
+          totalAmount: 0,
+        };
+      }
+    } catch (err: any) {
+      this.logger.error(`[Revenue] Batch transfer exception: ${err.message}`);
+      return {
+        processed: pending.length,
+        succeeded: 0,
+        failed: pending.length,
+        totalAmount: 0,
+      };
+    }
   }
 
   async getPending(): Promise<RevenueDistribution[]> {
