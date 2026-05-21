@@ -32,7 +32,36 @@ export class RevenueDistributionService {
   ) {}
 
   private get publicAccountNo(): string {
-    return this.configService.getOrThrow<string>("DK_PUBLIC_ACCOUNT_NO");
+    return this.configService.get<string>("DK_PUBLIC_ACCOUNT_NO") || "";
+  }
+
+  /** Admin-configurable destination account — stored in config or overridden at runtime */
+  private overriddenAccountNo: string | null = null;
+
+  getDestinationAccount(): { accountNumber: string; source: string } {
+    if (this.overriddenAccountNo) {
+      return { accountNumber: this.overriddenAccountNo, source: "admin" };
+    }
+    const envVal = this.configService.get<string>("DK_PUBLIC_ACCOUNT_NO");
+    if (envVal) {
+      return { accountNumber: envVal, source: "env" };
+    }
+    return { accountNumber: "", source: "none" };
+  }
+
+  setDestinationAccount(accountNumber: string): {
+    accountNumber: string;
+    source: string;
+  } {
+    this.overriddenAccountNo = accountNumber.trim();
+    this.logger.log(
+      `[Revenue] Destination account set by admin: ${this.overriddenAccountNo}`,
+    );
+    return { accountNumber: this.overriddenAccountNo, source: "admin" };
+  }
+
+  private getActiveAccountNo(): string {
+    return this.overriddenAccountNo || this.publicAccountNo;
   }
 
   /**
@@ -52,7 +81,9 @@ export class RevenueDistributionService {
       where: { settlementId },
     });
     if (existing) {
-      this.logger.warn(`Distribution already exists for settlement ${settlementId}`);
+      this.logger.warn(
+        `Distribution already exists for settlement ${settlementId}`,
+      );
       return existing;
     }
 
@@ -62,7 +93,7 @@ export class RevenueDistributionService {
       amount: houseAmount,
       houseEdgePct,
       totalPool,
-      publicAccountNo: this.publicAccountNo,
+      publicAccountNo: this.getActiveAccountNo(),
       status: DistributionStatus.PENDING,
     });
 
@@ -92,7 +123,8 @@ export class RevenueDistributionService {
     }
 
     const amount = Number(dist.amount);
-    if (amount <= 0) return { success: false, error: "Amount must be positive" };
+    if (amount <= 0)
+      return { success: false, error: "Amount must be positive" };
 
     try {
       const result = await this.dkGateway.transferToAccount({
@@ -104,21 +136,28 @@ export class RevenueDistributionService {
       });
 
       if (result.status === "SUCCESS") {
-        const ref = result.txnId || result.inquiryId || result.txnStatusId || "DK-OK";
+        const ref =
+          result.txnId || result.inquiryId || result.txnStatusId || "DK-OK";
         await this.distributionRepo.update(dist.id, {
           status: DistributionStatus.COMPLETED,
           paymentReference: ref,
           paidAt: new Date(),
         });
-        this.logger.log(`[Revenue] Transfer OK: ${amount} Nu -> ${dist.publicAccountNo}, ref: ${ref}`);
+        this.logger.log(
+          `[Revenue] Transfer OK: ${amount} Nu -> ${dist.publicAccountNo}, ref: ${ref}`,
+        );
         return { success: true, paymentReference: ref };
       } else {
-        await this.distributionRepo.update(dist.id, { status: DistributionStatus.FAILED });
+        await this.distributionRepo.update(dist.id, {
+          status: DistributionStatus.FAILED,
+        });
         this.logger.error(`[Revenue] Transfer failed: ${result.statusDesc}`);
         return { success: false, error: result.statusDesc };
       }
     } catch (err: any) {
-      await this.distributionRepo.update(dist.id, { status: DistributionStatus.FAILED });
+      await this.distributionRepo.update(dist.id, {
+        status: DistributionStatus.FAILED,
+      });
       this.logger.error(`[Revenue] Transfer exception: ${err.message}`);
       return { success: false, error: err.message };
     }

@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Put,
   Param,
   Body,
   Query,
@@ -1482,6 +1483,22 @@ export class AdminController {
     return this.revenueDistributionService.getAll();
   }
 
+  @Get("revenue/account")
+  @ApiOperation({ summary: "Get configured destination account number" })
+  async getRevenueAccount() {
+    return this.revenueDistributionService.getDestinationAccount();
+  }
+
+  @Put("revenue/account")
+  @ApiOperation({
+    summary: "Set destination account number for revenue transfers",
+  })
+  async setRevenueAccount(@Body() body: { accountNumber: string }) {
+    return this.revenueDistributionService.setDestinationAccount(
+      body.accountNumber,
+    );
+  }
+
   @Post("revenue/:id/transfer")
   @ApiOperation({ summary: "Execute DK Bank transfer: bene acc → public acc" })
   async executeRevenueTransfer(@Param("id") id: string) {
@@ -1495,5 +1512,43 @@ export class AdminController {
   })
   async processAllRevenue() {
     return this.revenueDistributionService.processAllPending();
+  }
+
+  @Post("revenue/backfill")
+  @ApiOperation({
+    summary:
+      "Backfill revenue distributions for all settled markets that don't have one yet",
+  })
+  async backfillRevenue() {
+    // Find all settlements with houseAmount > 0 that don't have a distribution record
+    const missing = await this.dataSource.query(`
+      SELECT s.id as "settlementId", s."marketId", s."houseAmount", 
+             m."houseEdgePct", m."totalPool"
+      FROM (
+        SELECT DISTINCT ON (sel."marketId") sel.*
+        FROM settlements sel
+        INNER JOIN markets m ON m.id = sel."marketId"
+        ORDER BY sel."marketId", sel."settledAt" ASC
+      ) s
+      INNER JOIN markets m ON m.id = s."marketId"
+      WHERE s."houseAmount" > 0
+        AND NOT EXISTS (
+          SELECT 1 FROM revenue_distributions rd WHERE rd."settlementId" = s.id
+        )
+    `);
+
+    let created = 0;
+    for (const row of missing) {
+      await this.revenueDistributionService.recordDistribution(
+        row.marketId,
+        row.settlementId,
+        Number(row.houseAmount),
+        Number(row.houseEdgePct),
+        Number(row.totalPool),
+      );
+      created++;
+    }
+
+    return { backfilled: created, total: missing.length };
   }
 }
