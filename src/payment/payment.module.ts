@@ -12,6 +12,8 @@ import { DKGatewayService } from "./services/dk-gateway/dk-gateway.service";
 import { DKBankPaymentService } from "./dkbank-payment.service";
 import { BankLinkService } from "./bank-link.service";
 import { TelegramModule } from "../telegram/telegram.module";
+import { BhutanAppNotificationService } from "../shared/services/bhutanapp-notification.service";
+import { AuthMethod } from "../entities/auth-method.entity";
 import { SmsService } from "../shared/services/sms.service";
 
 @Module({
@@ -24,11 +26,18 @@ import { SmsService } from "../shared/services/sms.service";
       DKGatewayAuthToken,
       PaymentOtp,
       LinkedBankAccount,
+      AuthMethod,
     ]),
     TelegramModule,
   ],
   controllers: [PaymentController],
-  providers: [DKGatewayService, DKBankPaymentService, BankLinkService, SmsService],
+  providers: [
+    DKGatewayService,
+    DKBankPaymentService,
+    BankLinkService,
+    BhutanAppNotificationService,
+    SmsService,
+  ],
   exports: [DKGatewayService, BankLinkService],
 })
 export class PaymentModule {}

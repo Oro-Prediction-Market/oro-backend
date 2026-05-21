@@ -22,6 +22,8 @@ import { DKGatewayService } from "./services/dk-gateway/dk-gateway.service";
 import { RedisService } from "../redis/redis.service";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import { SseService } from "../sse/sse.service";
+import { BhutanAppNotificationService } from "../shared/services/bhutanapp-notification.service";
+import { AuthMethod, AuthProvider } from "../entities/auth-method.entity";
 
 /** DK Bank OTP window: 10 minutes. */
 const OTP_TTL_MS = 10 * 60 * 1000;
@@ -49,6 +51,8 @@ export interface PaymentInitiateResponse {
   timestamp: string;
   /** True when the payment is waiting for the customer's OTP before executing. */
   otpRequired?: boolean;
+  /** Channel used to deliver the OTP: telegram or sms */
+  otpChannel?: "telegram" | "sms";
   paymentUrl?: string;
   qrCode?: string;
 }
@@ -81,6 +85,9 @@ export class DKBankPaymentService {
     @InjectRepository(PaymentOtp)
     private readonly otpRepo: Repository<PaymentOtp>,
     private readonly sse: SseService,
+    private readonly bhutanAppNotification: BhutanAppNotificationService,
+    @InjectRepository(AuthMethod)
+    private readonly authMethodRepo: Repository<AuthMethod>,
   ) {}
 
   /**
@@ -730,10 +737,16 @@ export class DKBankPaymentService {
         order: { createdAt: "DESC" },
       });
     }
-    if (!linkedAccount || !linkedAccount.accountNumber) {
+    // PWA users who linked via CID may only have user.dkAccountNumber (no LinkedBankAccount record)
+    const withdrawAccountNumber =
+      linkedAccount?.accountNumber || user.dkAccountNumber;
+    const withdrawAccountName =
+      linkedAccount?.accountName || user.dkAccountName || null;
+
+    if (!withdrawAccountNumber) {
       throw new BadRequestException(
         "You have not linked a DK Bank account yet. " +
-          "Please go to Wallet → Link DK Bank Account first.",
+          "Please link your account in the Wallet page first.",
       );
     }
 
@@ -768,9 +781,9 @@ export class DKBankPaymentService {
       description: "Withdrawal to DK Bank account",
       userId: user.id,
       metadata: {
-        dkAccountNumber: linkedAccount.accountNumber,
-        dkAccountName: linkedAccount.accountName ?? null,
-        linkedBankAccountId: linkedAccount.id,
+        dkAccountNumber: withdrawAccountNumber,
+        dkAccountName: withdrawAccountName,
+        linkedBankAccountId: linkedAccount?.id ?? null,
         initiatedAt: new Date().toISOString(),
       },
     });
@@ -785,7 +798,7 @@ export class DKBankPaymentService {
 
     await this.redis.setJsonEx<{ otp: string; userId: string }>(
       `oro:tg-otp:${payment.id}`,
-      60,
+      300,
       { otp: generatedOtp, userId },
     );
 
@@ -804,16 +817,52 @@ export class DKBankPaymentService {
     );
 
     const firstName = user.firstName?.trim() || "there";
-    await this.telegramService
-      .sendMessage(
-        Number(user.telegramId),
-        `🏦 <b>Oro Withdrawal OTP</b>\n\nHi ${firstName}, your one-time code to withdraw <b>Nu ${amount.toLocaleString()}</b> to your DK Bank account:\n\n<code>${generatedOtp}</code>\n\n⏳ Expires in 1 minute\n\n⚠️ <b>Oro will never ask for this code.</b> Do not share it with anyone.`,
-      )
-      .catch((err) =>
-        this.logger.warn(
-          `Failed to send withdrawal OTP via Telegram: ${err.message}`,
-        ),
-      );
+
+    // ── Route OTP delivery based on user's linked channels ────────────────
+    let otpChannel: "telegram" | "sms" = "telegram";
+
+    if (user.telegramId) {
+      // TMA user — send via Telegram bot
+      await this.telegramService
+        .sendMessage(
+          Number(user.telegramId),
+          `🏦 <b>Oro Withdrawal OTP</b>\n\nHi ${firstName}, your one-time code to withdraw <b>Nu ${amount.toLocaleString()}</b> to your DK Bank account:\n\n<code>${generatedOtp}</code>\n\n⏳ Expires in 5 minutes\n\n⚠️ <b>Oro will never ask for this code.</b> Do not share it with anyone.`,
+        )
+        .catch((err) =>
+          this.logger.warn(
+            `Failed to send withdrawal OTP via Telegram: ${err.message}`,
+          ),
+        );
+      otpChannel = "telegram";
+    } else {
+      // PWA/BhutanApp user — send via BhutanApp push notification
+      const bhutanAppAuth = await this.authMethodRepo.findOne({
+        where: { user: { id: userId }, provider: AuthProvider.BHUTANAPP },
+      });
+      const bhutanAppUserId = bhutanAppAuth?.metadata?.externalUserId;
+      if (bhutanAppAuth && bhutanAppUserId) {
+        await this.bhutanAppNotification
+          .sendNotification(
+            bhutanAppUserId,
+            "Oro Withdrawal OTP",
+            `Your one-time code to withdraw Nu ${amount.toLocaleString()}: ${generatedOtp}. Expires in 5 minutes. Never share this code.`,
+          )
+          .catch((err: any) =>
+            this.logger.warn(
+              `Failed to send withdrawal OTP via BhutanApp: ${err.message}`,
+            ),
+          );
+        otpChannel = "sms"; // frontend treats as "sms" (non-telegram)
+      } else {
+        // No delivery channel available — abort
+        await this.paymentRepo.update(payment.id, {
+          status: PaymentStatus.FAILED,
+        });
+        throw new BadRequestException(
+          "No notification channel available. Please verify your identity before withdrawing.",
+        );
+      }
+    }
 
     return {
       success: true,
@@ -823,9 +872,12 @@ export class DKBankPaymentService {
       currency: "BTN",
       method: "dkbank",
       message:
-        "OTP sent to your Telegram. Please enter it to confirm the withdrawal.",
+        otpChannel === "telegram"
+          ? "OTP sent to your Telegram. Please enter it to confirm the withdrawal."
+          : "OTP sent to your My Bhutan App. Please enter it to confirm the withdrawal.",
       timestamp: now.toISOString(),
       otpRequired: true,
+      otpChannel,
     };
   }
 
@@ -890,9 +942,7 @@ export class DKBankPaymentService {
         otpRecord.failedAttempts += 1;
         await this.otpRepo.save(otpRecord);
       }
-      throw new BadRequestException(
-        "Invalid OTP. Please check your Telegram and try again.",
-      );
+      throw new BadRequestException("Invalid OTP. Please check and try again.");
     }
 
     // OTP is valid — delete it immediately to prevent replay

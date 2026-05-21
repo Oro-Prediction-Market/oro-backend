@@ -993,14 +993,26 @@ export class AuthService {
         algorithms: ["RS256"],
       }) as jwt.JwtPayload;
     } catch (err: any) {
-      this.logger.warn(`[Auth] BhutanApp token verification failed: ${err.message}`);
+      this.logger.warn(
+        `[Auth] BhutanApp token verification failed: ${err.message}`,
+      );
       throw new UnauthorizedException("Invalid or expired BhutanApp token");
     }
 
     // Use the CID from the verified token claims — not blindly from the request body
-    const cid = (claims.sub ?? claims.cid ?? dto.externalUserId ?? "").toString().trim();
+    const cid = (
+      claims.sub ??
+      claims.cid ??
+      dto.username ??
+      dto.externalUserId ??
+      ""
+    )
+      .toString()
+      .trim();
     if (cid.length !== 11) {
-      throw new UnauthorizedException("BhutanApp token does not contain a valid CID");
+      throw new UnauthorizedException(
+        "BhutanApp token does not contain a valid CID",
+      );
     }
 
     // ── Look up by CID first — prevents duplicates for existing DK Bank users ─
@@ -1049,8 +1061,10 @@ export class AuthService {
       // Existing user — update profile fields BhutanApp provided if missing
       const updates: Partial<User> = {};
       if (!user.email && dto.email) updates.email = dto.email;
-      if (!user.phoneNumber && dto.phoneNumber) updates.phoneNumber = dto.phoneNumber;
-      if (Object.keys(updates).length) await this.userRepo.update(user.id, updates);
+      if (!user.phoneNumber && dto.phoneNumber)
+        updates.phoneNumber = dto.phoneNumber;
+      if (Object.keys(updates).length)
+        await this.userRepo.update(user.id, updates);
 
       // Ensure BhutanApp auth_method row exists (idempotent)
       const existing = await this.authMethodRepo.findOne({
@@ -1061,11 +1075,26 @@ export class AuthService {
           this.authMethodRepo.create({
             provider: AuthProvider.BHUTANAPP,
             providerId: cid,
-            metadata: { fullName: dto.fullName, username: dto.username },
+            metadata: {
+              fullName: dto.fullName,
+              username: dto.username,
+              externalUserId: dto.externalUserId,
+            },
             user,
             userId: user.id,
           }),
         );
+      } else if (
+        dto.externalUserId &&
+        dto.externalUserId !== cid &&
+        existing.metadata?.externalUserId !== dto.externalUserId
+      ) {
+        // Update externalUserId if it was previously stored as CID or missing
+        existing.metadata = {
+          ...(existing.metadata || {}),
+          externalUserId: dto.externalUserId,
+        };
+        await this.authMethodRepo.save(existing);
       }
 
       const fresh = await this.userRepo.findOneBy({ id: user.id });
@@ -1098,7 +1127,11 @@ export class AuthService {
       this.authMethodRepo.create({
         provider: AuthProvider.BHUTANAPP,
         providerId: cid,
-        metadata: { fullName: dto.fullName, username: dto.username },
+        metadata: {
+          fullName: dto.fullName,
+          username: dto.username,
+          externalUserId: dto.externalUserId,
+        },
         user,
         userId: user.id,
       }),
@@ -1129,7 +1162,9 @@ export class AuthService {
       .where("id = :id", { id: user.id })
       .execute();
 
-    this.logger.log(`[Auth] New user created via BhutanApp — CID ${cid}, id ${user.id}`);
+    this.logger.log(
+      `[Auth] New user created via BhutanApp — CID ${cid}, id ${user.id}`,
+    );
 
     const token = this.jwtService.sign({
       sub: user.id,
@@ -1317,7 +1352,10 @@ export class AuthService {
 
     // Upsert the DKBANK auth_method
     const existing = await this.authMethodRepo.findOne({
-      where: { provider: AuthProvider.DKBANK, providerId: account.accountNumber },
+      where: {
+        provider: AuthProvider.DKBANK,
+        providerId: account.accountNumber,
+      },
     });
     if (!existing) {
       await this.authMethodRepo.save(
