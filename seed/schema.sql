@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict KxUApdmOegR17nDO26ruL9smHa9XMjpkNuYXYUQCKng2JhVs8BgwKaBwixe0wVa
+-- [session token removed]
 
 -- Dumped from database version 16.13
 -- Dumped by pg_dump version 16.13
@@ -73,7 +73,7 @@ CREATE TYPE public.dispute_bond_status_enum AS ENUM (
 
 CREATE TYPE public.markets_category_enum AS ENUM (
     'sports',
-    'politics',
+    'gaming',
     'weather',
     'entertainment',
     'economy',
@@ -570,6 +570,7 @@ CREATE TABLE public.users (
     "dkAccountNumber" character varying,
     "dkAccountName" character varying,
     "phoneNumber" character varying,
+    email character varying,
     "telegramChatId" character varying,
     "telegramPhoneHash" character varying,
     "dkPhoneHash" character varying,
