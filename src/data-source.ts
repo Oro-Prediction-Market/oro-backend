@@ -18,6 +18,7 @@ import { TelegramGroup } from "./entities/telegram-group.entity";
 import { GroupMembership } from "./entities/group-membership.entity";
 import { UserEvent } from "./entities/user-event.entity";
 import { LinkedBankAccount } from "./entities/linked-bank-account.entity";
+import { RevenueDistribution } from "./entities/revenue-distribution.entity";
 
 dotenv.config();
 
@@ -29,7 +30,7 @@ export const AppDataSource = new DataSource({
   password: process.env.DB_PASSWORD || "postgres",
   database: process.env.DB_NAME || "oro_db",
   synchronize: false,
-  migrationsRun: true,    // app runs pending migrations on startup
+  migrationsRun: true, // app runs pending migrations on startup
   logging: true,
   extra: {
     max: 5,
@@ -55,6 +56,7 @@ export const AppDataSource = new DataSource({
     GroupMembership,
     UserEvent,
     LinkedBankAccount,
+    RevenueDistribution,
   ],
   migrations: [__dirname + "/migrations/*{.ts,.js}"],
   subscribers: [],

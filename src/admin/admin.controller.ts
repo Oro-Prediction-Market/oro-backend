@@ -31,6 +31,7 @@ import {
   UpdateMarketDto,
 } from "../markets/markets.service";
 import { KeeperService } from "../markets/keeper.service";
+import { RevenueDistributionService } from "../markets/revenue-distribution.service";
 import { FixturesService } from "./fixtures.service";
 import { AuditService } from "./audit.service";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
@@ -84,6 +85,7 @@ export class AdminController {
     @InjectRepository(Payment) private paymentRepo: Repository<Payment>,
     @InjectRepository(Transaction)
     private transactionRepo: Repository<Transaction>,
+    private revenueDistributionService: RevenueDistributionService,
   ) {}
 
   // ── Health Check ──────────────────────────────────────────────────────────
@@ -1421,5 +1423,46 @@ export class AdminController {
       },
       categoryStats,
     };
+  }
+
+  // ── Revenue Distribution ────────────────────────────────────────────────────
+
+  @Get("revenue/summary")
+  @ApiOperation({ summary: "Get revenue distribution summary" })
+  async getRevenueSummary() {
+    return this.revenueDistributionService.getSummary();
+  }
+
+  @Get("revenue/pending")
+  @ApiOperation({ summary: "Get pending revenue distributions" })
+  async getPendingDistributions() {
+    return this.revenueDistributionService.getPending();
+  }
+
+  @Get("revenue/market/:marketId")
+  @ApiOperation({ summary: "Get revenue distributions for a market" })
+  async getRevenueByMarket(@Param("marketId") marketId: string) {
+    return this.revenueDistributionService.getByMarket(marketId);
+  }
+
+  @Get("revenue/all")
+  @ApiOperation({ summary: "Get all revenue distributions" })
+  async getAllRevenue() {
+    return this.revenueDistributionService.getAll();
+  }
+
+  @Post("revenue/:id/transfer")
+  @ApiOperation({ summary: "Execute DK Bank transfer: bene acc → public acc" })
+  async executeRevenueTransfer(@Param("id") id: string) {
+    return this.revenueDistributionService.executeTransfer(id);
+  }
+
+  @Post("revenue/process-all")
+  @ApiOperation({
+    summary:
+      "Process all pending distributions (batch transfer to public account)",
+  })
+  async processAllRevenue() {
+    return this.revenueDistributionService.processAllPending();
   }
 }

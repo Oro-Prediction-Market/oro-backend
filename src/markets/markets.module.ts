@@ -9,12 +9,14 @@ import { Settlement } from "../entities/settlement.entity";
 import { User } from "../entities/user.entity";
 import { Transaction } from "../entities/transaction.entity";
 import { Dispute } from "../entities/dispute.entity";
+import { RevenueDistribution } from "../entities/revenue-distribution.entity";
 import { MarketsService } from "./markets.service";
 import { MarketsController } from "./markets.controller";
 import { ParimutuelEngine } from "./parimutuel.engine";
 import { LMSRService } from "./lmsr.service";
 import { KeeperService } from "./keeper.service";
 import { ReputationService } from "./reputation.service";
+import { RevenueDistributionService } from "./revenue-distribution.service";
 import { MarketsGateway } from "./markets.gateway";
 import { TelegramModule } from "../telegram/telegram.module";
 import { PaymentModule } from "../payment/payment.module";
@@ -34,6 +36,7 @@ import { RedisModule } from "../redis/redis.module";
       User,
       Transaction,
       Dispute,
+      RevenueDistribution,
     ]),
     TelegramModule,
     PaymentModule,
@@ -47,9 +50,16 @@ import { RedisModule } from "../redis/redis.module";
     LMSRService,
     KeeperService,
     ReputationService,
+    RevenueDistributionService,
     MarketsGateway,
   ],
   controllers: [MarketsController],
-  exports: [MarketsService, ParimutuelEngine, KeeperService, MarketsGateway],
+  exports: [
+    MarketsService,
+    ParimutuelEngine,
+    KeeperService,
+    MarketsGateway,
+    RevenueDistributionService,
+  ],
 })
 export class MarketsModule {}

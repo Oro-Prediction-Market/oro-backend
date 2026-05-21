@@ -25,6 +25,7 @@ import { DKGatewayService } from "../payment/services/dk-gateway/dk-gateway.serv
 import { StreakService, STREAK_BONUS_MULT } from "../users/streak.service";
 import { ChallengesService } from "../challenges/challenges.service";
 import { SseService } from "../sse/sse.service";
+import { RevenueDistributionService } from "./revenue-distribution.service";
 
 // ─── Valid state machine transitions ────────────────────────────────────────
 const VALID_TRANSITIONS: Record<MarketStatus, MarketStatus[]> = {
@@ -68,6 +69,7 @@ export class ParimutuelEngine implements OnModuleInit {
     private challengesService: ChallengesService,
     private marketsGateway: MarketsGateway,
     private sse: SseService,
+    private revenueDistributionService: RevenueDistributionService,
   ) {}
 
   private async getCreditsBalance(
@@ -916,6 +918,23 @@ export class ParimutuelEngine implements OnModuleInit {
     }
 
     const settlement = await this.settleMarket(market, winner, 0);
+
+    // Record revenue distribution (house edge → pending transfer to public account)
+    if (settlement && !settlement.cancelReason && settlement.houseAmount > 0) {
+      this.revenueDistributionService
+        .recordDistribution(
+          market.id,
+          settlement.id,
+          Number(settlement.houseAmount),
+          Number(market.houseEdgePct),
+          Number(market.totalPool),
+        )
+        .catch((err: Error) =>
+          this.logger.warn(
+            `[Revenue] Failed to record distribution for market ${marketId}: ${err.message}`,
+          ),
+        );
+    }
 
     // Bust balance cache for every predictor so the TMA reflects payouts immediately
     const allBets = await this.betRepo.find({ where: { marketId } });
