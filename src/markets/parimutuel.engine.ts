@@ -312,6 +312,7 @@ export class ParimutuelEngine implements OnModuleInit {
             balanceAfter: balanceBefore - amount,
             positionId: savedPosition.id,
             userId,
+            isBonus: savedPosition.isBonusFunded ?? false,
             note: `Predicted on · ${market.title} → ${outcome.label}`,
           }),
         );
@@ -1210,6 +1211,7 @@ export class ParimutuelEngine implements OnModuleInit {
               balanceAfter: balanceBefore + Number(bet.amount),
               positionId: bet.id,
               userId: bet.userId,
+              isBonus: bet.isBonusFunded ?? false,
               note: "Market cancelled — refund",
             }),
           );
@@ -1571,6 +1573,7 @@ Good luck! 🍀
           balanceAfter: balanceBefore + Number(bet.amount),
           positionId: bet.id,
           userId: bet.userId,
+          isBonus: bet.isBonusFunded ?? false,
           note,
         }),
       );
