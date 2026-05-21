@@ -1143,14 +1143,42 @@ export class AdminController {
       )
       .then((r: any[]) => parseFloat(r[0].total));
 
+    // Non-bonus free credits: platform-issued credits marked isBonus=false
+    // These inflate totalRealBalance without a matching payment deposit
+    const nonBonusFreeCreditsRow = await em
+      .getRepository(Transaction)
+      .query(
+        `
+      SELECT COALESCE(SUM(amount), 0)::float AS total
+      FROM transactions
+      WHERE type = 'free_credit' AND "isBonus" = false
+    `,
+      )
+      .then((r: any[]) => parseFloat(r[0].total));
+
+    // Bonus spent as real: bonus bets are recorded as isBonus=false transactions
+    // (bet_placed) but funded from bonusBalance. This deflates the real balance sum
+    // without a corresponding real money event. bonusSpent = issued - outstanding.
+    const outstandingBonusRow = await em
+      .getRepository(User)
+      .query(
+        `SELECT COALESCE(SUM("bonusBalance"), 0)::float AS total FROM users`,
+      )
+      .then((r: any[]) => parseFloat(r[0].total));
+    const bonusSpentAsReal = totalBonusIssuedRow - outstandingBonusRow;
+
     // expectedUserBalances = what users SHOULD hold based purely on external money
     // + bonus real payouts (real Nu that entered wallets from bonus-loss events)
+    // + non-bonus free credits (platform credits with no payment backing)
+    // - bonus spent as real (bonus bets recorded as isBonus=false deflate real balance)
     const expectedUserBalances =
       netExternalFlow -
       houseEarnings -
       breakage -
       pendingBetsAmount +
-      bonusFundedRealPayoutsRow;
+      bonusFundedRealPayoutsRow +
+      nonBonusFreeCreditsRow -
+      bonusSpentAsReal;
     const discrepancy = totalRealBalance - expectedUserBalances;
 
     return {
@@ -1186,6 +1214,9 @@ export class AdminController {
         breakage,
         bonusFundedRealPayouts: bonusFundedRealPayoutsRow,
         totalBonusIssued: totalBonusIssuedRow,
+        nonBonusFreeCredits: nonBonusFreeCreditsRow,
+        bonusSpentAsReal,
+        outstandingBonus: outstandingBonusRow,
         expectedUserBalances,
         actualUserBalances: totalRealBalance,
         discrepancy,
