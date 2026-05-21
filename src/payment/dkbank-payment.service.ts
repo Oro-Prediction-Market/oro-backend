@@ -819,9 +819,29 @@ export class DKBankPaymentService {
     const firstName = user.firstName?.trim() || "there";
 
     // ── Route OTP delivery based on user's linked channels ────────────────
+    // Priority: BhutanApp notification first (PWA users), then Telegram fallback
     let otpChannel: "telegram" | "sms" = "telegram";
 
-    if (user.telegramId) {
+    const bhutanAppAuth = await this.authMethodRepo.findOne({
+      where: { user: { id: userId }, provider: AuthProvider.BHUTANAPP },
+    });
+    const bhutanAppUserId = (bhutanAppAuth?.metadata as any)?.externalUserId;
+
+    if (bhutanAppAuth && bhutanAppUserId) {
+      // PWA/BhutanApp user — send via BhutanApp push notification
+      await this.bhutanAppNotification
+        .sendNotification(
+          bhutanAppUserId,
+          "Oro Withdrawal OTP",
+          `Your one-time code to withdraw Nu ${amount.toLocaleString()}: ${generatedOtp}. Expires in 5 minutes. Never share this code.`,
+        )
+        .catch((err: any) =>
+          this.logger.warn(
+            `Failed to send withdrawal OTP via BhutanApp: ${err.message}`,
+          ),
+        );
+      otpChannel = "sms"; // frontend treats as "sms" (non-telegram)
+    } else if (user.telegramId) {
       // TMA user — send via Telegram bot
       await this.telegramService
         .sendMessage(
@@ -835,33 +855,13 @@ export class DKBankPaymentService {
         );
       otpChannel = "telegram";
     } else {
-      // PWA/BhutanApp user — send via BhutanApp push notification
-      const bhutanAppAuth = await this.authMethodRepo.findOne({
-        where: { user: { id: userId }, provider: AuthProvider.BHUTANAPP },
+      // No delivery channel available — abort
+      await this.paymentRepo.update(payment.id, {
+        status: PaymentStatus.FAILED,
       });
-      const bhutanAppUserId = bhutanAppAuth?.metadata?.externalUserId;
-      if (bhutanAppAuth && bhutanAppUserId) {
-        await this.bhutanAppNotification
-          .sendNotification(
-            bhutanAppUserId,
-            "Oro Withdrawal OTP",
-            `Your one-time code to withdraw Nu ${amount.toLocaleString()}: ${generatedOtp}. Expires in 5 minutes. Never share this code.`,
-          )
-          .catch((err: any) =>
-            this.logger.warn(
-              `Failed to send withdrawal OTP via BhutanApp: ${err.message}`,
-            ),
-          );
-        otpChannel = "sms"; // frontend treats as "sms" (non-telegram)
-      } else {
-        // No delivery channel available — abort
-        await this.paymentRepo.update(payment.id, {
-          status: PaymentStatus.FAILED,
-        });
-        throw new BadRequestException(
-          "No notification channel available. Please verify your identity before withdrawing.",
-        );
-      }
+      throw new BadRequestException(
+        "No notification channel available. Please verify your identity before withdrawing.",
+      );
     }
 
     return {
