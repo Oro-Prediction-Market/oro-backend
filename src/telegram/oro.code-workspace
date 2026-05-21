@@ -1,25 +1,16 @@
 {
   "folders": [
-    {
-      "path": "../..",
-    },
-    {
-      "path": "../../../oro-pwa",
-    },
-    {
-      "path": "../../../oro-tma",
-    },
-    {
-      "path": "../../../oro-admin",
-    },
-    {
-      "path": "../../../luckypem-backend",
-    },
-    {
-      "path": "../../../luckypem-frontend",
-    },
-    {
-      "path": "../../../luckypem-tma",
-    },
-  ],
+	{
+		"path": "../.."
+	},
+	{
+		"path": "../../../oro-pwa"
+	},
+	{
+		"path": "../../../oro-tma"
+	},
+	{
+		"path": "../../../oro-admin"
+	}
+]
 }
