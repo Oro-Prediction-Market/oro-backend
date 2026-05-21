@@ -105,11 +105,22 @@ export class EngagementJob {
   private async messageWindow(daysMissed: number): Promise<void> {
     const now = new Date();
 
-    const windowEnd = new Date(now);
-    windowEnd.setDate(windowEnd.getDate() - daysMissed);
-
-    const windowStart = new Date(windowEnd);
-    windowStart.setDate(windowStart.getDate() - 1);
+    // Use calendar-day boundaries (UTC midnight) so each user falls into
+    // exactly ONE day's window regardless of what time the cron fires.
+    const windowStart = new Date(
+      Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        now.getUTCDate() - daysMissed - 1,
+      ),
+    );
+    const windowEnd = new Date(
+      Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        now.getUTCDate() - daysMissed,
+      ),
+    );
 
     const users = await this.userRepo.find({
       where: {
