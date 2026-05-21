@@ -1523,30 +1523,32 @@ export class AdminController {
     // Find all settlements with houseAmount > 0 that don't have a distribution record
     const missing = await this.dataSource.query(`
       SELECT s.id as "settlementId", s."marketId", s."houseAmount", 
-             m."houseEdgePct", m."totalPool"
-      FROM (
-        SELECT DISTINCT ON (sel."marketId") sel.*
-        FROM settlements sel
-        INNER JOIN markets m ON m.id = sel."marketId"
-        ORDER BY sel."marketId", sel."settledAt" ASC
-      ) s
+             m."houseEdgePct", s."totalPool"
+      FROM settlements s
       INNER JOIN markets m ON m.id = s."marketId"
       WHERE s."houseAmount" > 0
         AND NOT EXISTS (
           SELECT 1 FROM revenue_distributions rd WHERE rd."settlementId" = s.id
         )
+      ORDER BY s."settledAt" ASC
     `);
 
     let created = 0;
     for (const row of missing) {
-      await this.revenueDistributionService.recordDistribution(
-        row.marketId,
-        row.settlementId,
-        Number(row.houseAmount),
-        Number(row.houseEdgePct),
-        Number(row.totalPool),
-      );
-      created++;
+      try {
+        await this.revenueDistributionService.recordDistribution(
+          row.marketId,
+          row.settlementId,
+          Number(row.houseAmount),
+          Number(row.houseEdgePct),
+          Number(row.totalPool),
+        );
+        created++;
+      } catch (err: any) {
+        console.error(
+          `Backfill failed for settlement ${row.settlementId}: ${err.message}`,
+        );
+      }
     }
 
     return { backfilled: created, total: missing.length };

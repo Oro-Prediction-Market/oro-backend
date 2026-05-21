@@ -57,6 +57,21 @@ export class RevenueDistributionService {
     this.logger.log(
       `[Revenue] Destination account set by admin: ${this.overriddenAccountNo}`,
     );
+    // Update all PENDING distributions that have no account set
+    this.distributionRepo
+      .createQueryBuilder()
+      .update()
+      .set({ publicAccountNo: this.overriddenAccountNo })
+      .where("status = :s", { s: DistributionStatus.PENDING })
+      .andWhere(`("publicAccountNo" IS NULL OR "publicAccountNo" = '')`)
+      .execute()
+      .then((r) => {
+        if (r.affected && r.affected > 0) {
+          this.logger.log(
+            `[Revenue] Updated ${r.affected} pending distribution(s) with new account`,
+          );
+        }
+      });
     return { accountNumber: this.overriddenAccountNo, source: "admin" };
   }
 
@@ -125,6 +140,13 @@ export class RevenueDistributionService {
     const amount = Number(dist.amount);
     if (amount <= 0)
       return { success: false, error: "Amount must be positive" };
+
+    if (!dist.publicAccountNo) {
+      return {
+        success: false,
+        error: "No destination account configured. Set account number first.",
+      };
+    }
 
     try {
       const result = await this.dkGateway.transferToAccount({
