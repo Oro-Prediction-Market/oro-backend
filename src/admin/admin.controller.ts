@@ -1489,6 +1489,12 @@ export class AdminController {
     return this.revenueDistributionService.getDestinationAccount();
   }
 
+  @Get("revenue/account/balance")
+  @ApiOperation({ summary: "Get destination account balance from DK Bank" })
+  async getRevenueAccountBalance() {
+    return this.revenueDistributionService.getAccountBalance();
+  }
+
   @Put("revenue/account")
   @ApiOperation({
     summary: "Set destination account number for revenue transfers",

@@ -275,6 +275,24 @@ export class RevenueDistributionService {
     });
   }
 
+  /** Get account balance from DK Bank for the configured destination account */
+  async getAccountBalance(): Promise<{
+    accountNumber: string;
+    accountName: string;
+    balance: string | null;
+  }> {
+    const accountNo = this.getActiveAccountNo();
+    if (!accountNo) {
+      return { accountNumber: "", accountName: "", balance: null };
+    }
+    const info = await this.dkGateway.accountInquiry(accountNo);
+    return {
+      accountNumber: info.accountNumber,
+      accountName: info.accountName,
+      balance: info.balance,
+    };
+  }
+
   async getByMarket(marketId: string): Promise<RevenueDistribution[]> {
     return this.distributionRepo.find({ where: { marketId } });
   }

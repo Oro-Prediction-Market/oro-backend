@@ -638,6 +638,41 @@ export class DKGatewayService {
     }>("/v1/client_inquiry", dto, true);
   }
 
+  /** Account inquiry — returns account name and balance */
+  async accountInquiry(accountNumber: string): Promise<{
+    accountNumber: string;
+    accountName: string;
+    balance: string | null;
+    inquiryId: string | null;
+  }> {
+    const res = await this.dkPost<{
+      response_code: string;
+      response_message?: string;
+      response_description?: string;
+      response_data?: {
+        inquiry_id?: string;
+        beneficiary_account_name?: string;
+        account_number?: string;
+        balance_info?: string;
+      };
+    }>("/v1/account_inquiry", { account_number: accountNumber }, true);
+
+    if (res.response_code !== DK_RESPONSE_CODES.SUCCESS || !res.response_data) {
+      throw new BadRequestException(
+        res.response_description ||
+          res.response_message ||
+          "Account inquiry failed",
+      );
+    }
+
+    return {
+      accountNumber: res.response_data.account_number || accountNumber,
+      accountName: res.response_data.beneficiary_account_name || "",
+      balance: res.response_data.balance_info || null,
+      inquiryId: res.response_data.inquiry_id || null,
+    };
+  }
+
   /**
    * Merchant vault → user DK Bank account (withdrawal / payout transfer).
    *
