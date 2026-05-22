@@ -407,7 +407,7 @@ export class MarketsService {
       // 1. Channel announcement
       this.telegram
         .postToChannel(
-          `❌ <b>Market Cancelled: ${market.title}</b>\n\nAll pending bets have been fully refunded.`,
+          `❌ <b>Market Cancelled: ${market.title}</b>\n\nAll pending predictions have been fully refunded.`,
         )
         .catch(() => undefined);
 
