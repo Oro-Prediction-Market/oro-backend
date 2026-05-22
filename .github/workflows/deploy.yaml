@@ -25,7 +25,7 @@ jobs:
       - name: Setup kubeconfig
         run: |
           mkdir -p $RUNNER_TEMP/.kube
-          echo '${{ secrets.KUBECONFIG }}' | base64 -d > $RUNNER_TEMP/.kube/config
+          echo '${{ secrets.KUBECONFIG_B64 }}' | base64 -d > $RUNNER_TEMP/.kube/config
           chmod 600 $RUNNER_TEMP/.kube/config
           echo "KUBECONFIG=$RUNNER_TEMP/.kube/config" >> $GITHUB_ENV
 
