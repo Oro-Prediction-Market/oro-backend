@@ -31,6 +31,7 @@ export enum MarketCategory {
   ENTERTAINMENT = "entertainment",
   ECONOMY = "economy",
   OTHER = "other",
+  DAILY = "daily",
 }
 
 @Entity("markets")

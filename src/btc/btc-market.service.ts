@@ -63,7 +63,7 @@ export class BtcMarketService {
       await this.dataSource.transaction(async (manager) => {
         const market = manager.create(Market, {
           title: "BTC — UP or DOWN in 15 minutes?",
-          category: MarketCategory.ECONOMY,
+          category: MarketCategory.DAILY,
           status: MarketStatus.OPEN,
           opensAt: now,
           closesAt,
@@ -289,7 +289,7 @@ export class BtcMarketService {
       await this.dataSource.transaction(async (manager) => {
         const market = manager.create(Market, {
           title: "BTC — UP or DOWN in 15 minutes?",
-          category: MarketCategory.ECONOMY,
+          category: MarketCategory.DAILY,
           status: MarketStatus.OPEN,
           opensAt: now,
           closesAt,

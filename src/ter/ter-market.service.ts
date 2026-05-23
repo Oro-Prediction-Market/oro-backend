@@ -72,7 +72,7 @@ export class TerMarketService {
         // Create market
         const market = manager.create(Market, {
           title: "TER — UP or DOWN in 24 hours?",
-          category: MarketCategory.ECONOMY,
+          category: MarketCategory.DAILY,
           status: MarketStatus.OPEN,
           opensAt: now,
           closesAt,
@@ -329,7 +329,7 @@ export class TerMarketService {
       await this.dataSource.transaction(async (manager) => {
         const market = manager.create(Market, {
           title: "TER — UP or DOWN in 24 hours?",
-          category: MarketCategory.ECONOMY,
+          category: MarketCategory.DAILY,
           status: MarketStatus.OPEN,
           opensAt: now,
           closesAt,
