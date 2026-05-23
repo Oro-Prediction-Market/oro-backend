@@ -3,6 +3,10 @@ import { MigrationInterface, QueryRunner } from "typeorm";
 export class AddDailyMarketCategory1775990000150 implements MigrationInterface {
   name = "AddDailyMarketCategory1775990000150";
 
+  // ALTER TYPE … ADD VALUE cannot run inside a transaction block in Postgres.
+  // Setting transaction = false makes TypeORM run this migration outside one.
+  transaction = false;
+
   public async up(queryRunner: QueryRunner): Promise<void> {
     // Postgres ALTER TYPE … ADD VALUE is idempotent-safe with IF NOT EXISTS (Postgres 9.6+)
     await queryRunner.query(`
