@@ -20,8 +20,6 @@ export class TerMarketService {
   constructor(
     @InjectRepository(Market)
     private readonly marketRepo: Repository<Market>,
-    @InjectRepository(Outcome)
-    private readonly outcomeRepo: Repository<Outcome>,
     private readonly terPriceService: TerPriceService,
     private readonly engine: ParimutuelEngine,
     @InjectDataSource() private readonly dataSource: DataSource,
@@ -72,7 +70,7 @@ export class TerMarketService {
         // Create market
         const market = manager.create(Market, {
           title: "TER — UP or DOWN in 24 hours?",
-          category: MarketCategory.DAILY,
+          category: MarketCategory.OTHER,
           status: MarketStatus.OPEN,
           opensAt: now,
           closesAt,
@@ -329,7 +327,7 @@ export class TerMarketService {
       await this.dataSource.transaction(async (manager) => {
         const market = manager.create(Market, {
           title: "TER — UP or DOWN in 24 hours?",
-          category: MarketCategory.DAILY,
+          category: MarketCategory.OTHER,
           status: MarketStatus.OPEN,
           opensAt: now,
           closesAt,
