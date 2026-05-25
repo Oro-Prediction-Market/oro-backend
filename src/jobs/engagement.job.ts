@@ -148,27 +148,17 @@ export class EngagementJob {
         const msg = this.buildMessage(name, daysMissed, creditAmount);
 
         if (creditAmount > 0) {
-          // Dedup guard: skip if this user already received this milestone credit
-          const alreadyCredited = await this.txRepo.findOne({
-            where: {
-              userId: user.id,
-              type: TransactionType.FREE_CREDIT,
-              note: `Re-engagement credit (${daysMissed}d inactive)`,
-            },
-            select: ["id"],
-          });
-          if (alreadyCredited) {
+          const credited = await this.creditUser(
+            user.id,
+            creditAmount,
+            `Re-engagement credit (${daysMissed}d inactive)`,
+          );
+          if (!credited) {
             this.logger.debug(
               `[ReEngagement] Skipping ${user.id} — already credited for ${daysMissed}d`,
             );
             continue;
           }
-
-          await this.creditUser(
-            user.id,
-            creditAmount,
-            `Re-engagement credit (${daysMissed}d inactive)`,
-          );
         }
 
         await this.telegram.sendMessage(chatId, msg);
@@ -198,12 +188,33 @@ export class EngagementJob {
     );
   }
 
+  /**
+   * Credits the user atomically. Returns false (no-op) if already credited for
+   * this note — the user row is locked for the duration so concurrent cron runs
+   * on multiple pods cannot double-credit the same user.
+   */
   private async creditUser(
     userId: string,
     amount: number,
     note: string,
-  ): Promise<void> {
-    await this.dataSource.transaction(async (em) => {
+  ): Promise<boolean> {
+    return await this.dataSource.transaction(async (em) => {
+      // Lock the user row first — serialises concurrent credits for the same user
+      // across multiple pod instances running the cron simultaneously.
+      await em
+        .getRepository(User)
+        .createQueryBuilder("u")
+        .setLock("pessimistic_write")
+        .where("u.id = :userId", { userId })
+        .getOne();
+
+      // Dedup check inside the locked transaction — safe from race conditions
+      const already = await em.getRepository(Transaction).findOne({
+        where: { userId, type: TransactionType.FREE_CREDIT, note },
+        select: ["id"],
+      });
+      if (already) return false;
+
       const { balance: rawBefore } = await em
         .getRepository(Transaction)
         .createQueryBuilder("t")
@@ -235,6 +246,8 @@ export class EngagementJob {
         })
         .where("id = :userId", { userId })
         .execute();
+
+      return true;
     });
   }
 
