@@ -60,15 +60,20 @@ export class WeeklyReportJob {
   // ── Data fetchers ───────────────────────────────────────────────────────────
 
   private async fetchRevenue(from: Date, to: Date) {
-    const row = await this.dataSource
-      .getRepository(Settlement)
-      .createQueryBuilder("s")
-      .select("COALESCE(SUM(s.houseAmount), 0)", "house")
-      .addSelect("COALESCE(SUM(s.totalPool), 0)", "volume")
-      .addSelect("COUNT(*)", "settled")
-      .where("s.createdAt >= :from AND s.createdAt < :to", { from, to })
-      .andWhere("s.cancelReason IS NULL")
-      .getRawOne<{ house: string; volume: string; settled: string }>() ?? { house: "0", volume: "0", settled: "0" };
+    const row =
+      (await this.dataSource
+        .getRepository(Settlement)
+        .createQueryBuilder("s")
+        .select("COALESCE(SUM(s.houseAmount), 0)", "house")
+        .addSelect("COALESCE(SUM(s.totalPool), 0)", "volume")
+        .addSelect("COUNT(*)", "settled")
+        .where("s.createdAt >= :from AND s.createdAt < :to", { from, to })
+        .andWhere("s.cancelReason IS NULL")
+        .getRawOne<{ house: string; volume: string; settled: string }>()) ?? {
+        house: "0",
+        volume: "0",
+        settled: "0",
+      };
 
     // Top market by pool this week
     const top = await this.dataSource
@@ -107,14 +112,15 @@ export class WeeklyReportJob {
     ]);
 
     // New users who placed at least one bet this week
-    const firstBetRow = await this.dataSource
-      .getRepository(Position)
-      .createQueryBuilder("p")
-      .select("COUNT(DISTINCT p.userId)", "count")
-      .innerJoin(User, "u", "u.id = p.userId")
-      .where("u.createdAt >= :from AND u.createdAt < :to", { from, to })
-      .andWhere("p.placedAt >= :from AND p.placedAt < :to", { from, to })
-      .getRawOne<{ count: string }>() ?? { count: "0" };
+    const firstBetRow =
+      (await this.dataSource
+        .getRepository(Position)
+        .createQueryBuilder("p")
+        .select("COUNT(DISTINCT p.userId)", "count")
+        .innerJoin(User, "u", "u.id = p.userId")
+        .where("u.createdAt >= :from AND u.createdAt < :to", { from, to })
+        .andWhere("p.placedAt >= :from AND p.placedAt < :to", { from, to })
+        .getRawOne<{ count: string }>()) ?? { count: "0" };
 
     return {
       newUsers,
@@ -124,22 +130,22 @@ export class WeeklyReportJob {
   }
 
   private async fetchActivity(from: Date, to: Date) {
-    const [betsRow, uniqueRow] = await Promise.all([
+    const [betsRaw, uniqueRaw] = await Promise.all([
       this.dataSource
         .getRepository(Position)
         .createQueryBuilder("p")
         .select("COUNT(*)", "total")
         .where("p.placedAt >= :from AND p.placedAt < :to", { from, to })
-        .getRawOne<{ total: string }>()
-        .then((r) => r ?? { total: "0" }),
+        .getRawOne<{ total: string }>(),
       this.dataSource
         .getRepository(Position)
         .createQueryBuilder("p")
         .select("COUNT(DISTINCT p.userId)", "unique")
         .where("p.placedAt >= :from AND p.placedAt < :to", { from, to })
-        .getRawOne<{ unique: string }>()
-        .then((r) => r ?? { unique: "0" }),
+        .getRawOne<{ unique: string }>(),
     ]);
+    const betsRow = betsRaw ?? { total: "0" };
+    const uniqueRow = uniqueRaw ?? { unique: "0" };
 
     return {
       bets: Number(betsRow.total),
