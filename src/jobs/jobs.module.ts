@@ -16,12 +16,14 @@ import { Challenge } from "../entities/challenge.entity";
 import { Settlement } from "../entities/settlement.entity";
 import { Position } from "../entities/position.entity";
 import { MarketsModule } from "../markets/markets.module";
+import { RedisModule } from "../redis/redis.module";
 
 @Module({
   imports: [
     BullModule.registerQueue({ name: NOTIFICATION_QUEUE }),
     TypeOrmModule.forFeature([User, Market, Dispute, AuditLog, Transaction, Challenge, Settlement, Position]),
     forwardRef(() => MarketsModule),
+    RedisModule,
   ],
   providers: [
     NotificationProcessor,

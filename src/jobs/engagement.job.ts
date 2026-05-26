@@ -14,6 +14,7 @@ import { Market, MarketStatus } from "../entities/market.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { Challenge, ChallengeStatus } from "../entities/challenge.entity";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
+import { RedisService } from "../redis/redis.service";
 
 @Injectable()
 export class EngagementJob {
@@ -25,6 +26,7 @@ export class EngagementJob {
     @InjectRepository(Challenge) private challengeRepo: Repository<Challenge>,
     @InjectDataSource() private dataSource: DataSource,
     private readonly telegram: TelegramSimpleService,
+    private readonly redis: RedisService,
   ) {}
 
   /**
@@ -34,7 +36,13 @@ export class EngagementJob {
    */
   @Cron("0 3 * * *")
   async reEngageLapsedUsers(): Promise<void> {
-    await Promise.all([this.messageWindow(14), this.messageWindow(30)]);
+    const lock = await this.redis.acquireLock("cron:reengagement", 300);
+    if (!lock) return;
+    try {
+      await Promise.all([this.messageWindow(14), this.messageWindow(30)]);
+    } finally {
+      await this.redis.releaseLock("cron:reengagement", lock);
+    }
   }
 
   /**
@@ -43,6 +51,16 @@ export class EngagementJob {
    */
   @Cron("0 15 * * *")
   async warnStreakAtRisk(): Promise<void> {
+    const lock = await this.redis.acquireLock("cron:streak-at-risk", 300);
+    if (!lock) return;
+    try {
+      await this._warnStreakAtRisk();
+    } finally {
+      await this.redis.releaseLock("cron:streak-at-risk", lock);
+    }
+  }
+
+  private async _warnStreakAtRisk(): Promise<void> {
     const yesterday = new Date();
     yesterday.setUTCDate(yesterday.getUTCDate() - 1);
     const yesterdayStr = yesterday.toISOString().slice(0, 10); // "YYYY-MM-DD"
@@ -170,7 +188,7 @@ export class EngagementJob {
 
     if (daysMissed === 14) {
       const lines = [
-        `${name}, the leaderboard moved while you were gone.${tierName ? ` Your <b>${tierName}</b> rank is on the line.` : ""} Two weeks is long enough — come back and reclaim your spot.${marketLine}`,
+        `${name}, the leaderboard has moved while you were gone.${tierName ? ` Your <b>${tierName}</b> rank is on the line.` : ""} Two weeks is long enough — come back and reclaim your spot.${marketLine}`,
         `${name}, we saved your seat. 👀 It's been 2 weeks and the markets haven't stopped. Your record is still there — one prediction to get back in the game.${marketLine}`,
         `${name}, other predictors are on a streak right now. You built your reputation here — don't let two quiet weeks undo it.${marketLine}`,
       ];
