@@ -7,10 +7,9 @@ import { User } from "../entities/user.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 
-// Reference values used to calculate the consecutive season bonus.
-// No prize is given for a single season finish — credits only unlock
-// when a user places top-3 in back-to-back seasons.
-const SEASON_PRIZES: Record<number, number> = { 1: 100, 2: 50, 3: 25 };
+// Real-money prizes for back-to-back top-3 finishes.
+// No prize for a single month finish — only consecutive months unlock the reward.
+const SEASON_PRIZES: Record<number, number> = { 1: 150, 2: 100, 3: 50 };
 
 @Injectable()
 export class SeasonService {
@@ -23,10 +22,10 @@ export class SeasonService {
     private readonly telegram: TelegramSimpleService,
   ) {}
 
-  /** Run every Monday at 00:05 UTC to close the previous week and open the next. */
-  @Cron("5 0 * * 1")
+  /** Run on the 1st of each month at 00:05 UTC to close the previous month and open the next. */
+  @Cron("5 0 1 * *")
   async rolloverSeason(): Promise<void> {
-    this.logger.log("Rolling over weekly season…");
+    this.logger.log("Rolling over monthly season…");
     await this.closeActiveSeason();
     await this.openNewSeason();
   }
@@ -85,38 +84,35 @@ export class SeasonService {
 
   async openNewSeason(): Promise<Season> {
     const now = new Date();
-    // ISO week: Monday = start of week
-    const startOfWeek = new Date(now);
-    const day = startOfWeek.getUTCDay(); // 0=Sun
-    const diff = day === 0 ? -6 : 1 - day; // Monday
-    startOfWeek.setUTCDate(startOfWeek.getUTCDate() + diff);
-    startOfWeek.setUTCHours(0, 0, 0, 0);
+    const year = now.getUTCFullYear();
+    const monthNumber = now.getUTCMonth() + 1; // 1–12
 
-    const endOfWeek = new Date(startOfWeek);
-    endOfWeek.setUTCDate(endOfWeek.getUTCDate() + 7);
-
-    // Get ISO week number
-    const jan4 = new Date(Date.UTC(startOfWeek.getUTCFullYear(), 0, 4));
-    const weekNumber =
-      Math.ceil(
-        ((startOfWeek.getTime() - jan4.getTime()) / 86400000 + jan4.getUTCDay() + 1) / 7,
-      );
+    const startsAt = new Date(Date.UTC(year, monthNumber - 1, 1));
+    const endsAt = new Date(Date.UTC(year, monthNumber, 1)); // first of next month
 
     const existing = await this.seasonRepo.findOne({
-      where: { year: startOfWeek.getUTCFullYear(), weekNumber },
+      where: { year, weekNumber: monthNumber },
     });
     if (existing) return existing;
 
     const season = this.seasonRepo.create({
-      weekNumber,
-      year: startOfWeek.getUTCFullYear(),
-      startsAt: startOfWeek,
-      endsAt: endOfWeek,
+      weekNumber: monthNumber,
+      year,
+      startsAt,
+      endsAt,
       status: SeasonStatus.ACTIVE,
     });
     const saved = await this.seasonRepo.save(season);
-    this.logger.log(`Season opened: week ${weekNumber}/${startOfWeek.getUTCFullYear()}`);
+    this.logger.log(`Season opened: ${this.monthLabel(monthNumber, year)}`);
     return saved;
+  }
+
+  private monthLabel(monthNumber: number, year: number): string {
+    return new Date(Date.UTC(year, monthNumber - 1, 1)).toLocaleString("en-US", {
+      month: "long",
+      year: "numeric",
+      timeZone: "UTC",
+    });
   }
 
   async getCurrentSeason(): Promise<Season | null> {
@@ -135,7 +131,8 @@ export class SeasonService {
     winners: User[],
     currentSeason: Season,
   ): Promise<void> {
-    const { weekNumber, year } = currentSeason;
+    const { weekNumber: monthNumber, year } = currentSeason;
+    const currentMonthLabel = this.monthLabel(monthNumber, year);
     const medals = ["🥇", "🥈", "🥉"];
 
     // Find the season that closed immediately before this one
@@ -149,8 +146,8 @@ export class SeasonService {
 
     for (let i = 0; i < winners.length; i++) {
       const rank = i + 1;
-      const currentPrizeRef = SEASON_PRIZES[rank];
-      if (!currentPrizeRef) continue;
+      const prize = SEASON_PRIZES[rank];
+      if (!prize) continue;
 
       const user = winners[i];
 
@@ -164,8 +161,8 @@ export class SeasonService {
         if (user.telegramId) {
           const chatId = Number(user.telegramId);
           const msg =
-            `${medals[i]} <b>Week ${weekNumber} — you finished #${rank}!</b>\n\n` +
-            `Great prediction this week. Place top 3 again next week to unlock your consecutive bonus. Keep it going!`;
+            `${medals[i]} <b>${currentMonthLabel} — you finished #${rank}!</b>\n\n` +
+            `Great prediction this month. Place top 3 again next month to unlock your consecutive bonus. Keep it going!`;
           await this.telegram.sendMessage(chatId, msg).catch((err: Error) =>
             this.logger.warn(`Season DM failed for user ${user.id}: ${err.message}`),
           );
@@ -173,17 +170,16 @@ export class SeasonService {
         continue;
       }
 
-      // Consecutive finish — credit the average of both weeks' reference prizes
-      const prevPrizeRef = SEASON_PRIZES[prevRankEntry.rank] ?? 0;
-      const bonus = Math.round((currentPrizeRef + prevPrizeRef) / 2);
+      // Consecutive finish — credit the fixed real-money prize for their current rank
+      const prevMonthLabel = this.monthLabel(prevSeason!.weekNumber, prevSeason!.year);
 
-      const bonusNote = `🔥 Consecutive season bonus — Week ${prevSeason!.weekNumber}/${prevSeason!.year} → Week ${weekNumber}/${year}`;
+      const prizeNote = `🔥 Consecutive season prize — ${prevMonthLabel} → ${currentMonthLabel}`;
       await this.dataSource.transaction(async (em) => {
         const alreadyCredited = await em.getRepository(Transaction).count({
-          where: { userId: user.id, type: TransactionType.FREE_CREDIT, note: bonusNote },
+          where: { userId: user.id, type: TransactionType.FREE_CREDIT, note: prizeNote },
         });
         if (alreadyCredited > 0) {
-          this.logger.warn(`Consecutive bonus already credited for user ${user.id} — skipping`);
+          this.logger.warn(`Consecutive prize already credited for user ${user.id} — skipping`);
           return;
         }
 
@@ -197,27 +193,17 @@ export class SeasonService {
         await em.save(
           em.create(Transaction, {
             type: TransactionType.FREE_CREDIT,
-            amount: bonus,
+            amount: prize,
             balanceBefore: Number(rawBefore),
-            balanceAfter: Number(rawBefore) + bonus,
+            balanceAfter: Number(rawBefore) + prize,
             userId: user.id,
-            isBonus: true,
-            note: bonusNote,
+            isBonus: false,
+            note: prizeNote,
           }),
         );
 
-        await em
-          .createQueryBuilder()
-          .update(User)
-          .set({
-            bonusBalance: () => `"bonusBalance" + ${bonus}`,
-            bonusRealPayoutRemaining: () => `GREATEST("bonusRealPayoutRemaining", 50)`,
-          })
-          .where("id = :userId", { userId: user.id })
-          .execute();
-
         this.logger.log(
-          `Consecutive bonus: Nu ${bonus} → user ${user.id} (prev #${prevRankEntry.rank} + curr #${rank})`,
+          `Consecutive prize: Nu ${prize} → user ${user.id} (prev #${prevRankEntry.rank} + curr #${rank})`,
         );
       });
 
@@ -226,10 +212,9 @@ export class SeasonService {
         const chatId = Number(user.telegramId);
         const msg =
           `${medals[i]} 🔥 <b>Back-to-back top 3!</b>\n\n` +
-          `You placed #${prevRankEntry.rank} last week and #${rank} this week — ` +
-          `that earns you <b>Nu ${bonus}</b> in play credits ` +
-          `(average of Nu ${prevPrizeRef} + Nu ${currentPrizeRef}).\n\n` +
-          `Credits are in your Oro wallet. Can you make it three in a row?`;
+          `You placed #${prevRankEntry.rank} in ${prevMonthLabel} and #${rank} in ${currentMonthLabel} — ` +
+          `that earns you <b>Nu ${prize}</b> in real credits.\n\n` +
+          `The prize is in your Oro wallet and can be withdrawn. Can you make it three months in a row?`;
 
         await this.telegram.sendMessage(chatId, msg).catch((err: Error) =>
           this.logger.warn(`Season DM failed for user ${user.id}: ${err.message}`),

@@ -16,7 +16,7 @@ export class Season {
   id: string;
 
   @Column({ type: "int" })
-  weekNumber: number; // ISO week number
+  weekNumber: number; // month number (1–12); column name kept for backwards compatibility
 
   @Column({ type: "int" })
   year: number;
