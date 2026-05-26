@@ -1038,48 +1038,40 @@ export class ParimutuelEngine implements OnModuleInit {
           const bonusRealPayoutRemaining = Number(
             user?.bonusRealPayoutRemaining ?? 0,
           );
-          const betIsBonusFunded =
-            userBonusBalance > 0 && Number(bet.amount) <= userBonusBalance;
+          // Use the flag snapshotted at placement time — re-deriving it from current
+          // bonusBalance is wrong because the balance may have changed between placement
+          // and settlement (other bets, received bonuses, etc.).
+          const betIsBonusFunded = bet.isBonusFunded ?? false;
 
+          // For bonus-funded bets, cap the withdrawable payout at the user's
+          // lifetime bonusRealPayoutRemaining. Anything above the cap is forfeited
+          // to the house — no play credits are issued.
           let withdrawablePayout = effectivePayout;
-          let playPayout = 0;
 
           if (betIsBonusFunded) {
-            // Cap real payout against the lifetime remaining allowance — not just Nu 50 per bet.
-            // This prevents splitting bonus into many small bets to multiply real payouts.
             withdrawablePayout = parseFloat(
               Math.min(effectivePayout, bonusRealPayoutRemaining).toFixed(2),
-            );
-            playPayout = parseFloat(
-              (effectivePayout - withdrawablePayout).toFixed(2),
-            );
-            // Reduce both the bonus balance and the lifetime real payout allowance
-            const newBonusBalance = Math.max(
-              0,
-              userBonusBalance - Number(bet.amount),
-            );
-            const newRealPayoutRemaining = Math.max(
-              0,
-              bonusRealPayoutRemaining - withdrawablePayout,
             );
             await em.update(
               User,
               { id: bet.userId },
               {
-                bonusBalance: newBonusBalance,
-                bonusRealPayoutRemaining: newRealPayoutRemaining,
+                bonusBalance: Math.max(0, userBonusBalance - Number(bet.amount)),
+                bonusRealPayoutRemaining: Math.max(
+                  0,
+                  bonusRealPayoutRemaining - withdrawablePayout,
+                ),
               },
             );
           }
 
-          bet.payout = effectivePayout;
+          bet.payout = withdrawablePayout;
           bet.status = PositionStatus.WON;
-          totalPaidOut += effectivePayout;
+          totalPaidOut += withdrawablePayout;
           winningPositions++;
 
           const balanceBefore = await this.getCreditsBalance(em, bet.userId);
 
-          // Credit the withdrawable portion
           await em.save(
             Transaction,
             em.create(Transaction, {
@@ -1094,32 +1086,6 @@ export class ParimutuelEngine implements OnModuleInit {
               note: `Payout for winning prediction on: ${winner.label}`,
             }),
           );
-
-          // Credit the play-money portion (above cap) as bonus credits
-          if (playPayout > 0) {
-            const balAfterWithdrawable = balanceBefore + withdrawablePayout;
-            await em.save(
-              Transaction,
-              em.create(Transaction, {
-                type: TransactionType.FREE_CREDIT,
-                amount: playPayout,
-                balanceBefore: balAfterWithdrawable,
-                balanceAfter: balAfterWithdrawable + playPayout,
-                positionId: bet.id,
-                userId: bet.userId,
-                isBonus: true,
-                note: `Bonus play credits — payout above bonus cap (re-bet only)`,
-              }),
-            );
-            // Track the new play-money balance
-            await em.update(
-              User,
-              { id: bet.userId },
-              {
-                bonusBalance: () => `"bonusBalance" + ${playPayout}`,
-              },
-            );
-          }
         } else if (market.status === MarketStatus.CANCELLED) {
           // Refund on cancellation via ledger entry
           bet.status = PositionStatus.REFUNDED;
