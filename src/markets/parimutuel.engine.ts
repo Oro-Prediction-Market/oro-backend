@@ -460,14 +460,6 @@ export class ParimutuelEngine implements OnModuleInit {
   static readonly REFERRAL_BET_PCT = 0.05; // 5% of first bet
   static readonly REFERRAL_CAP = 75; // total cap Nu 75
 
-  // ── Referral prize pool (funded from house edge) ──────────────────────────
-  /** % of each market's houseAmount contributed to the referral prize fund */
-  static readonly PRIZE_FUND_PCT = 0.2; // 20% of house cut per market
-  /** How many converted referrals unlock the prize */
-  static readonly REFERRAL_PRIZE_THRESHOLD = 10;
-  /** Fixed prize credited to the referrer on reaching the threshold */
-  static readonly REFERRAL_PRIZE_AMOUNT = 500; // Nu 500
-
   private async creditReferralBonusIfEligible(
     bettorUserId: string,
     betAmount: number,
@@ -544,76 +536,6 @@ export class ParimutuelEngine implements OnModuleInit {
       `[Referral] Credited ${bonus} BTN to referrer ${referrer.id} for referred user ${bettor.id}`,
     );
 
-    // Check if referrer has now hit the prize threshold
-    await this.creditReferralPrizeIfEligible(referrer.id);
-  }
-
-  /**
-   * Auto-credits Nu 500 to the referrer once they hit REFERRAL_PRIZE_THRESHOLD
-   * converted referrals. Idempotent: `referralPrizeClaimed` ensures exactly once.
-   *
-   * Funded by 20% of each market's house cut (PRIZE_FUND_PCT). The platform
-   * earns the house edge on all those referred users' bets — at 8% house edge
-   * on even modest activity the fund self-replenishes well before the prize fires.
-   */
-  private async creditReferralPrizeIfEligible(
-    referrerId: string,
-  ): Promise<void> {
-    const referrer = await this.dataSource.getRepository(User).findOne({
-      where: { id: referrerId },
-      select: ["id", "referralPrizeClaimed"],
-    });
-
-    if (!referrer || referrer.referralPrizeClaimed) return;
-
-    const convertedCount = await this.dataSource.getRepository(User).count({
-      where: { referredByUserId: referrerId, referralBonusTriggered: true },
-    });
-
-    if (convertedCount < ParimutuelEngine.REFERRAL_PRIZE_THRESHOLD) return;
-
-    const prize = ParimutuelEngine.REFERRAL_PRIZE_AMOUNT;
-
-    await this.dataSource.transaction(async (em) => {
-      const txRepo = em.getRepository(Transaction);
-      const userRepo = em.getRepository(User);
-
-      // Atomic guard: concurrent referral bonus credits for the same referrer
-      // could both trigger this check before either commits. Conditional WHERE
-      // ensures only one call wins.
-      const claim = await userRepo.update(
-        { id: referrerId, referralPrizeClaimed: false },
-        { referralPrizeClaimed: true },
-      );
-      if (!claim.affected) return;
-
-      const { balance } = await txRepo
-        .createQueryBuilder("t")
-        .select("COALESCE(SUM(t.amount), 0)", "balance")
-        .where("t.userId = :id", { id: referrerId })
-        .getRawOne();
-
-      const balBefore = Number(balance);
-
-      await txRepo.save(
-        txRepo.create({
-          type: TransactionType.REFERRAL_PRIZE,
-          amount: prize,
-          balanceBefore: balBefore,
-          balanceAfter: balBefore + prize,
-          userId: referrerId,
-          isBonus: false,
-          note: `Referral prize — reached ${ParimutuelEngine.REFERRAL_PRIZE_THRESHOLD} converted friends`,
-        }),
-      );
-    });
-
-    await this.redis.del(`oro:cache:balance:${referrerId}`);
-    this.sse.emit(referrerId, "balance:updated", { referralPrize: prize });
-
-    this.logger.log(
-      `[ReferralPrize] Credited Nu ${prize} prize to user ${referrerId} (${convertedCount} converted referrals)`,
-    );
   }
 
   // Transition market state

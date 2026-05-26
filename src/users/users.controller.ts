@@ -475,11 +475,6 @@ export class UsersController {
       where: { referredByUserId: userId, referralBonusTriggered: true },
     });
 
-    const referrer = await this.userRepo.findOne({
-      where: { id: userId },
-      select: ["id", "referralPrizeClaimed"],
-    });
-
     return {
       referralLink,
       referredCount,
@@ -488,9 +483,6 @@ export class UsersController {
       flatBonus: ParimutuelEngine.REFERRAL_FLAT_BONUS,
       betPct: ParimutuelEngine.REFERRAL_BET_PCT * 100,
       cap: ParimutuelEngine.REFERRAL_CAP,
-      prizeThreshold: ParimutuelEngine.REFERRAL_PRIZE_THRESHOLD,
-      prizeAmount: ParimutuelEngine.REFERRAL_PRIZE_AMOUNT,
-      prizeClaimed: referrer?.referralPrizeClaimed ?? false,
     };
   }
 

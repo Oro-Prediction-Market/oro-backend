@@ -1,13 +1,15 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { InjectRepository, InjectDataSource } from "@nestjs/typeorm";
-import { Repository, DataSource } from "typeorm";
+import { Repository, DataSource, LessThan } from "typeorm";
 import { Season, SeasonStatus } from "../entities/season.entity";
 import { User } from "../entities/user.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 
-// Prize pool for the top 3 finishers each week (in Nu)
+// Reference values used to calculate the consecutive season bonus.
+// No prize is given for a single season finish — credits only unlock
+// when a user places top-3 in back-to-back seasons.
 const SEASON_PRIZES: Record<number, number> = { 1: 100, 2: 50, 3: 25 };
 
 @Injectable()
@@ -43,6 +45,7 @@ export class SeasonService {
         "u.firstName",
         "u.lastName",
         "u.username",
+        "u.telegramId",
         "u.reputationScore",
         "u.reputationTier",
         "u.totalPredictions",
@@ -75,7 +78,7 @@ export class SeasonService {
     this.logger.log(`Season ${active.id} closed with ${snapshot.length} winners`);
 
     // Credit top-3 prizes and send DMs (fire-and-forget so rollover isn't blocked)
-    this.creditSeasonPrizes(top10.slice(0, 3), active.weekNumber, active.year).catch(
+    this.creditSeasonPrizes(top10.slice(0, 3), active).catch(
       (err: Error) => this.logger.error(`Season prize crediting failed: ${err.message}`),
     );
   }
@@ -130,33 +133,57 @@ export class SeasonService {
 
   private async creditSeasonPrizes(
     winners: User[],
-    weekNumber: number,
-    year: number,
+    currentSeason: Season,
   ): Promise<void> {
+    const { weekNumber, year } = currentSeason;
     const medals = ["🥇", "🥈", "🥉"];
+
+    // Find the season that closed immediately before this one
+    const prevSeason = await this.seasonRepo.findOne({
+      where: {
+        status: SeasonStatus.CLOSED,
+        startsAt: LessThan(currentSeason.startsAt),
+      },
+      order: { startsAt: "DESC" },
+    });
 
     for (let i = 0; i < winners.length; i++) {
       const rank = i + 1;
-      const prize = SEASON_PRIZES[rank];
-      if (!prize) continue;
+      const currentPrizeRef = SEASON_PRIZES[rank];
+      if (!currentPrizeRef) continue;
 
       const user = winners[i];
 
-      // Credit the prize as a ledger transaction (idempotent — skip if already credited)
-      const prizeNote = `${medals[i]} Week ${weekNumber}/${year} season prize — rank #${rank}`;
+      // Only reward if the user also placed top-3 in the previous season
+      const prevRankEntry = prevSeason?.winnersSnapshot?.find(
+        (e) => e.userId === user.id && e.rank >= 1 && e.rank <= 3,
+      );
+
+      if (!prevRankEntry) {
+        // First-time or non-consecutive finish — no credit, but DM to encourage them
+        if (user.telegramId) {
+          const chatId = Number(user.telegramId);
+          const msg =
+            `${medals[i]} <b>Week ${weekNumber} — you finished #${rank}!</b>\n\n` +
+            `Great prediction this week. Place top 3 again next week to unlock your consecutive bonus. Keep it going!`;
+          await this.telegram.sendMessage(chatId, msg).catch((err: Error) =>
+            this.logger.warn(`Season DM failed for user ${user.id}: ${err.message}`),
+          );
+        }
+        continue;
+      }
+
+      // Consecutive finish — credit the average of both weeks' reference prizes
+      const prevPrizeRef = SEASON_PRIZES[prevRankEntry.rank] ?? 0;
+      const bonus = Math.round((currentPrizeRef + prevPrizeRef) / 2);
+
+      const bonusNote = `🔥 Consecutive season bonus — Week ${prevSeason!.weekNumber}/${prevSeason!.year} → Week ${weekNumber}/${year}`;
       await this.dataSource.transaction(async (em) => {
         const alreadyCredited = await em.getRepository(Transaction).count({
-          where: {
-            userId: user.id,
-            type: TransactionType.FREE_CREDIT,
-            note: prizeNote,
-          },
+          where: { userId: user.id, type: TransactionType.FREE_CREDIT, note: bonusNote },
         });
-
         if (alreadyCredited > 0) {
-          this.logger.warn(
-            `Season prize already credited for user ${user.id} rank #${rank} week ${weekNumber}/${year} — skipping`,
-          );
+          this.logger.warn(`Consecutive bonus already credited for user ${user.id} — skipping`);
           return;
         }
 
@@ -167,17 +194,15 @@ export class SeasonService {
           .where("t.userId = :userId", { userId: user.id })
           .getRawOne();
 
-        const balanceBefore = Number(rawBefore);
-
         await em.save(
           em.create(Transaction, {
             type: TransactionType.FREE_CREDIT,
-            amount: prize,
-            balanceBefore,
-            balanceAfter: balanceBefore + prize,
+            amount: bonus,
+            balanceBefore: Number(rawBefore),
+            balanceAfter: Number(rawBefore) + bonus,
             userId: user.id,
             isBonus: true,
-            note: prizeNote,
+            note: bonusNote,
           }),
         );
 
@@ -185,25 +210,29 @@ export class SeasonService {
           .createQueryBuilder()
           .update(User)
           .set({
-            bonusBalance: () => `"bonusBalance" + ${prize}`,
+            bonusBalance: () => `"bonusBalance" + ${bonus}`,
             bonusRealPayoutRemaining: () => `GREATEST("bonusRealPayoutRemaining", 50)`,
           })
           .where("id = :userId", { userId: user.id })
           .execute();
 
-        this.logger.log(`Season prize: Nu ${prize} → user ${user.id} (rank #${rank})`);
+        this.logger.log(
+          `Consecutive bonus: Nu ${bonus} → user ${user.id} (prev #${prevRankEntry.rank} + curr #${rank})`,
+        );
       });
 
-      // DM the winner on Telegram
+      // DM the winner
       if (user.telegramId) {
         const chatId = Number(user.telegramId);
         const msg =
-          `${medals[i]} <b>Season over — you finished #${rank}!</b>\n\n` +
-          `You've been awarded <b>Nu ${prize}</b> in play credits for topping the Week ${weekNumber} leaderboard.\n` +
-          `The credits are in your Oro wallet — use them to predict, but they cannot be withdrawn. New season starts now — defend your title.`;
+          `${medals[i]} 🔥 <b>Back-to-back top 3!</b>\n\n` +
+          `You placed #${prevRankEntry.rank} last week and #${rank} this week — ` +
+          `that earns you <b>Nu ${bonus}</b> in play credits ` +
+          `(average of Nu ${prevPrizeRef} + Nu ${currentPrizeRef}).\n\n` +
+          `Credits are in your Oro wallet. Can you make it three in a row?`;
 
         await this.telegram.sendMessage(chatId, msg).catch((err: Error) =>
-          this.logger.warn(`Season prize DM failed for user ${user.id}: ${err.message}`),
+          this.logger.warn(`Season DM failed for user ${user.id}: ${err.message}`),
         );
       }
     }

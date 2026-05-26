@@ -8,19 +8,12 @@ import {
   IsNull,
   MoreThan,
   Between,
-  LessThan,
 } from "typeorm";
 import { User } from "../entities/user.entity";
 import { Market, MarketStatus } from "../entities/market.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { Challenge, ChallengeStatus } from "../entities/challenge.entity";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
-
-// Credits sent to lapsed users at each inactivity milestone
-const REENGAGEMENT_CREDITS: Record<number, number> = {
-  14: 15, // Nu 15 comeback credit
-  30: 20, // Nu 20 "we miss you" credit
-};
 
 @Injectable()
 export class EngagementJob {
@@ -29,7 +22,6 @@ export class EngagementJob {
   constructor(
     @InjectRepository(User) private userRepo: Repository<User>,
     @InjectRepository(Market) private marketRepo: Repository<Market>,
-    @InjectRepository(Transaction) private txRepo: Repository<Transaction>,
     @InjectRepository(Challenge) private challengeRepo: Repository<Challenge>,
     @InjectDataSource() private dataSource: DataSource,
     private readonly telegram: TelegramSimpleService,
@@ -37,11 +29,8 @@ export class EngagementJob {
 
   /**
    * Re-engagement cron — runs 3:00 AM UTC daily.
-   * Finds users who went silent at exactly the 14 or 30-day mark.
+   * Finds users who went silent at exactly the 14 or 30-day mark and sends a DM.
    * Uses a 1-day window per milestone so each user is messaged exactly once.
-   *
-   * 14 days → Nu 15 comeback credit + DM
-   * 30 days → Nu 20 "we miss you" credit + DM
    */
   @Cron("0 3 * * *")
   async reEngageLapsedUsers(): Promise<void> {
@@ -137,7 +126,13 @@ export class EngagementJob {
       `[ReEngagement] ${daysMissed}d lapsed — messaging ${users.length} users`,
     );
 
-    const creditAmount = REENGAGEMENT_CREDITS[daysMissed] ?? 0;
+    const topMarket = await this.marketRepo
+      .createQueryBuilder("m")
+      .where("m.status = :s", { s: MarketStatus.OPEN })
+      .andWhere("m.totalPool > 0")
+      .orderBy("m.totalPool", "DESC")
+      .limit(1)
+      .getOne();
 
     for (const user of users) {
       try {
@@ -145,21 +140,7 @@ export class EngagementJob {
         if (!chatId) continue;
 
         const name = user.firstName ?? "Predictor";
-        const msg = this.buildMessage(name, daysMissed, creditAmount);
-
-        if (creditAmount > 0) {
-          const credited = await this.creditUser(
-            user.id,
-            creditAmount,
-            `Re-engagement credit (${daysMissed}d inactive)`,
-          );
-          if (!credited) {
-            this.logger.debug(
-              `[ReEngagement] Skipping ${user.id} — already credited for ${daysMissed}d`,
-            );
-            continue;
-          }
-        }
+        const msg = this.buildMessage(name, daysMissed, user.reputationTier ?? null, topMarket);
 
         await this.telegram.sendMessage(chatId, msg);
       } catch (err: any) {
@@ -173,82 +154,36 @@ export class EngagementJob {
   private buildMessage(
     name: string,
     daysMissed: number,
-    creditAmount: number,
+    tier: string | null,
+    topMarket: Market | null,
   ): string {
+    const tierLabel: Record<string, string> = {
+      legend: "Legend",
+      hot_hand: "Hot Hand",
+      sharpshooter: "Sharpshooter",
+      rookie: "Rookie",
+    };
+    const tierName = tierLabel[tier ?? ""] ?? null;
+    const marketLine = topMarket
+      ? `\n\nRight now: <b>${topMarket.title}</b> is live. Open Oro and call it.`
+      : "\n\nOpen Oro — there are live markets waiting for your call.";
+
     if (daysMissed === 14) {
-      return (
-        `${name}, it's been 2 weeks. We've added <b>Nu ${creditAmount}</b> to your Oro wallet ` +
-        `to get you back in the game. Your prediction record is still waiting.`
-      );
+      const lines = [
+        `${name}, the leaderboard moved while you were gone.${tierName ? ` Your <b>${tierName}</b> rank is on the line.` : ""} Two weeks is long enough — come back and reclaim your spot.${marketLine}`,
+        `${name}, we saved your seat. 👀 It's been 2 weeks and the markets haven't stopped. Your record is still there — one prediction to get back in the game.${marketLine}`,
+        `${name}, other predictors are on a streak right now. You built your reputation here — don't let two quiet weeks undo it.${marketLine}`,
+      ];
+      return lines[Math.floor(Math.random() * lines.length)];
     }
 
-    return (
-      `${name}, a month away from Oro. We've added <b>Nu ${creditAmount}</b> to your wallet — ` +
-      `one prediction is all it takes to restart your journey.`
-    );
-  }
-
-  /**
-   * Credits the user atomically. Returns false (no-op) if already credited for
-   * this note — the user row is locked for the duration so concurrent cron runs
-   * on multiple pods cannot double-credit the same user.
-   */
-  private async creditUser(
-    userId: string,
-    amount: number,
-    note: string,
-  ): Promise<boolean> {
-    return await this.dataSource.transaction(async (em) => {
-      // Lock the user row first — serialises concurrent credits for the same user
-      // across multiple pod instances running the cron simultaneously.
-      await em
-        .getRepository(User)
-        .createQueryBuilder("u")
-        .setLock("pessimistic_write")
-        .where("u.id = :userId", { userId })
-        .getOne();
-
-      // Dedup check inside the locked transaction — safe from race conditions
-      const already = await em.getRepository(Transaction).findOne({
-        where: { userId, type: TransactionType.FREE_CREDIT, note },
-        select: ["id"],
-      });
-      if (already) return false;
-
-      const { balance: rawBefore } = await em
-        .getRepository(Transaction)
-        .createQueryBuilder("t")
-        .select("COALESCE(SUM(t.amount), 0)", "balance")
-        .where("t.userId = :userId", { userId })
-        .getRawOne();
-
-      const balanceBefore = Number(rawBefore);
-
-      await em.save(
-        em.create(Transaction, {
-          type: TransactionType.FREE_CREDIT,
-          amount,
-          balanceBefore,
-          balanceAfter: balanceBefore + amount,
-          userId,
-          isBonus: true,
-          note,
-        }),
-      );
-
-      await em
-        .createQueryBuilder()
-        .update(User)
-        .set({
-          bonusBalance: () => `"bonusBalance" + ${amount}`,
-          bonusRealPayoutRemaining: () =>
-            `GREATEST("bonusRealPayoutRemaining", 50)`,
-        })
-        .where("id = :userId", { userId })
-        .execute();
-
-      return true;
-    });
+    // 30 days
+    const lines = [
+      `${name}, a whole month. The markets kept moving, the leaderboard kept shifting${tierName ? `, and your <b>${tierName}</b> title is gathering dust` : ""}. One prediction is all it takes to remind everyone you're still here.${marketLine}`,
+      `${name}, we missed your calls. 🎯 It's been 30 days — long enough that people have forgotten your name on the leaderboard. Time to change that.${marketLine}`,
+      `${name}, your Oro account has been quiet for a month. The community is predicting without you. Come back and show them what you've got.${marketLine}`,
+    ];
+    return lines[Math.floor(Math.random() * lines.length)];
   }
 
   /**
@@ -273,14 +208,21 @@ export class EngagementJob {
     this.logger.log(`[DuelExpiry] Expiring ${stale.length} stale challenge(s)`);
 
     for (const ch of stale) {
-      // Mark expired
-      ch.status = ChallengeStatus.EXPIRED;
-      ch.settledAt = now;
-
-      // Refund wager if one was placed
       const wager = Number(ch.wagerAmount);
-      if (wager > 0) {
-        await this.dataSource.transaction(async (em) => {
+
+      // Atomically mark expired and refund wager in one transaction.
+      // The conditional UPDATE acts as the idempotency guard — if two cron pods
+      // race, only the first UPDATE's affected=1 proceeds; the second sees 0 and skips.
+      let claimed = false;
+      await this.dataSource.transaction(async (em) => {
+        const result = await em.getRepository(Challenge).update(
+          { id: ch.id, status: ChallengeStatus.OPEN },
+          { status: ChallengeStatus.EXPIRED, settledAt: now },
+        );
+        if (!result.affected) return;
+        claimed = true;
+
+        if (wager > 0) {
           const { balance: rawBefore } = await em
             .getRepository(Transaction)
             .createQueryBuilder("t")
@@ -288,22 +230,20 @@ export class EngagementJob {
             .where("t.userId = :userId", { userId: ch.creatorId })
             .getRawOne();
 
-          const balanceBefore = Number(rawBefore);
-
           await em.save(
             em.create(Transaction, {
-              type: TransactionType.DUEL_WAGER,
+              type: TransactionType.REFUND,
               amount: wager,
-              balanceBefore,
-              balanceAfter: balanceBefore + wager,
+              balanceBefore: Number(rawBefore),
+              balanceAfter: Number(rawBefore) + wager,
               userId: ch.creatorId,
               note: `Duel expired refund — challenge ${ch.id}`,
             }),
           );
-        });
-      }
+        }
+      });
 
-      await this.challengeRepo.save(ch);
+      if (!claimed) continue;
 
       // DM the creator
       const creator = ch.creator;
