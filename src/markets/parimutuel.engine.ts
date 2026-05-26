@@ -1169,7 +1169,7 @@ export class ParimutuelEngine implements OnModuleInit {
               userId: bet.userId,
               isBonus: false,
               stakeAmount: stake,
-              note: `Payout for winning bet on: ${winner.label}`,
+              note: `Payout for winning prediction on: ${winner.label}`,
             }),
           );
 
