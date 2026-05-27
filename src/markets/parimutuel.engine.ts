@@ -1105,6 +1105,28 @@ export class ParimutuelEngine implements OnModuleInit {
           );
         } else {
           bet.status = PositionStatus.LOST;
+          // Decrement bonusBalance for lost bonus-funded bets.
+          // Previously this only happened on the win path, causing bonusBalance
+          // to grow unbounded and incorrectly flag future real-money bets as bonus-funded.
+          if (bet.isBonusFunded) {
+            const lostUser = await em.findOne(User, {
+              where: { id: bet.userId },
+              select: ["id", "bonusBalance"],
+            });
+            const currentBonusBalance = Number(lostUser?.bonusBalance ?? 0);
+            if (currentBonusBalance > 0) {
+              await em.update(
+                User,
+                { id: bet.userId },
+                {
+                  bonusBalance: Math.max(
+                    0,
+                    currentBonusBalance - Number(bet.amount),
+                  ),
+                },
+              );
+            }
+          }
         }
         await em.save(Position, bet);
       }
