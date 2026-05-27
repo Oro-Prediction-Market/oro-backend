@@ -281,7 +281,7 @@ export class AuthService {
 
     let msg =
       `🎉 <b>Welcome to Oro, ${name}!</b>\n\n` +
-      `You've received <b>Nu 20 free credit</b> — deposit needed to make your first prediction.\n\n`;
+      `Deposit to your Oro wallet to start making predictions and win real BTN.\n\n`;
 
     // Fix 3: referral context — show what the referrer is predicting
     if (referredByUserId) {
