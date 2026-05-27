@@ -76,21 +76,18 @@ const createMockPriceService = () => ({
 describe("TerMarketService", () => {
   let service: TerMarketService;
   let marketRepo: ReturnType<typeof createMockRepo>;
-  let outcomeRepo: ReturnType<typeof createMockRepo>;
   let priceService: ReturnType<typeof createMockPriceService>;
   let engine: ReturnType<typeof createMockEngine>;
   let dataSource: ReturnType<typeof createMockDataSource>;
 
   beforeEach(() => {
     marketRepo = createMockRepo();
-    outcomeRepo = createMockRepo();
     priceService = createMockPriceService();
     engine = createMockEngine();
     dataSource = createMockDataSource();
 
     service = new TerMarketService(
       marketRepo as any,
-      outcomeRepo as any,
       priceService as any,
       engine as any,
       dataSource as any,

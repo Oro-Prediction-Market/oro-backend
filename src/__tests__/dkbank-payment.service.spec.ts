@@ -81,6 +81,37 @@ function makeOtpRepo(record: any = makeOtpRecord()) {
   };
 }
 
+function makeLinkedBankAccount(user: any = makeUser(), overrides: any = {}) {
+  if (!user?.dkCid || !user?.dkAccountNumber) return null;
+  return {
+    id: "linked-bank-account-1",
+    userId: user.id,
+    cid: user.dkCid,
+    accountNumber: user.dkAccountNumber,
+    accountName: user.dkAccountName,
+    bankPhone: "17000001",
+    isVerified: true,
+    isDefault: true,
+    ...overrides,
+  };
+}
+
+function makeLinkedBankAccountRepo(account: any) {
+  return {
+    findOne: jest.fn().mockResolvedValue(account),
+  };
+}
+
+function makeBhutanAppNotificationService() {
+  return { sendNotification: jest.fn().mockResolvedValue(undefined) };
+}
+
+function makeAuthMethodRepo(authMethod: any = null) {
+  return {
+    findOne: jest.fn().mockResolvedValue(authMethod),
+  };
+}
+
 function makeRedis(otpSession: any = { otp: "123456", userId: "user-1" }) {
   return {
     getJson: jest.fn().mockResolvedValue(otpSession),
@@ -192,16 +223,23 @@ function makeService(
     dataSource?: any;
     telegramVerification?: any;
     configService?: any;
+    linkedBankAccount?: any;
+    bhutanAppNotification?: any;
+    authMethod?: any;
   } = {},
 ) {
-  const userRepo = makeUserRepo(
-    "user" in overrides ? overrides.user : makeUser(),
-  );
+  const userValue = "user" in overrides ? overrides.user : makeUser();
+  const userRepo = makeUserRepo(userValue);
   const paymentRepo = makePaymentRepo(
     "payment" in overrides ? overrides.payment : makePayment(),
   );
   const otpRepo = makeOtpRepo(
     "otp" in overrides ? overrides.otp : makeOtpRecord(),
+  );
+  const lbaRepo = makeLinkedBankAccountRepo(
+    "linkedBankAccount" in overrides
+      ? overrides.linkedBankAccount
+      : makeLinkedBankAccount(userValue),
   );
   const redis = overrides.redis ?? makeRedis();
   const dkGateway = overrides.dkGateway ?? makeDkGateway();
@@ -209,6 +247,9 @@ function makeService(
   const telegramVerification =
     overrides.telegramVerification ?? makeTelegramVerification();
   const configService = overrides.configService ?? makeConfigService();
+  const bhutanAppNotification =
+    overrides.bhutanAppNotification ?? makeBhutanAppNotificationService();
+  const authMethodRepo = makeAuthMethodRepo(overrides.authMethod ?? null);
 
   const service = new DKBankPaymentService(
     dataSource as any,
@@ -216,22 +257,28 @@ function makeService(
     configService as any,
     redis as any,
     makeTelegramService() as any,
-    telegramVerification as any,
     userRepo as any,
+    lbaRepo as any,
     paymentRepo as any,
     otpRepo as any,
     { emit: jest.fn(), broadcast: jest.fn(), forUser: jest.fn() } as any,
+    bhutanAppNotification as any,
+    authMethodRepo as any,
   );
 
   return {
     service,
     userRepo,
+    lbaRepo,
     paymentRepo,
     otpRepo,
     redis,
     dkGateway,
     dataSource,
     configService,
+    telegramVerification,
+    bhutanAppNotification,
+    authMethodRepo,
   };
 }
 

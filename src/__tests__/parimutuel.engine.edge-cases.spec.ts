@@ -76,6 +76,7 @@ function makeEngine(em: any, minUniqueBettors = 2) {
     null as any, // challengesService
     null as any, // marketsGateway
     null as any, // sse
+    null as any, // revenueDistributionService
   );
   return { engine, telegramSimple: mockTelegramSimple, dataSource: mockDataSource };
 }

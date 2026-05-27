@@ -42,6 +42,7 @@ describe("ParimutuelEngine.calcOdds", () => {
       null as any, // challengesService
       null as any, // marketsGateway
       null as any, // sse
+      null as any, // revenueDistributionService
     );
   });
 
@@ -148,6 +149,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any, // challengesService
       null as any, // marketsGateway
       null as any, // sse
+      null as any, // revenueDistributionService
     );
     await expect(engine.placePosition("u1", "m1", "o1", 0)).rejects.toThrow(
       BadRequestException,
@@ -216,6 +218,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any,
       null as any, // marketsGateway
       null as any, // sse
+      null as any, // revenueDistributionService
     );
 
     await expect(engine.placePosition("u1", "m1", "o1", 100)).rejects.toThrow(
@@ -282,6 +285,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any,
       null as any, // marketsGateway
       null as any, // sse
+      null as any, // revenueDistributionService
     );
 
     await expect(engine.placePosition("u1", "m1", "o1", 100)).rejects.toThrow(
@@ -358,6 +362,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any,
       null as any, // marketsGateway
       null as any, // sse
+      null as any, // revenueDistributionService
     );
 
     await expect(engine.placePosition("u1", "m1", "o1", 100)).rejects.toThrow(
@@ -434,6 +439,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any,
       null as any, // marketsGateway
       null as any, // sse
+      null as any, // revenueDistributionService
     );
 
     await expect(engine.placePosition("u2", "m1", "o2", 100)).rejects.toThrow(
@@ -516,6 +522,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any,
       null as any, // marketsGateway
       null as any, // sse
+      null as any, // revenueDistributionService
     );
 
     // Should NOT throw — duel is OPEN, not ACTIVE
@@ -627,6 +634,7 @@ describe("Settlement wallet credit — no DK transfer on market settle", () => {
       null as any, // challengesService
       null as any, // marketsGateway
       null as any, // sse
+      null as any, // revenueDistributionService
     );
 
     return { engine, mockDkGateway, positions };
@@ -802,6 +810,7 @@ describe("Batch payment — NOT triggered on market settlement", () => {
       null as any,
       null as any,
       null as any, // sse
+      null as any, // revenueDistributionService
     );
 
     return engine;
@@ -965,6 +974,7 @@ describe("Batch payment — NOT triggered on market settlement", () => {
       null as any,
       null as any,
       null as any, // sse
+      null as any, // revenueDistributionService
     );
 
     // totalPool=600, houseEdgePct=8 → payoutPool=552
@@ -1082,6 +1092,7 @@ describe("ParimutuelEngine.resolveMarket — atomic concurrency claim", () => {
       null as any, // challengesService
       null as any, // marketsGateway
       null as any, // sse
+      null as any, // revenueDistributionService
     );
 
     return { engine, marketRepo, outcomeRepo, claimExecute };
