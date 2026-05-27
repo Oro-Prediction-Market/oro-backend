@@ -1056,6 +1056,15 @@ export class ParimutuelEngine implements OnModuleInit {
             withdrawablePayout = parseFloat(
               Math.min(effectivePayout, bonusRealPayoutRemaining).toFixed(2),
             );
+            // Safety floor: if bonusRealPayoutRemaining has drifted to 0 due to
+            // stale bonusBalance tracking, still pay out at least the stake so
+            // the user never receives 0 on a winning bet they funded with real money.
+            if (withdrawablePayout === 0) {
+              withdrawablePayout = stake;
+              this.logger.warn(
+                `[Settlement] bonusRealPayoutRemaining=0 for user ${bet.userId} on bet ${bet.id} — flooring payout to stake ${stake}`,
+              );
+            }
             await em.update(
               User,
               { id: bet.userId },
