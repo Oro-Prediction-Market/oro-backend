@@ -187,7 +187,10 @@ export class OnboardService {
       where: { username: lower },
       select: ["id"],
     });
-    if (usernameOwner && (!existingPwa || usernameOwner.id !== existingPwa.id)) {
+    if (
+      usernameOwner &&
+      (!existingPwa || usernameOwner.id !== existingPwa.id)
+    ) {
       throw new BadRequestException("Username is already taken.");
     }
 
@@ -246,32 +249,6 @@ export class OnboardService {
         }),
       );
 
-      // Welcome bonus — only if not previously granted (avoid double-grant)
-      if (!existingPwa.freeCreditGranted) {
-        await this.transactionRepo.save(
-          this.transactionRepo.create({
-            type: TransactionType.FREE_CREDIT,
-            amount: 20,
-            balanceBefore: 0,
-            balanceAfter: 20,
-            userId: existingPwa.id,
-            isBonus: true,
-            note: "Welcome bonus — free Nu 20 to make your first prediction!",
-          }),
-        );
-        await this.userRepo
-          .createQueryBuilder()
-          .update()
-          .set({
-            freeCreditGranted: true,
-            bonusBalance: 20,
-            bonusRealPayoutRemaining: () =>
-              `GREATEST("bonusRealPayoutRemaining", 50)`,
-          })
-          .where("id = :id", { id: existingPwa.id })
-          .execute();
-      }
-
       this.logger.log(
         `[Onboard] Merged Telegram identity into existing PWA user ${existingPwa.id} (tg: ${telegramId})`,
       );
@@ -300,30 +277,6 @@ export class OnboardService {
     });
     await this.userRepo.save(user);
 
-    // Welcome bonus — Nu 20 free credit
-    await this.transactionRepo.save(
-      this.transactionRepo.create({
-        type: TransactionType.FREE_CREDIT,
-        amount: 20,
-        balanceBefore: 0,
-        balanceAfter: 20,
-        userId: user.id,
-        isBonus: true,
-        note: "Welcome bonus — free Nu 20 to make your first prediction!",
-      }),
-    );
-    await this.userRepo
-      .createQueryBuilder()
-      .update()
-      .set({
-        freeCreditGranted: true,
-        bonusBalance: 20,
-        bonusRealPayoutRemaining: () =>
-          `GREATEST("bonusRealPayoutRemaining", 50)`,
-      })
-      .where("id = :id", { id: user.id })
-      .execute();
-
     // Create Telegram auth method
     await this.authMethodRepo.save(
       this.authMethodRepo.create({
@@ -340,8 +293,8 @@ export class OnboardService {
         this.transactionRepo.create({
           type: TransactionType.DEPOSIT,
           amount: 1000,
-          balanceBefore: 20,
-          balanceAfter: 1020,
+          balanceBefore: 0,
+          balanceAfter: 1000,
           userId: user.id,
           note: "Starter credits (dev only)",
         }),

@@ -1137,31 +1137,6 @@ export class AuthService {
       }),
     );
 
-    // Welcome bonus — Nu 20 free credit so first-time PWA users can predict
-    // without needing to deposit. Mirrors the TMA onboarding bonus.
-    await this.transactionRepo.save(
-      this.transactionRepo.create({
-        type: TransactionType.FREE_CREDIT,
-        amount: 20,
-        balanceBefore: 0,
-        balanceAfter: 20,
-        userId: user.id,
-        isBonus: true,
-        note: "Welcome bonus — free Nu 20 to make your first prediction!",
-      }),
-    );
-    await this.userRepo
-      .createQueryBuilder()
-      .update()
-      .set({
-        freeCreditGranted: true,
-        bonusBalance: 20,
-        bonusRealPayoutRemaining: () =>
-          `GREATEST("bonusRealPayoutRemaining", 50)`,
-      })
-      .where("id = :id", { id: user.id })
-      .execute();
-
     this.logger.log(
       `[Auth] New user created via BhutanApp — CID ${cid}, id ${user.id}`,
     );

@@ -287,14 +287,10 @@ export class ParimutuelEngine implements OnModuleInit {
 
         // Create bet record
         const userBonusBalanceAtBet = Number(user.bonusBalance ?? 0);
-        // A prediction is only bonus-funded if:
-        // 1. The user has a bonus balance that covers the bet amount, AND
-        // 2. The user's real (non-bonus) balance is NOT sufficient to cover the prediction.
-        //    (i.e. they actually need the bonus to place this bet)
-        // This prevents the case where a user deposited real money but has a stale
-        // bonusBalance from old welcome credits, causing real-money bets to be
-        // incorrectly capped at payout time.
-        const realBalance = balanceBefore - userBonusBalanceAtBet;
+        // A prediction is only bonus-funded if the user's real (non-bonus) balance
+        // cannot cover the bet on its own. realBalance is clamped to 0 to handle
+        // stale/overcounted bonusBalance values that exceed the ledger balance.
+        const realBalance = Math.max(0, balanceBefore - userBonusBalanceAtBet);
         const isBonusFunded =
           userBonusBalanceAtBet > 0 &&
           amount <= userBonusBalanceAtBet &&
