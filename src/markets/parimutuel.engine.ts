@@ -287,6 +287,18 @@ export class ParimutuelEngine implements OnModuleInit {
 
         // Create bet record
         const userBonusBalanceAtBet = Number(user.bonusBalance ?? 0);
+        // A prediction is only bonus-funded if:
+        // 1. The user has a bonus balance that covers the bet amount, AND
+        // 2. The user's real (non-bonus) balance is NOT sufficient to cover the prediction.
+        //    (i.e. they actually need the bonus to place this bet)
+        // This prevents the case where a user deposited real money but has a stale
+        // bonusBalance from old welcome credits, causing real-money bets to be
+        // incorrectly capped at payout time.
+        const realBalance = balanceBefore - userBonusBalanceAtBet;
+        const isBonusFunded =
+          userBonusBalanceAtBet > 0 &&
+          amount <= userBonusBalanceAtBet &&
+          realBalance < amount;
         const bet = em.create(Position, {
           userId,
           marketId,
@@ -296,10 +308,7 @@ export class ParimutuelEngine implements OnModuleInit {
           oddsAtPlacement: outcome.currentOdds,
           predictedProbability,
           poolPctAtBet,
-          // Snapshot whether this bet was funded by bonus credits — used later
-          // in reconciliation to track real-money exposure from bonus losses.
-          isBonusFunded:
-            amount <= userBonusBalanceAtBet && userBonusBalanceAtBet > 0,
+          isBonusFunded,
         });
         const savedPosition = await em.save(Position, bet);
 
@@ -535,7 +544,6 @@ export class ParimutuelEngine implements OnModuleInit {
     this.logger.log(
       `[Referral] Credited ${bonus} BTN to referrer ${referrer.id} for referred user ${bettor.id}`,
     );
-
   }
 
   // Transition market state
@@ -1056,7 +1064,10 @@ export class ParimutuelEngine implements OnModuleInit {
               User,
               { id: bet.userId },
               {
-                bonusBalance: Math.max(0, userBonusBalance - Number(bet.amount)),
+                bonusBalance: Math.max(
+                  0,
+                  userBonusBalance - Number(bet.amount),
+                ),
                 bonusRealPayoutRemaining: Math.max(
                   0,
                   bonusRealPayoutRemaining - withdrawablePayout,
