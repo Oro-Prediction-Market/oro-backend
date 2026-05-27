@@ -1100,12 +1100,13 @@ export class AdminController {
     const pendingBetsCount = Number(pendingBetsRow.count);
 
     const netExternalFlow = totalDeposits - totalWithdrawals;
-    // Net flow − house − breakage − active bets (already deducted from wallets,
-    // not yet returned) = liquid balance users should currently hold
-    // IMPORTANT: bonus-funded real payouts inflate user balances beyond external
-    // flow — they represent platform liability that was never deposited.
-    // We must add them to expected balances so reconciliation correctly flags
-    // the real shortfall rather than masking it as "discrepancy".
+
+    // bonusFundedRealPayouts: real (isBonus=false) payouts that went to users who
+    // won markets where losing sides included bonus-funded bets. These inflate user
+    // balances beyond external flow without a matching real deposit.
+    // Since the positions.isBonusFunded column does not exist, we approximate this
+    // as real payouts (isBonus=false bet_payout) from markets that also had any
+    // isBonus=true bet_placed positions (i.e. mixed real+bonus pools).
     const bonusFundedRealPayoutsRow = await em
       .getRepository(Transaction)
       .query(
@@ -1121,17 +1122,15 @@ export class AdminController {
             AND p_win."marketId" IN (
               SELECT DISTINCT p_loss."marketId"
               FROM positions p_loss
-              WHERE p_loss.status IN ('lost', 'refunded')
-                AND EXISTS (
-                  SELECT 1 FROM information_schema.columns
-                  WHERE table_name = 'positions' AND column_name = 'isBonusFunded'
-                )
-                AND p_loss."isBonusFunded" = true
+              INNER JOIN transactions bt ON bt."positionId" = p_loss.id
+                AND bt.type = 'bet_placed'
+                AND bt."isBonus" = true
             )
         )
     `,
       )
-      .then((r: any[]) => parseFloat(r[0].total));
+      .then((r: any[]) => parseFloat(r[0].total))
+      .catch(() => 0);
 
     const totalBonusIssuedRow = await em
       .getRepository(Transaction)
@@ -1157,16 +1156,36 @@ export class AdminController {
       )
       .then((r: any[]) => parseFloat(r[0].total));
 
-    // Bonus spent as real: bonus bets are recorded as isBonus=false transactions
-    // (bet_placed) but funded from bonusBalance. This deflates the real balance sum
-    // without a corresponding real money event. bonusSpent = issued - outstanding.
+    // Bonus spent as real: bonus bets recorded as isBonus=false but funded from
+    // bonusBalance. This deflates the real balance sum without a corresponding
+    // real money event.
+    // IMPORTANT: some bet_placed rows are already tagged isBonus=true — those are
+    // already excluded from totalRealBalance and must NOT be counted here again.
+    // Only the isBonus=false portion of bonus spending causes deflation.
     const outstandingBonusRow = await em
       .getRepository(User)
       .query(
         `SELECT COALESCE(SUM("bonusBalance"), 0)::float AS total FROM users`,
       )
       .then((r: any[]) => parseFloat(r[0].total));
-    const bonusSpentAsReal = totalBonusIssuedRow - outstandingBonusRow;
+
+    // Bonus already tagged isBonus=true in transactions (already excluded from realBalance)
+    const bonusAlreadyTaggedRow = await em
+      .getRepository(Transaction)
+      .query(
+        `SELECT COALESCE(ABS(SUM(amount)), 0)::float AS total
+         FROM transactions
+         WHERE type = 'bet_placed' AND "isBonus" = true`,
+      )
+      .then((r: any[]) => parseFloat(r[0].total));
+
+    // Total bonus consumed = issued − outstanding bonus balances
+    // Subtract already-tagged portion to avoid double-counting
+    const totalBonusConsumed = totalBonusIssuedRow - outstandingBonusRow;
+    const bonusSpentAsReal = Math.max(
+      0,
+      totalBonusConsumed - bonusAlreadyTaggedRow,
+    );
 
     // expectedUserBalances = what users SHOULD hold based purely on external money
     // + bonus real payouts (real Nu that entered wallets from bonus-loss events)
