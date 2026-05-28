@@ -1101,32 +1101,21 @@ export class AdminController {
 
     const netExternalFlow = totalDeposits - totalWithdrawals;
 
-    // bonusFundedRealPayouts: real (isBonus=false) payouts that went to users who
-    // won markets where losing sides included bonus-funded bets. These inflate user
-    // balances beyond external flow without a matching real deposit.
-    // Since the positions.isBonusFunded column does not exist, we approximate this
-    // as real payouts (isBonus=false bet_payout) from markets that also had any
-    // isBonus=true bet_placed positions (i.e. mixed real+bonus pools).
+    // bonusFundedRealPayouts: bonus bets (isBonus=true bet_placed) that LOST.
+    // When a bonus bet loses, its amount flows to real winners as real payout.
+    // This is the correct measure of "bonus money that funded real payouts" —
+    // NOT the total real payouts from markets that had any bonus bet (which
+    // massively over-counts by including real-vs-real bet redistributions).
     const bonusFundedRealPayoutsRow = await em
       .getRepository(Transaction)
       .query(
         `
-      SELECT COALESCE(SUM(pt.amount), 0)::float AS total
-      FROM transactions pt
-      WHERE pt.type = 'bet_payout'
-        AND pt."isBonus" = false
-        AND pt.amount > 0
-        AND pt."positionId" IN (
-          SELECT p_win.id FROM positions p_win
-          WHERE p_win.status = 'won'
-            AND p_win."marketId" IN (
-              SELECT DISTINCT p_loss."marketId"
-              FROM positions p_loss
-              INNER JOIN transactions bt ON bt."positionId" = p_loss.id
-                AND bt.type = 'bet_placed'
-                AND bt."isBonus" = true
-            )
-        )
+      SELECT COALESCE(SUM(ABS(bt.amount)), 0)::float AS total
+      FROM transactions bt
+      INNER JOIN positions p ON p.id = bt."positionId"
+      WHERE bt.type = 'bet_placed'
+        AND bt."isBonus" = true
+        AND p.status = 'lost'
     `,
       )
       .then((r: any[]) => parseFloat(r[0].total))
