@@ -21,7 +21,16 @@ import { RedisModule } from "../redis/redis.module";
 @Module({
   imports: [
     BullModule.registerQueue({ name: NOTIFICATION_QUEUE }),
-    TypeOrmModule.forFeature([User, Market, Dispute, AuditLog, Transaction, Challenge, Settlement, Position]),
+    TypeOrmModule.forFeature([
+      User,
+      Market,
+      Dispute,
+      AuditLog,
+      Transaction,
+      Challenge,
+      Settlement,
+      Position,
+    ]),
     forwardRef(() => MarketsModule),
     RedisModule,
   ],

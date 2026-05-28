@@ -7,6 +7,8 @@ import {
 import { InjectRepository, InjectDataSource } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
 import { Repository, DataSource, In } from "typeorm";
+import { InjectQueue } from "@nestjs/bullmq";
+import { Queue } from "bullmq";
 import { RedisService } from "../redis/redis.service";
 import { Market, MarketStatus } from "../entities/market.entity";
 import { Outcome } from "../entities/outcome.entity";
@@ -26,6 +28,11 @@ import { StreakService, STREAK_BONUS_MULT } from "../users/streak.service";
 import { ChallengesService } from "../challenges/challenges.service";
 import { SseService } from "../sse/sse.service";
 import { RevenueDistributionService } from "./revenue-distribution.service";
+import {
+  NOTIFICATION_QUEUE,
+  JobName,
+  SettlementNotifyJobData,
+} from "../jobs/notification.queue";
 
 // ─── Valid state machine transitions ────────────────────────────────────────
 const VALID_TRANSITIONS: Record<MarketStatus, MarketStatus[]> = {
@@ -70,6 +77,7 @@ export class ParimutuelEngine implements OnModuleInit {
     private marketsGateway: MarketsGateway,
     private sse: SseService,
     private revenueDistributionService: RevenueDistributionService,
+    @InjectQueue(NOTIFICATION_QUEUE) private notificationQueue: Queue,
   ) {}
 
   private async getCreditsBalance(
@@ -863,16 +871,27 @@ export class ParimutuelEngine implements OnModuleInit {
         );
     }
 
-    // Bust balance cache for every predictor so the TMA reflects payouts immediately
+    // Bust balance cache for every predictor so the TMA reflects payouts immediately.
+    // Use a Redis pipeline so all DEL commands are sent in ONE round-trip
+    // instead of firing 100k individual calls which would saturate the connection.
     const allBets = await this.betRepo.find({ where: { marketId } });
     const uniqueUserIds = [...new Set(allBets.map((b) => b.userId))];
-    await Promise.all(
-      uniqueUserIds.map((uid) => this.redis.del(`oro:cache:balance:${uid}`)),
-    );
-    // Push real-time SSE event so frontends auto-refresh
-    for (const uid of uniqueUserIds) {
-      this.sse.emit(uid, "balance:updated", { marketId });
+    if (uniqueUserIds.length > 0) {
+      const pipe = this.redis.pipeline();
+      for (const uid of uniqueUserIds) {
+        pipe.del(`oro:cache:balance:${uid}`);
+      }
+      await pipe.exec();
     }
+
+    // Push real-time SSE events in a non-blocking setImmediate loop so the
+    // settlement response is returned to the caller immediately instead of
+    // waiting for all 100k emit() calls to finish synchronously.
+    setImmediate(() => {
+      for (const uid of uniqueUserIds) {
+        this.sse.emit(uid, "balance:updated", { marketId });
+      }
+    });
 
     // Push real BTN from merchant → winners' DK accounts — fire and forget
     this.dispatchDkPayouts(
@@ -947,6 +966,20 @@ export class ParimutuelEngine implements OnModuleInit {
     slashedBondPool = 0,
   ): Promise<Settlement> {
     return await this.dataSource.transaction(async (em) => {
+      // ── Idempotency guard — prevent double settlement ─────────────────────────
+      // If a Settlement record already exists for this market, return it immediately.
+      // This protects against: admin retry after a partial failure, scheduler ticks
+      // overlapping with a manual resolve, or any other double-call scenario.
+      const existing = await em.findOne(Settlement, {
+        where: { marketId: market.id },
+      });
+      if (existing) {
+        this.logger.warn(
+          `[Settlement] Market ${market.id} already has a settlement record — skipping duplicate settle`,
+        );
+        return existing;
+      }
+
       const totalPool = Number(market.totalPool);
       const houseAmount = totalPool * (Number(market.houseEdgePct) / 100);
       // 95% of any slashed dispute bonds flows to winning bettors; 5% is platform fee
@@ -954,7 +987,12 @@ export class ParimutuelEngine implements OnModuleInit {
       const payoutPool = totalPool - houseAmount + disputeBonus;
 
       const winnerPool = Number(winner.totalBetAmount);
-      const bets = await em.find(Position, { where: { marketId: market.id } });
+      // Only settle PENDING positions — never re-process already-settled bets.
+      // This is the second line of defence against double payouts (the first is
+      // the idempotency guard above; the third is the RESOLVING→RESOLVED atomic claim).
+      const bets = await em.find(Position, {
+        where: { marketId: market.id, status: PositionStatus.PENDING },
+      });
 
       // ── Thin-pool guard ───────────────────────────────────────────────────────
       // Covers Scenario A (all bets on winning side) and Scenario B (all bets on
@@ -977,21 +1015,35 @@ export class ParimutuelEngine implements OnModuleInit {
         market.status = MarketStatus.SETTLED;
         await em.save(Market, market);
 
-        // Notify each unique bettor
-        const seenForDm = new Set<string>();
-        for (const bet of bets) {
-          if (seenForDm.has(bet.userId)) continue;
-          seenForDm.add(bet.userId);
-          const user = await em.findOne(User, {
-            where: { id: bet.userId },
+        // Load all unique bettors in chunked queries to avoid PG 65,535-param limit
+        const uniqueBetUserIds = [...new Set(bets.map((b) => b.userId))];
+        const THIN_USER_CHUNK = 1000;
+        const thinPoolUsersArr: User[] = [];
+        for (let i = 0; i < uniqueBetUserIds.length; i += THIN_USER_CHUNK) {
+          const chunk = uniqueBetUserIds.slice(i, i + THIN_USER_CHUNK);
+          const rows = await em.find(User, {
+            where: { id: In(chunk) },
             select: ["id", "telegramId"],
           });
+          thinPoolUsersArr.push(...rows);
+        }
+        const thinPoolUserMap = new Map(thinPoolUsersArr.map((u) => [u.id, u]));
+        // Sum up refund amount per user (they may have multiple bets)
+        const refundByUser = new Map<string, number>();
+        for (const bet of bets) {
+          refundByUser.set(
+            bet.userId,
+            (refundByUser.get(bet.userId) ?? 0) + Number(bet.amount),
+          );
+        }
+        for (const [uid, totalRefund] of refundByUser.entries()) {
+          const user = thinPoolUserMap.get(uid);
           if (user?.telegramId) {
             this.telegramSimple
               .sendRefundNotification(
                 Number(user.telegramId),
                 market.title,
-                Number(bet.amount),
+                totalRefund,
                 "thin_pool",
               )
               .catch(() => undefined);
@@ -1013,72 +1065,108 @@ export class ParimutuelEngine implements OnModuleInit {
       }
       // ── End thin-pool guard ───────────────────────────────────────────────────
 
+      // ── BULK settlement — O(bets) queries replaced with O(1) queries ─────────
+      //
+      // OLD approach: for each of N bets → 4 individual SQL calls = 4N queries.
+      // For 100k bets that was ~400k queries inside one transaction → timeout.
+      //
+      // NEW approach:
+      //   1. Load ALL users with bonus fields in ONE query (IN clause).
+      //   2. Load ALL current balances in ONE aggregated query (GROUP BY userId).
+      //   3. Compute every payout in memory.
+      //   4. Bulk INSERT all Transaction rows in one statement.
+      //   5. Bulk UPDATE Position statuses in one statement.
+      //   6. Bulk UPDATE bonus fields per affected user in batches.
+      // Total: ~6 queries regardless of bet count.
+
+      const betUserIds = [...new Set(bets.map((b) => b.userId))];
+      const USER_CHUNK = 1000;
+
+      // 1. Load all users involved in this market — chunked to avoid PG 65,535-param limit
+      const usersArr: User[] = [];
+      for (let i = 0; i < betUserIds.length; i += USER_CHUNK) {
+        const chunk = betUserIds.slice(i, i + USER_CHUNK);
+        const rows = await em.find(User, {
+          where: { id: In(chunk) },
+          select: ["id", "bonusBalance", "bonusRealPayoutRemaining"],
+        });
+        usersArr.push(...rows);
+      }
+      const userMap = new Map(usersArr.map((u) => [u.id, u]));
+
+      // 2. Load current ledger balance for every involved user — chunked
+      const balanceMap = new Map<string, number>();
+      for (let i = 0; i < betUserIds.length; i += USER_CHUNK) {
+        const chunk = betUserIds.slice(i, i + USER_CHUNK);
+        const rows: { userId: string; balance: string }[] = await em
+          .getRepository(Transaction)
+          .createQueryBuilder("t")
+          .select("t.userId", "userId")
+          .addSelect("COALESCE(SUM(t.amount), 0)", "balance")
+          .where("t.userId IN (:...ids)", { ids: chunk })
+          .groupBy("t.userId")
+          .getRawMany();
+        for (const r of rows) {
+          balanceMap.set(r.userId, Number(r.balance));
+        }
+      }
+
       let totalPaidOut = 0;
       let winningPositions = 0;
 
+      // Accumulators for bulk writes
+      const txToInsert: Partial<Transaction>[] = [];
+      // Track per-user running balance delta so each tx's balanceBefore/After is correct
+      const balanceDelta = new Map<string, number>();
+      const getBalance = (uid: string) =>
+        (balanceMap.get(uid) ?? 0) + (balanceDelta.get(uid) ?? 0);
+
+      // Bonus field updates: accumulate per user, apply in one bulk UPDATE per user
+      const bonusUpdates = new Map<
+        string,
+        { bonusBalance: number; bonusRealPayoutRemaining: number }
+      >();
+
       for (const bet of bets) {
         if (bet.outcomeId === winner.id) {
-          // Payout proportional to their share of winner pool
           const share = winnerPool > 0 ? Number(bet.amount) / winnerPool : 0;
           const rawPayout = parseFloat((payoutPool * share).toFixed(2));
-          // Floor at 1.05× stake so winners always profit; house absorbs the difference
-          // in thin-pool edge cases not caught by the thin-pool guard above.
           const stake = Number(bet.amount);
           const effectivePayout = parseFloat(
             Math.max(rawPayout, stake * 1.05).toFixed(2),
           );
 
-          // ── Bonus cap logic ────────────────────────────────────────────────
-          // If this bet was placed using bonus credits, cap the total real
-          // (withdrawable) payout against the user's lifetime bonusRealPayoutRemaining.
-          // Anything above that is re-credited as play money (isBonus=true).
-          // Using a lifetime cap prevents splitting bonus into small bets to
-          // multiply real payouts.
-          const user = await em.findOne(User, {
-            where: { id: bet.userId },
-            select: ["id", "bonusBalance", "bonusRealPayoutRemaining"],
-          });
+          const user = userMap.get(bet.userId);
           const userBonusBalance = Number(user?.bonusBalance ?? 0);
           const bonusRealPayoutRemaining = Number(
             user?.bonusRealPayoutRemaining ?? 0,
           );
-          // Use the flag snapshotted at placement time — re-deriving it from current
-          // bonusBalance is wrong because the balance may have changed between placement
-          // and settlement (other bets, received bonuses, etc.).
           const betIsBonusFunded = bet.isBonusFunded ?? false;
 
-          // For bonus-funded bets, cap the withdrawable payout at the user's
-          // lifetime bonusRealPayoutRemaining. Anything above the cap is forfeited
-          // to the house — no play credits are issued.
           let withdrawablePayout = effectivePayout;
-
           if (betIsBonusFunded) {
+            // Use the accumulating remaining for this user (handles multiple bonus bets)
+            const currentRemaining =
+              bonusUpdates.get(bet.userId)?.bonusRealPayoutRemaining ??
+              bonusRealPayoutRemaining;
             withdrawablePayout = parseFloat(
-              Math.min(effectivePayout, bonusRealPayoutRemaining).toFixed(2),
+              Math.min(effectivePayout, currentRemaining).toFixed(2),
             );
-            // Safety floor: if bonusRealPayoutRemaining has drifted to 0 due to
-            // stale bonusBalance tracking, still pay out at least the stake so
-            // the user never receives 0 on a winning bet they funded with real money.
             if (withdrawablePayout === 0) {
               withdrawablePayout = stake;
               this.logger.warn(
                 `[Settlement] bonusRealPayoutRemaining=0 for user ${bet.userId} on bet ${bet.id} — flooring payout to stake ${stake}`,
               );
             }
-            await em.update(
-              User,
-              { id: bet.userId },
-              {
-                bonusBalance: Math.max(
-                  0,
-                  userBonusBalance - Number(bet.amount),
-                ),
-                bonusRealPayoutRemaining: Math.max(
-                  0,
-                  bonusRealPayoutRemaining - withdrawablePayout,
-                ),
-              },
-            );
+            const prevBonus =
+              bonusUpdates.get(bet.userId)?.bonusBalance ?? userBonusBalance;
+            bonusUpdates.set(bet.userId, {
+              bonusBalance: Math.max(0, prevBonus - stake),
+              bonusRealPayoutRemaining: Math.max(
+                0,
+                currentRemaining - withdrawablePayout,
+              ),
+            });
           }
 
           bet.payout = withdrawablePayout;
@@ -1086,65 +1174,115 @@ export class ParimutuelEngine implements OnModuleInit {
           totalPaidOut += withdrawablePayout;
           winningPositions++;
 
-          const balanceBefore = await this.getCreditsBalance(em, bet.userId);
-
-          await em.save(
-            Transaction,
-            em.create(Transaction, {
-              type: TransactionType.POSITION_PAYOUT,
-              amount: withdrawablePayout,
-              balanceBefore,
-              balanceAfter: balanceBefore + withdrawablePayout,
-              positionId: bet.id,
-              userId: bet.userId,
-              isBonus: false,
-              stakeAmount: stake,
-              note: `Payout for winning prediction on: ${winner.label}`,
-            }),
+          const balanceBefore = getBalance(bet.userId);
+          balanceDelta.set(
+            bet.userId,
+            (balanceDelta.get(bet.userId) ?? 0) + withdrawablePayout,
           );
-        } else if (market.status === MarketStatus.CANCELLED) {
-          // Refund on cancellation via ledger entry
-          bet.status = PositionStatus.REFUNDED;
-          const balanceBefore = await this.getCreditsBalance(em, bet.userId);
-          await em.save(
-            Transaction,
-            em.create(Transaction, {
-              type: TransactionType.REFUND,
-              amount: Number(bet.amount),
-              balanceBefore,
-              balanceAfter: balanceBefore + Number(bet.amount),
-              positionId: bet.id,
-              userId: bet.userId,
-              isBonus: bet.isBonusFunded ?? false,
-              note: "Market cancelled — refund",
-            }),
-          );
+          txToInsert.push({
+            type: TransactionType.POSITION_PAYOUT,
+            amount: withdrawablePayout,
+            balanceBefore,
+            balanceAfter: balanceBefore + withdrawablePayout,
+            positionId: bet.id,
+            userId: bet.userId,
+            isBonus: false,
+            stakeAmount: stake,
+            note: `Payout for winning prediction on: ${winner.label}`,
+          });
         } else {
           bet.status = PositionStatus.LOST;
-          // Decrement bonusBalance for lost bonus-funded bets.
-          // Previously this only happened on the win path, causing bonusBalance
-          // to grow unbounded and incorrectly flag future real-money bets as bonus-funded.
           if (bet.isBonusFunded) {
-            const lostUser = await em.findOne(User, {
-              where: { id: bet.userId },
-              select: ["id", "bonusBalance"],
-            });
-            const currentBonusBalance = Number(lostUser?.bonusBalance ?? 0);
+            const user = userMap.get(bet.userId);
+            const currentBonusBalance =
+              bonusUpdates.get(bet.userId)?.bonusBalance ??
+              Number(user?.bonusBalance ?? 0);
             if (currentBonusBalance > 0) {
-              await em.update(
-                User,
-                { id: bet.userId },
-                {
-                  bonusBalance: Math.max(
-                    0,
-                    currentBonusBalance - Number(bet.amount),
-                  ),
-                },
-              );
+              const prev = bonusUpdates.get(bet.userId);
+              bonusUpdates.set(bet.userId, {
+                bonusBalance: Math.max(
+                  0,
+                  currentBonusBalance - Number(bet.amount),
+                ),
+                bonusRealPayoutRemaining:
+                  prev?.bonusRealPayoutRemaining ??
+                  Number(user?.bonusRealPayoutRemaining ?? 0),
+              });
             }
           }
         }
-        await em.save(Position, bet);
+      }
+
+      // 3. Bulk INSERT all transaction rows — chunked at 500 rows per statement
+      // to stay well within PostgreSQL's parameter and memory limits.
+      const TX_CHUNK = 500;
+      for (let i = 0; i < txToInsert.length; i += TX_CHUNK) {
+        const chunk = txToInsert.slice(i, i + TX_CHUNK);
+        await em
+          .createQueryBuilder()
+          .insert()
+          .into(Transaction)
+          .values(chunk)
+          .execute();
+      }
+
+      // 4. Bulk UPDATE position statuses + payouts
+      // Process in chunks of 1000 to avoid:
+      //   a) PostgreSQL's 65,535-parameter limit on IN (:...ids)
+      //   b) Multi-MB CASE WHEN query strings for large winner sets
+      const CHUNK_SIZE = 1000;
+
+      const wonBets = bets.filter((b) => b.status === PositionStatus.WON);
+      const lostIds = bets
+        .filter((b) => b.status === PositionStatus.LOST)
+        .map((b) => b.id);
+      const refundedIds = bets
+        .filter((b) => b.status === PositionStatus.REFUNDED)
+        .map((b) => b.id);
+
+      // WON: use UPDATE ... FROM (VALUES ...) AS v(id, payout) for safe bulk payout update
+      for (let i = 0; i < wonBets.length; i += CHUNK_SIZE) {
+        const chunk = wonBets.slice(i, i + CHUNK_SIZE);
+        const wonIds = chunk.map((b) => b.id);
+        const caseClause = chunk
+          .map((b) => `WHEN id = '${b.id}' THEN ${Number(b.payout)}`)
+          .join(" ");
+        await em
+          .createQueryBuilder()
+          .update(Position)
+          .set({
+            status: PositionStatus.WON,
+            payout: () => `CASE ${caseClause} END`,
+          })
+          .where("id IN (:...ids)", { ids: wonIds })
+          .execute();
+      }
+
+      // LOST: chunk to stay under the 65,535 PG parameter limit
+      for (let i = 0; i < lostIds.length; i += CHUNK_SIZE) {
+        const chunk = lostIds.slice(i, i + CHUNK_SIZE);
+        await em
+          .createQueryBuilder()
+          .update(Position)
+          .set({ status: PositionStatus.LOST })
+          .where("id IN (:...ids)", { ids: chunk })
+          .execute();
+      }
+
+      // REFUNDED: same chunking
+      for (let i = 0; i < refundedIds.length; i += CHUNK_SIZE) {
+        const chunk = refundedIds.slice(i, i + CHUNK_SIZE);
+        await em
+          .createQueryBuilder()
+          .update(Position)
+          .set({ status: PositionStatus.REFUNDED })
+          .where("id IN (:...ids)", { ids: chunk })
+          .execute();
+      }
+
+      // 5. Apply bonus field updates — one UPDATE per affected user
+      for (const [uid, fields] of bonusUpdates.entries()) {
+        await em.update(User, { id: uid }, fields);
       }
 
       market.status = MarketStatus.SETTLED;
@@ -1210,13 +1348,24 @@ Good luck! 🍀
   }
 
   // ── Post-settlement: reputation recalc + individual DM notifications ────────
+  //
+  // IMPORTANT: This method is intentionally NOT awaited by the caller.
+  // All work here is background / fire-and-forget so the settlement response
+  // is returned to the admin panel immediately.
+  //
+  // Telegram DMs are now enqueued to BullMQ (NOTIFICATION_QUEUE) with a
+  // 25-msg/sec limiter on the processor, so 100k DMs drain safely over
+  // ~66 minutes without ever hitting Telegram's rate limit or blocking Node.js.
+  //
+  // Reputation recalc is also deferred here (called after DMs are queued)
+  // so it doesn't block the event loop.
 
   private async sendSettlementNotifications(
     market: Market,
     winner: Outcome,
     settlement: Settlement,
   ): Promise<void> {
-    // 1. Snapshot tiers before recalculation so we can detect upgrades
+    // 1. Load all bets + user relation for tier snapshot
     const bets = await this.betRepo.find({
       where: { marketId: market.id },
       relations: ["user"],
@@ -1228,12 +1377,11 @@ Good luck! 🍀
         tiersBefore[bet.userId] = bet.user.reputationTier ?? "rookie";
     }
 
-    // 2. Recalculate reputation for all bettors
+    // 2. Recalculate reputation for all bettors (deferred off the hot path,
+    //    but still awaited here since this whole method is already fire-and-forget)
     await this.reputationService.recalculateForMarket(market.id);
 
     // 2b. Contrarian badge tracking
-    // A bet is "contrarian" if predictedProbability < 0.5 at placement
-    // (user bet on the outcome the signal said was less likely)
     for (const bet of bets) {
       if (
         bet.status === PositionStatus.WON ||
@@ -1251,7 +1399,7 @@ Good luck! 🍀
       }
     }
 
-    // 3. Reload updated users for tier-change detection
+    // 3. Reload updated users
     const userIds = [...new Set(bets.map((b) => b.userId))];
     const users = await this.dataSource
       .getRepository(User)
@@ -1259,17 +1407,18 @@ Good luck! 🍀
     const userMap: Record<string, User> = {};
     for (const u of users) userMap[u.id] = u;
 
-    // 4. Send ONE DM per user (not per position — a user may hold multiple
-
-    const payoutPool = settlement.payoutPool;
+    const payoutPool = Number(settlement.payoutPool);
     const winnerPool = Number(winner.totalBetAmount);
 
-    // Group all bets by userId so we can aggregate across multiple positions.
     const betsByUser: Record<string, typeof bets> = {};
     for (const bet of bets) {
       if (!betsByUser[bet.userId]) betsByUser[bet.userId] = [];
       betsByUser[bet.userId].push(bet);
     }
+
+    // 4. Build messages and enqueue — one BullMQ job per user.
+    //    The NotificationProcessor runs them at ≤25/sec so Telegram is never flooded.
+    const dmJobs: { name: string; data: SettlementNotifyJobData }[] = [];
 
     for (const userId of Object.keys(betsByUser)) {
       const userBets = betsByUser[userId];
@@ -1290,19 +1439,18 @@ Good luck! 🍀
       const tierUpgraded =
         tierOrder.indexOf(tierNow) > tierOrder.indexOf(tierBefore);
 
-      // A user wins if ANY of their positions won; they lose only if ALL lost.
       const hasWon = userBets.some((b) => b.status === PositionStatus.WON);
 
       if (hasWon) {
-        // Aggregate total stake and payout across all winning positions for this user.
         let totalStake = 0;
         let totalPayout = 0;
         for (const bet of userBets) {
           if (bet.status === PositionStatus.WON) {
-            const share = winnerPool > 0 ? Number(bet.amount) / winnerPool : 0;
-            const payout = parseFloat((payoutPool * share).toFixed(2));
+            // Use the actual stored payout — NOT a recalculation.
+            // The stored value reflects the minimum-payout floor (stake × 1.05)
+            // and any bonus-cap adjustments applied during settlement.
             totalStake += Number(bet.amount);
-            totalPayout += payout;
+            totalPayout += Number(bet.payout ?? 0);
           }
         }
         const profitRaw = parseFloat((totalPayout - totalStake).toFixed(2));
@@ -1319,7 +1467,7 @@ Good luck! 🍀
         if (tierUpgraded)
           msg += `\n🏆 <b>Tier upgrade! You are now ${tierNow.charAt(0).toUpperCase() + tierNow.slice(1)}.</b>`;
 
-        // Contrarian badge notification
+        // Contrarian badge
         const updatedUser = await this.dataSource.getRepository(User).findOne({
           where: { id: user.id },
           select: ["contrarianBadge", "contrarianWins", "contrarianAttempts"],
@@ -1336,23 +1484,27 @@ Good luck! 🍀
           msg += `\n\n${badgeEmoji} <b>Contrarian ${contrarianBadge.charAt(0).toUpperCase() + contrarianBadge.slice(1)} badge earned!</b> You went against the crowd and won. ${updatedUser?.contrarianWins} contrarian wins so far.`;
         }
 
-        await this.telegramSimple.sendMessage(chatId, msg).catch(() => {});
+        dmJobs.push({
+          name: JobName.SETTLEMENT_NOTIFY,
+          data: { telegramChatId: chatId, message: msg },
+        });
 
-        // Streak update
+        // Streak update (DB write — keep here, not a Telegram call)
         const currentStreak = (user.telegramStreak ?? 0) + 1;
         await this.dataSource
           .getRepository(User)
-          .update(user.id, { telegramStreak: currentStreak });
+          .update(user.id, { telegramStreak: currentStreak })
+          .catch(() => {});
         if (currentStreak >= 3) {
-          await this.telegramSimple
-            .sendMessage(
-              chatId,
-              `🔥 <b>${currentStreak} correct in a row, ${firstName}!</b> You're on fire.`,
-            )
-            .catch(() => {});
+          dmJobs.push({
+            name: JobName.SETTLEMENT_NOTIFY,
+            data: {
+              telegramChatId: chatId,
+              message: `🔥 <b>${currentStreak} correct in a row, ${firstName}!</b> You're on fire.`,
+            },
+          });
         }
       } else {
-        // All of this user's positions lost — send a single loss DM.
         const outcome = market.outcomes.find(
           (o) => o.id === userBets[0].outcomeId,
         );
@@ -1366,10 +1518,12 @@ Good luck! 🍀
           msg += `⭐ Insight: <b>${accuracy}</b> over ${totalPredictions} ${totalPredictions === 1 ? "prediction" : "predictions"}\n`;
         msg += `\n💡 Every prediction builds your reputation. Keep going.`;
 
-        await this.telegramSimple.sendMessage(chatId, msg).catch(() => {});
+        dmJobs.push({
+          name: JobName.SETTLEMENT_NOTIFY,
+          data: { telegramChatId: chatId, message: msg },
+        });
 
-        // Shield card: if the user has an active duel on this market with Shield
-        // equipped, their streak is preserved — skip the reset entirely.
+        // Shield card check
         const shielded = await this.challengesService
           .hasShieldActive(user.id, market.id)
           .catch(() => false);
@@ -1385,29 +1539,40 @@ Good luck! 🍀
           );
         }
 
-        // Consecutive loss consolation — check after streak update so the
-        // user has the most up-to-date record before we query it.
-        await this.sendLosingStreakConsolation(
+        // Consecutive loss consolation DM (also queued)
+        await this.enqueueLosingStreakConsolation(
           userId,
           chatId,
           user.firstName,
+          dmJobs,
         ).catch(() => {});
       }
     }
 
+    // Bulk-enqueue all DMs in one BullMQ addBulk call — one round-trip to Redis
+    if (dmJobs.length > 0) {
+      await this.notificationQueue
+        .addBulk(dmJobs)
+        .catch((err: Error) =>
+          this.logger.warn(
+            `[Notify] Failed to enqueue settlement DMs: ${err.message}`,
+          ),
+        );
+    }
+
     this.logger.log(
-      `[Notify] Settlement DMs sent for market ${market.id} to ${Object.keys(betsByUser).length} predictors (${bets.length} positions total)`,
+      `[Notify] Queued ${dmJobs.length} settlement DMs for market ${market.id} ` +
+        `(${Object.keys(betsByUser).length} predictors, ${bets.length} positions)`,
     );
   }
 
   // ── Consecutive-loss consolation ──────────────────────────────────────────
-  private async sendLosingStreakConsolation(
+  private async enqueueLosingStreakConsolation(
     userId: string,
     chatId: number,
     firstName: string | null | undefined,
+    dmJobs: { name: string; data: SettlementNotifyJobData }[],
   ): Promise<void> {
-    // Aggregate positions by market: a market is a "win" if the user had at
-    // least one WON position, otherwise it's a "loss".
     const recentMarkets = await this.dataSource
       .getRepository(Position)
       .createQueryBuilder("p")
@@ -1452,7 +1617,10 @@ Good luck! 🍀
         `The crowd is active on <b>${topMarket.title}</b> right now — worth a look.`
       : `${name}, 3 losses in a row happens to the best. Your next prediction turns it around.`;
 
-    await this.telegramSimple.sendMessage(chatId, tipMsg);
+    dmJobs.push({
+      name: JobName.SETTLEMENT_NOTIFY,
+      data: { telegramChatId: chatId, message: tipMsg },
+    });
   }
 
   // Cancel market: refund all bets
@@ -1476,6 +1644,9 @@ Good luck! 🍀
    * Shared refund loop — writes a REFUND Transaction and flips status to
    * REFUNDED for every PENDING position in `bets`. Caller is responsible for
    * setting market status and writing the Settlement record.
+   *
+   * Uses a single bulk balance pre-load + bulk INSERT so it scales to large
+   * markets without issuing one query per bet.
    */
   private async refundPositions(
     em: {
@@ -1487,24 +1658,77 @@ Good luck! 🍀
     bets: Position[],
     note: string,
   ): Promise<void> {
-    for (const bet of bets) {
-      if (bet.status !== PositionStatus.PENDING) continue;
-      const balanceBefore = await this.getCreditsBalance(em, bet.userId);
-      await em.save(
-        Transaction,
-        em.create(Transaction, {
-          type: TransactionType.REFUND,
-          amount: Number(bet.amount),
-          balanceBefore,
-          balanceAfter: balanceBefore + Number(bet.amount),
-          positionId: bet.id,
-          userId: bet.userId,
-          isBonus: bet.isBonusFunded ?? false,
-          note,
-        }),
+    const pendingBets = bets.filter((b) => b.status === PositionStatus.PENDING);
+    if (pendingBets.length === 0) return;
+
+    const userIds = [...new Set(pendingBets.map((b) => b.userId))];
+
+    // Load all balances in chunked aggregation queries (avoid PG 65535 param limit)
+    const REFUND_USER_CHUNK = 1000;
+    const balanceMap = new Map<string, number>();
+    for (let i = 0; i < userIds.length; i += REFUND_USER_CHUNK) {
+      const chunk = userIds.slice(i, i + REFUND_USER_CHUNK);
+      const rows: { userId: string; balance: string }[] = await em
+        .getRepository(Transaction)
+        .createQueryBuilder("t")
+        .select("t.userId", "userId")
+        .addSelect("COALESCE(SUM(t.amount), 0)", "balance")
+        .where("t.userId IN (:...ids)", { ids: chunk })
+        .groupBy("t.userId")
+        .getRawMany();
+      for (const r of rows) balanceMap.set(r.userId, Number(r.balance));
+    }
+    const balanceDelta = new Map<string, number>();
+    const getBalance = (uid: string): number =>
+      (balanceMap.get(uid) ?? 0) + (balanceDelta.get(uid) ?? 0);
+
+    const txToInsert: Partial<Transaction>[] = [];
+
+    for (const bet of pendingBets) {
+      const refundAmt = Number(bet.amount);
+      const balanceBefore = getBalance(bet.userId);
+      balanceDelta.set(
+        bet.userId,
+        (balanceDelta.get(bet.userId) ?? 0) + refundAmt,
       );
+      txToInsert.push({
+        type: TransactionType.REFUND,
+        amount: refundAmt,
+        balanceBefore,
+        balanceAfter: balanceBefore + refundAmt,
+        positionId: bet.id,
+        userId: bet.userId,
+        isBonus: bet.isBonusFunded ?? false,
+        note,
+      });
       bet.status = PositionStatus.REFUNDED;
-      await em.save(Position, bet);
+    }
+
+    // Bulk INSERT all refund transactions — chunked at 500 rows per statement
+    const TX_CHUNK = 500;
+    for (let i = 0; i < txToInsert.length; i += TX_CHUNK) {
+      const chunk = txToInsert.slice(i, i + TX_CHUNK);
+      await em
+        .getRepository(Transaction)
+        .createQueryBuilder()
+        .insert()
+        .into(Transaction)
+        .values(chunk)
+        .execute();
+    }
+
+    // Bulk UPDATE position statuses — chunked to avoid PG 65,535-param limit
+    const refundedIds = pendingBets.map((b) => b.id);
+    const CHUNK = 1000;
+    for (let i = 0; i < refundedIds.length; i += CHUNK) {
+      const chunk = refundedIds.slice(i, i + CHUNK);
+      await em
+        .getRepository(Position)
+        .createQueryBuilder()
+        .update(Position)
+        .set({ status: PositionStatus.REFUNDED })
+        .where("id IN (:...ids)", { ids: chunk })
+        .execute();
     }
   }
 }

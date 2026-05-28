@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import Redis from "ioredis";
 
@@ -11,9 +16,14 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
 
   onModuleInit() {
     const url = this.config.get<string>("REDIS_URL", "redis://localhost:6379");
-    this.client = new Redis(url, { maxRetriesPerRequest: 3, lazyConnect: true });
+    this.client = new Redis(url, {
+      maxRetriesPerRequest: 3,
+      lazyConnect: true,
+    });
     this.client.on("connect", () => this.logger.log("Redis connected"));
-    this.client.on("error", (err) => this.logger.error(`Redis error: ${err.message}`));
+    this.client.on("error", (err) =>
+      this.logger.error(`Redis error: ${err.message}`),
+    );
   }
 
   onModuleDestroy() {
@@ -114,6 +124,20 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       `;
       await this.client.eval(script, 1, `oro:lock:${resource}`, token);
     } catch {}
+  }
+
+  /**
+   * Returns a Redis pipeline (multi-exec batch).
+   * Use this to send many commands in a single round-trip instead of
+   * firing them individually (e.g. busting 100k balance cache keys).
+   *
+   * Usage:
+   *   const pipe = this.redis.pipeline();
+   *   for (const key of keys) pipe.del(key);
+   *   await pipe.exec();
+   */
+  pipeline() {
+    return this.client.pipeline();
   }
 
   /**

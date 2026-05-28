@@ -9,10 +9,16 @@ import {
   BetResultJobData,
   StreakMilestoneJobData,
   DailyCreditJobData,
+  SettlementNotifyJobData,
 } from "./notification.queue";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 
-@Processor(NOTIFICATION_QUEUE)
+@Processor(NOTIFICATION_QUEUE, {
+  // Telegram allows ~30 msg/sec globally per bot.
+  // Capping at 25 jobs/sec here keeps us safely under the limit
+  // even when 100k settlement DMs are queued up.
+  limiter: { max: 25, duration: 1000 },
+})
 export class NotificationProcessor extends WorkerHost {
   private readonly logger = new Logger(NotificationProcessor.name);
 
@@ -52,8 +58,15 @@ export class NotificationProcessor extends WorkerHost {
         this.logger.log(
           `[bet.result] user=${data.userId} status=${data.status} payout=${data.payout ?? 0}`,
         );
-        const icon = data.status === "WON" ? "You won" : data.status === "LOST" ? "Better luck next time" : "Refunded";
-        const payoutLine = data.payout ? `\nPayout: <b>Nu ${data.payout}</b>` : "";
+        const icon =
+          data.status === "WON"
+            ? "You won"
+            : data.status === "LOST"
+              ? "Better luck next time"
+              : "Refunded";
+        const payoutLine = data.payout
+          ? `\nPayout: <b>Nu ${data.payout}</b>`
+          : "";
         await this.telegram.sendMessage(
           Number(data.userId),
           `${icon} — <b>${data.marketTitle}</b> (${data.outcomeLabel})${payoutLine}`,
@@ -80,11 +93,22 @@ export class NotificationProcessor extends WorkerHost {
 
       case JobName.DAILY_CREDIT: {
         const data = job.data as DailyCreditJobData;
-        this.logger.log(`[daily.credit] user=${data.userId} credit=${data.creditAmount}`);
+        this.logger.log(
+          `[daily.credit] user=${data.userId} credit=${data.creditAmount}`,
+        );
         await this.telegram.sendMessage(
           Number(data.telegramId),
           `Your daily free credit of <b>Nu ${data.creditAmount}</b> has been added. Open Oro to predict!`,
         );
+        break;
+      }
+
+      case JobName.SETTLEMENT_NOTIFY: {
+        // Rate-limited 1-per-job: BullMQ limiter on the queue keeps this at ≤25/s
+        const data = job.data as SettlementNotifyJobData;
+        await this.telegram
+          .sendMessage(data.telegramChatId, data.message)
+          .catch(() => {});
         break;
       }
 

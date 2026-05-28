@@ -1,6 +1,7 @@
 import { Module, forwardRef } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
 import { TypeOrmModule } from "@nestjs/typeorm";
+import { BullModule } from "@nestjs/bullmq";
 import { Market } from "../entities/market.entity";
 import { Outcome } from "../entities/outcome.entity";
 import { Position } from "../entities/position.entity";
@@ -23,6 +24,7 @@ import { PaymentModule } from "../payment/payment.module";
 import { UsersModule } from "../users/users.module";
 import { ChallengesModule } from "../challenges/challenges.module";
 import { RedisModule } from "../redis/redis.module";
+import { NOTIFICATION_QUEUE } from "../jobs/notification.queue";
 
 @Module({
   imports: [
@@ -38,6 +40,7 @@ import { RedisModule } from "../redis/redis.module";
       Dispute,
       RevenueDistribution,
     ]),
+    BullModule.registerQueue({ name: NOTIFICATION_QUEUE }),
     TelegramModule,
     PaymentModule,
     UsersModule,

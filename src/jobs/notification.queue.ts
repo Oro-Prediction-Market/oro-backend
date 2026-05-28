@@ -6,6 +6,7 @@ export const JobName = {
   BET_RESULT: "bet.result",
   STREAK_MILESTONE: "streak.milestone",
   DAILY_CREDIT: "daily.credit",
+  SETTLEMENT_NOTIFY: "settlement.notify",
 } as const;
 
 export interface PaymentSuccessJobData {
@@ -42,4 +43,13 @@ export interface DailyCreditJobData {
   userId: string;
   telegramId: string;
   creditAmount: number;
+}
+
+/**
+ * One job per user per settled market.
+ * The processor sends the DM at ≤25/s so we never hit Telegram's rate limit.
+ */
+export interface SettlementNotifyJobData {
+  telegramChatId: number;
+  message: string;
 }
