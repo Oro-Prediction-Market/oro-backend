@@ -77,6 +77,9 @@ export class Market {
   })
   category: MarketCategory;
 
+  @Column({ type: "varchar", nullable: true })
+  subcategory: string | null;
+
   @Column({ type: "text", nullable: true })
   resolutionCriteria: string;
 

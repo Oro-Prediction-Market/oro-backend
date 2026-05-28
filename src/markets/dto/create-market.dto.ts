@@ -80,5 +80,10 @@ export class CreateMarketDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  subcategory?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
   mechanism?: string;
 }

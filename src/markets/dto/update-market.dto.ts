@@ -13,6 +13,7 @@ export class UpdateMarketDto {
   @ApiPropertyOptional() @IsOptional() @IsString() title?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() description?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() category?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() subcategory?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() imageUrl?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() imageUrlAlt?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() resolutionCriteria?: string;

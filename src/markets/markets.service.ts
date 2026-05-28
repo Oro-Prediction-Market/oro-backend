@@ -150,6 +150,7 @@ export class MarketsService {
         externalSource: dto.externalSource ?? null,
         externalMarketType: dto.externalMarketType ?? null,
         settlementSource: dto.settlementSource ?? null,
+        subcategory: dto.subcategory ?? null,
       });
 
       const saved = await this.marketRepo.save(market);
@@ -274,6 +275,8 @@ export class MarketsService {
       market.resolutionCriteria = dto.resolutionCriteria;
     if (dto.settlementSource !== undefined)
       market.settlementSource = dto.settlementSource ?? null;
+    if (dto.subcategory !== undefined)
+      market.subcategory = dto.subcategory || null;
     if (dto.opensAt) market.opensAt = new Date(dto.opensAt);
     if (dto.closesAt) market.closesAt = new Date(dto.closesAt);
     if (dto.houseEdgePct !== undefined) market.houseEdgePct = dto.houseEdgePct;
@@ -797,7 +800,7 @@ export class MarketsService {
       market.status !== MarketStatus.UPCOMING
     ) {
       throw new ForbiddenException(
-        'Cannot delete a market that has bets placed on it.',
+        "Cannot delete a market that has bets placed on it.",
       );
     }
 
@@ -811,8 +814,8 @@ export class MarketsService {
 
   async deleteZeroPool(): Promise<number> {
     const emptyMarkets = await this.marketRepo
-      .createQueryBuilder('m')
-      .where('m.totalPool = :zero OR m.totalPool IS NULL', { zero: 0 })
+      .createQueryBuilder("m")
+      .where("m.totalPool = :zero OR m.totalPool IS NULL", { zero: 0 })
       .getMany();
 
     if (emptyMarkets.length === 0) return 0;
@@ -830,10 +833,10 @@ export class MarketsService {
 
   async getZeroPoolSettled(): Promise<Market[]> {
     return this.marketRepo
-      .createQueryBuilder('m')
-      .where('m.status = :status', { status: MarketStatus.SETTLED })
-      .andWhere('(m.totalPool = :zero OR m.totalPool IS NULL)', { zero: 0 })
-      .orderBy('m.createdAt', 'DESC')
+      .createQueryBuilder("m")
+      .where("m.status = :status", { status: MarketStatus.SETTLED })
+      .andWhere("(m.totalPool = :zero OR m.totalPool IS NULL)", { zero: 0 })
+      .orderBy("m.createdAt", "DESC")
       .getMany();
   }
 
