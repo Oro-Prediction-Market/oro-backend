@@ -1122,21 +1122,51 @@ export class AdminController {
 
     const netExternalFlow = totalDeposits - totalWithdrawals;
 
-    // bonusFundedRealPayouts: bonus bets (isBonus=true bet_placed) that LOST.
-    // When a bonus bet loses, its amount flows to real winners as real payout.
-    // This is the correct measure of "bonus money that funded real payouts" —
-    // NOT the total real payouts from markets that had any bonus bet (which
-    // massively over-counts by including real-vs-real bet redistributions).
+    // bonusFundedRealPayouts: real money that entered wallets without a backing
+    // external deposit, due to bonus bets. Two sources:
+    //
+    // 1. LOSING bonus bets (isBonus=true) → their stake entered the pool and
+    //    was distributed to real winners as real (isBonus=false) payouts.
+    //    Query: SUM of lost bonus-tagged bet_placed amounts.
+    //
+    // 2. WINNING bonus bets → the bettor's own payout is tagged isBonus=false
+    //    (the system does not propagate the bonus tag to payouts), so those
+    //    payouts are real wallet credit with no corresponding real deposit.
+    //    Query: SUM of bet_payout isBonus=false for positions that had a
+    //    bonus bet_placed and ended up winning.
+    //
+    // Both parts represent unexplained real credits and must be added to expected.
     const bonusFundedRealPayoutsRow = await em
       .getRepository(Transaction)
       .query(
         `
-      SELECT COALESCE(SUM(ABS(bt.amount)), 0)::float AS total
-      FROM transactions bt
-      INNER JOIN positions p ON p.id = bt."positionId"
-      WHERE bt.type = 'bet_placed'
-        AND bt."isBonus" = true
-        AND p.status = 'lost'
+      SELECT
+        -- Part 1: lost bonus bets → funded real winners
+        COALESCE((
+          SELECT SUM(ABS(bt.amount))
+          FROM transactions bt
+          INNER JOIN positions p ON p.id = bt."positionId"
+          WHERE bt.type = 'bet_placed'
+            AND bt."isBonus" = true
+            AND p.status = 'lost'
+        ), 0)
+        +
+        -- Part 2: winning bonus bets → their own real-tagged payout
+        COALESCE((
+          SELECT SUM(pt.amount)
+          FROM transactions pt
+          INNER JOIN positions p ON p.id = pt."positionId"
+          WHERE pt.type = 'bet_payout'
+            AND pt."isBonus" = false
+            AND p.status = 'won'
+            AND EXISTS (
+              SELECT 1 FROM transactions bt2
+              WHERE bt2."positionId" = p.id
+                AND bt2.type = 'bet_placed'
+                AND bt2."isBonus" = true
+            )
+        ), 0)
+      AS total
     `,
       )
       .then((r: any[]) => parseFloat(r[0].total))
