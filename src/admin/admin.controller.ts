@@ -1082,6 +1082,25 @@ export class AdminController {
       .where("pos.status = :status", { status: "pending" })
       .getRawOne();
 
+    // Real-money portion of pending bets only (isBonus=false).
+    // positions.amount includes bonus-funded bets, but totalRealBalance only
+    // deducts the isBonus=false bet_placed transactions. Using the full
+    // positions.amount over-subtracts by the bonus-funded pending portion.
+    const pendingBetsRealRow = await em
+      .getRepository(Transaction)
+      .query(
+        `
+      SELECT COALESCE(SUM(ABS(bt.amount)), 0)::float AS total
+      FROM transactions bt
+      INNER JOIN positions p ON p.id = bt."positionId"
+      WHERE bt.type = 'bet_placed'
+        AND bt."isBonus" = false
+        AND p.status = 'pending'
+    `,
+      )
+      .then((r: any[]) => parseFloat(r[0].total))
+      .catch(() => 0);
+
     const totalDeposits = Number(depositRow.total);
     const depositCount = Number(depositRow.count);
     const totalWithdrawals = Number(withdrawalRow.total);
@@ -1098,6 +1117,8 @@ export class AdminController {
     const breakage = payoutPool - totalPaidOut;
     const pendingBetsAmount = Number(pendingBetsRow.total);
     const pendingBetsCount = Number(pendingBetsRow.count);
+    // Real-money pending bets (used in expected formula — matches totalRealBalance deduction)
+    const pendingBetsRealAmount = pendingBetsRealRow;
 
     const netExternalFlow = totalDeposits - totalWithdrawals;
 
@@ -1184,7 +1205,7 @@ export class AdminController {
       netExternalFlow -
       houseEarnings -
       breakage -
-      pendingBetsAmount +
+      pendingBetsRealAmount +
       bonusFundedRealPayoutsRow +
       nonBonusFreeCreditsRow -
       bonusSpentAsReal;
@@ -1216,6 +1237,7 @@ export class AdminController {
       activeBets: {
         pendingCount: pendingBetsCount,
         pendingAmount: pendingBetsAmount,
+        pendingRealAmount: pendingBetsRealAmount,
       },
       reconciliation: {
         netExternalFlow,
