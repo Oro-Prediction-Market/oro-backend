@@ -67,13 +67,12 @@ export class RevenueDistributionService {
       trimmed,
     );
     this.logger.log(`[Revenue] Destination account saved: ${trimmed}`);
-    // Update all PENDING distributions that have no account set
+    // Update ALL PENDING distributions to the new account
     this.distributionRepo
       .createQueryBuilder()
       .update()
       .set({ publicAccountNo: trimmed })
       .where("status = :s", { s: DistributionStatus.PENDING })
-      .andWhere(`("publicAccountNo" IS NULL OR "publicAccountNo" = '')`)
       .execute()
       .then((r) => {
         if (r.affected && r.affected > 0) {
