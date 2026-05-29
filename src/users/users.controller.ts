@@ -499,7 +499,9 @@ export class UsersController {
     const myId: string | null = req.user?.userId ?? null;
 
     if (period === "week") {
-      const weekStart = new Date(Date.now() - 7 * 24 * 3600 * 1000);
+      const monthStart = new Date();
+      monthStart.setUTCDate(1);
+      monthStart.setUTCHours(0, 0, 0, 0);
 
       const weeklyRows = await this.betRepo
         .createQueryBuilder("p")
@@ -519,7 +521,7 @@ export class UsersController {
         )
         .addSelect("COALESCE(SUM(p.amount), 0)", "weeklyBetAmount")
         .innerJoin("p.user", "u")
-        .where("p.placedAt >= :weekStart", { weekStart })
+        .where("p.placedAt >= :monthStart", { monthStart })
         .groupBy("u.id")
         .orderBy('"weeklyWins"', "DESC")
         .addOrderBy('"weeklyPredictions"', "DESC")
@@ -552,7 +554,7 @@ export class UsersController {
       const totalRankedRaw = await this.betRepo
         .createQueryBuilder("p")
         .innerJoin("p.user", "u")
-        .where("p.placedAt >= :weekStart", { weekStart })
+        .where("p.placedAt >= :monthStart", { monthStart })
         .select("COUNT(DISTINCT u.id)", "cnt")
         .getRawOne();
       const totalRanked = Number(totalRankedRaw?.cnt ?? 0);
