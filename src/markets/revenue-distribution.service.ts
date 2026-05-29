@@ -7,6 +7,7 @@ import {
   DistributionStatus,
 } from "../entities/revenue-distribution.entity";
 import { DKGatewayService } from "../payment/services/dk-gateway/dk-gateway.service";
+import { RedisService } from "../redis/redis.service";
 
 /**
  * Revenue Distribution Service
@@ -23,24 +24,30 @@ import { DKGatewayService } from "../payment/services/dk-gateway/dk-gateway.serv
 @Injectable()
 export class RevenueDistributionService {
   private readonly logger = new Logger(RevenueDistributionService.name);
+  private static readonly REDIS_KEY =
+    "oro:settings:revenue_destination_account";
 
   constructor(
     @InjectRepository(RevenueDistribution)
     private distributionRepo: Repository<RevenueDistribution>,
     private configService: ConfigService,
     private dkGateway: DKGatewayService,
+    private redisService: RedisService,
   ) {}
 
   private get publicAccountNo(): string {
     return this.configService.get<string>("DK_PUBLIC_ACCOUNT_NO") || "";
   }
 
-  /** Admin-configurable destination account — stored in config or overridden at runtime */
-  private overriddenAccountNo: string | null = null;
-
-  getDestinationAccount(): { accountNumber: string; source: string } {
-    if (this.overriddenAccountNo) {
-      return { accountNumber: this.overriddenAccountNo, source: "admin" };
+  async getDestinationAccount(): Promise<{
+    accountNumber: string;
+    source: string;
+  }> {
+    const stored = await this.redisService.get(
+      RevenueDistributionService.REDIS_KEY,
+    );
+    if (stored) {
+      return { accountNumber: stored, source: "admin" };
     }
     const envVal = this.configService.get<string>("DK_PUBLIC_ACCOUNT_NO");
     if (envVal) {
@@ -49,19 +56,22 @@ export class RevenueDistributionService {
     return { accountNumber: "", source: "none" };
   }
 
-  setDestinationAccount(accountNumber: string): {
-    accountNumber: string;
-    source: string;
-  } {
-    this.overriddenAccountNo = accountNumber.trim();
-    this.logger.log(
-      `[Revenue] Destination account set by admin: ${this.overriddenAccountNo}`,
+  async setDestinationAccount(
+    accountNumber: string,
+  ): Promise<{ accountNumber: string; source: string }> {
+    const trimmed = accountNumber.trim();
+    // Persist to Redis with 10-year TTL so it survives pod restarts
+    await this.redisService.setEx(
+      RevenueDistributionService.REDIS_KEY,
+      60 * 60 * 24 * 365 * 10,
+      trimmed,
     );
+    this.logger.log(`[Revenue] Destination account saved: ${trimmed}`);
     // Update all PENDING distributions that have no account set
     this.distributionRepo
       .createQueryBuilder()
       .update()
-      .set({ publicAccountNo: this.overriddenAccountNo })
+      .set({ publicAccountNo: trimmed })
       .where("status = :s", { s: DistributionStatus.PENDING })
       .andWhere(`("publicAccountNo" IS NULL OR "publicAccountNo" = '')`)
       .execute()
@@ -72,11 +82,14 @@ export class RevenueDistributionService {
           );
         }
       });
-    return { accountNumber: this.overriddenAccountNo, source: "admin" };
+    return { accountNumber: trimmed, source: "admin" };
   }
 
-  private getActiveAccountNo(): string {
-    return this.overriddenAccountNo || this.publicAccountNo;
+  private async getActiveAccountNo(): Promise<string> {
+    const stored = await this.redisService.get(
+      RevenueDistributionService.REDIS_KEY,
+    );
+    return stored || this.publicAccountNo;
   }
 
   /**
@@ -108,7 +121,7 @@ export class RevenueDistributionService {
       amount: houseAmount,
       houseEdgePct,
       totalPool,
-      publicAccountNo: this.getActiveAccountNo(),
+      publicAccountNo: await this.getActiveAccountNo(),
       status: DistributionStatus.PENDING,
     });
 
@@ -204,7 +217,8 @@ export class RevenueDistributionService {
 
     // Sum all pending amounts into one transfer
     const totalAmount = pending.reduce((sum, d) => sum + Number(d.amount), 0);
-    const accountNo = pending[0].publicAccountNo || this.getActiveAccountNo();
+    const accountNo =
+      pending[0].publicAccountNo || (await this.getActiveAccountNo());
 
     if (!accountNo) {
       return {
@@ -281,7 +295,7 @@ export class RevenueDistributionService {
     accountName: string;
     balance: string | null;
   }> {
-    const accountNo = this.getActiveAccountNo();
+    const accountNo = await this.getActiveAccountNo();
     if (!accountNo) {
       return { accountNumber: "", accountName: "", balance: null };
     }
