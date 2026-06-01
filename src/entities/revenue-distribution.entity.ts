@@ -27,12 +27,17 @@ export class RevenueDistribution {
   id: string;
 
   @Index()
-  @Column({ type: "uuid" })
-  marketId: string;
+  @Column({ type: "uuid", nullable: true })
+  marketId: string | null;
 
   @Index()
-  @Column({ type: "uuid" })
-  settlementId: string;
+  @Column({ type: "uuid", nullable: true })
+  settlementId: string | null;
+
+  /** Set for duel (challenge) distributions; null for market distributions */
+  @Index()
+  @Column({ type: "uuid", nullable: true })
+  challengeId: string | null;
 
   /** House edge amount to transfer (Nu) */
   @Column({ type: "decimal", precision: 18, scale: 2 })

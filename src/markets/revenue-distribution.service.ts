@@ -132,6 +132,46 @@ export class RevenueDistributionService {
   }
 
   /**
+   * Record a pending revenue distribution after a duel settles.
+   * Called from ChallengesService after crediting the winner.
+   */
+  async recordDuelDistribution(
+    challengeId: string,
+    platformCut: number,
+    totalPot: number,
+    feePct: number,
+  ): Promise<RevenueDistribution | null> {
+    if (platformCut <= 0) return null;
+
+    const existing = await this.distributionRepo.findOne({
+      where: { challengeId },
+    });
+    if (existing) {
+      this.logger.warn(
+        `Distribution already exists for challenge ${challengeId}`,
+      );
+      return existing;
+    }
+
+    const dist = this.distributionRepo.create({
+      challengeId,
+      marketId: null,
+      settlementId: null,
+      amount: platformCut,
+      houseEdgePct: feePct,
+      totalPool: totalPot,
+      publicAccountNo: await this.getActiveAccountNo(),
+      status: DistributionStatus.PENDING,
+    });
+
+    const saved = await this.distributionRepo.save(dist);
+    this.logger.log(
+      `Duel revenue distribution recorded: ${platformCut} Nu for challenge ${challengeId}`,
+    );
+    return saved;
+  }
+
+  /**
    * Execute DK Bank transfer: beneficiary acc -> public acc.
    * Triggered by admin.
    */
@@ -161,12 +201,15 @@ export class RevenueDistributionService {
     }
 
     try {
+      const sourceLabel = dist.challengeId
+        ? `Duel ${dist.challengeId.slice(0, 8)}`
+        : `Market ${dist.marketId?.slice(0, 8)}`;
       const result = await this.dkGateway.transferToAccount({
         accountNumber: dist.publicAccountNo,
         accountName: "Oro Public Account",
         amount,
         reference: `REV-${dist.id.slice(0, 8)}`,
-        description: `Oro house edge: Market ${dist.marketId.slice(0, 8)}`,
+        description: `Oro platform fee: ${sourceLabel}`,
       });
 
       if (result.status === "SUCCESS") {
@@ -234,7 +277,7 @@ export class RevenueDistributionService {
         accountName: "Oro Public Account",
         amount: totalAmount,
         reference: `REV-BATCH-${Date.now()}`,
-        description: `Oro house edge batch: ${pending.length} markets, total ${totalAmount.toFixed(2)} Nu`,
+        description: `Oro platform fee batch: ${pending.length} items, total ${totalAmount.toFixed(2)} Nu`,
       });
 
       if (result.status === "SUCCESS") {

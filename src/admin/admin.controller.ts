@@ -172,7 +172,7 @@ export class AdminController {
         SELECT DISTINCT ON (sel."marketId") sel.*
         FROM settlements sel
         INNER JOIN markets m ON m.id = sel."marketId"
-        ORDER BY sel."marketId", sel."settledAt" ASC
+        ORDER BY sel."marketId", sel."settledAt" ASC, sel.id ASC
       ) s
     `);
     // Active pool (open + closed + resolving + resolved)
@@ -1068,7 +1068,7 @@ export class AdminController {
         SELECT DISTINCT ON (sel."marketId") sel.*
         FROM settlements sel
         INNER JOIN markets m ON m.id = sel."marketId"
-        ORDER BY sel."marketId", sel."settledAt" ASC
+        ORDER BY sel."marketId", sel."settledAt" ASC, sel.id ASC
       ) s
     `,
       )
@@ -1099,7 +1099,6 @@ export class AdminController {
     `,
       )
       .then((r: any[]) => parseFloat(r[0].total))
-      .catch(() => 0);
 
     const totalDeposits = Number(depositRow.total);
     const depositCount = Number(depositRow.count);
@@ -1170,7 +1169,6 @@ export class AdminController {
     `,
       )
       .then((r: any[]) => parseFloat(r[0].total))
-      .catch(() => 0);
 
     const totalBonusIssuedRow = await em
       .getRepository(Transaction)
@@ -1586,14 +1584,17 @@ export class AdminController {
       "Backfill revenue distributions for all settled markets that don't have one yet",
   })
   async backfillRevenue() {
-    // First: delete any duplicate distributions (keep only the earliest per market)
+    // First: delete any duplicate distributions for markets (keep only the earliest per market).
+    // Scoped to rows where marketId IS NOT NULL — duel distributions (challengeId only) must never be touched.
     await this.dataSource.query(`
       DELETE FROM revenue_distributions
-      WHERE id NOT IN (
-        SELECT DISTINCT ON ("marketId") id
-        FROM revenue_distributions
-        ORDER BY "marketId", "createdAt" ASC
-      )
+      WHERE "marketId" IS NOT NULL
+        AND id NOT IN (
+          SELECT DISTINCT ON ("marketId") id
+          FROM revenue_distributions
+          WHERE "marketId" IS NOT NULL
+          ORDER BY "marketId", "createdAt" ASC
+        )
     `);
 
     // Find canonical (first) settlement per market that doesn't have a distribution yet
@@ -1604,7 +1605,7 @@ export class AdminController {
         SELECT DISTINCT ON (sel."marketId") sel.*
         FROM settlements sel
         INNER JOIN markets m ON m.id = sel."marketId"
-        ORDER BY sel."marketId", sel."settledAt" ASC
+        ORDER BY sel."marketId", sel."settledAt" ASC, sel.id ASC
       ) s
       INNER JOIN markets m ON m.id = s."marketId"
       WHERE CAST(s."houseAmount" AS float) > 0

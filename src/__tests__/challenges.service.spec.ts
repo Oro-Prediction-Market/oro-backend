@@ -130,12 +130,14 @@ function makeService(
   const dataSource = overrides.dataSource ?? makeDataSource();
 
   const sseMock = { emit: jest.fn() } as any;
+  const revenueDistMock = { recordDuelDistribution: jest.fn().mockResolvedValue(null) } as any;
   const service = new ChallengesService(
     challengeRepo as any,
     positionRepo as any,
     marketRepo as any,
     dataSource as any,
     sseMock,
+    revenueDistMock,
   );
 
   return { service, challengeRepo, marketRepo, positionRepo, dataSource };

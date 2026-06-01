@@ -15,6 +15,7 @@ import { Position, PositionStatus } from "../entities/position.entity";
 import { Market, MarketStatus } from "../entities/market.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { User } from "../entities/user.entity";
+import { RevenueDistributionService } from "../markets/revenue-distribution.service";
 
 const MIN_PREDICTIONS_REQUIRED = 5;
 const PLATFORM_FEE_PCT = 0.1;
@@ -36,6 +37,7 @@ export class ChallengesService {
     private marketRepo: Repository<Market>,
     @InjectDataSource() private dataSource: DataSource,
     private sse: SseService,
+    private revenueDistribution: RevenueDistributionService,
   ) {}
 
   // ── Balance helper ─────────────────────────────────────────────────────────
@@ -354,6 +356,13 @@ export class ChallengesService {
             `Duel win payout${feeWaived ? " (Double Down — no fee)" : ""} — challenge ${ch.id}`,
             ch.id,
           );
+
+          // Record platform fee for revenue tracking and DK Bank transfer
+          if (platformCut > 0) {
+            await this.revenueDistribution
+              .recordDuelDistribution(ch.id, platformCut, totalPot, PLATFORM_FEE_PCT * 100)
+              .catch(() => {}); // non-fatal: settlement must not be blocked by fee tracking
+          }
 
           // Loser already had their wager debited at join/create — nothing more to do
           void loserId; // referenced to avoid lint unused-var

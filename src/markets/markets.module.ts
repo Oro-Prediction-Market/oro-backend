@@ -10,14 +10,13 @@ import { Settlement } from "../entities/settlement.entity";
 import { User } from "../entities/user.entity";
 import { Transaction } from "../entities/transaction.entity";
 import { Dispute } from "../entities/dispute.entity";
-import { RevenueDistribution } from "../entities/revenue-distribution.entity";
 import { MarketsService } from "./markets.service";
 import { MarketsController } from "./markets.controller";
 import { ParimutuelEngine } from "./parimutuel.engine";
 import { LMSRService } from "./lmsr.service";
 import { KeeperService } from "./keeper.service";
 import { ReputationService } from "./reputation.service";
-import { RevenueDistributionService } from "./revenue-distribution.service";
+import { RevenueDistributionModule } from "./revenue-distribution.module";
 import { MarketsGateway } from "./markets.gateway";
 import { TelegramModule } from "../telegram/telegram.module";
 import { PaymentModule } from "../payment/payment.module";
@@ -38,8 +37,8 @@ import { NOTIFICATION_QUEUE } from "../jobs/notification.queue";
       User,
       Transaction,
       Dispute,
-      RevenueDistribution,
     ]),
+    RevenueDistributionModule,
     BullModule.registerQueue({ name: NOTIFICATION_QUEUE }),
     TelegramModule,
     PaymentModule,
@@ -53,7 +52,6 @@ import { NOTIFICATION_QUEUE } from "../jobs/notification.queue";
     LMSRService,
     KeeperService,
     ReputationService,
-    RevenueDistributionService,
     MarketsGateway,
   ],
   controllers: [MarketsController],
@@ -62,7 +60,7 @@ import { NOTIFICATION_QUEUE } from "../jobs/notification.queue";
     ParimutuelEngine,
     KeeperService,
     MarketsGateway,
-    RevenueDistributionService,
+    RevenueDistributionModule,
   ],
 })
 export class MarketsModule {}
