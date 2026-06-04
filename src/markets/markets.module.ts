@@ -12,6 +12,7 @@ import { Transaction } from "../entities/transaction.entity";
 import { Dispute } from "../entities/dispute.entity";
 import { MarketsService } from "./markets.service";
 import { MarketsController } from "./markets.controller";
+import { SitemapController } from "./sitemap.controller";
 import { ParimutuelEngine } from "./parimutuel.engine";
 import { LMSRService } from "./lmsr.service";
 import { KeeperService } from "./keeper.service";
@@ -54,7 +55,7 @@ import { NOTIFICATION_QUEUE } from "../jobs/notification.queue";
     ReputationService,
     MarketsGateway,
   ],
-  controllers: [MarketsController],
+  controllers: [MarketsController, SitemapController],
   exports: [
     MarketsService,
     ParimutuelEngine,

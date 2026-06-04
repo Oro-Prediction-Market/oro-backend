@@ -105,8 +105,8 @@ async function bootstrap() {
     credentials: true,
   });
 
-  // Global API prefix — all routes are /api/*
-  app.setGlobalPrefix("api");
+  // Global API prefix — all routes are /api/* except SEO files
+  app.setGlobalPrefix("api", { exclude: ["sitemap.xml", "robots.txt"] });
 
   // Suppress noisy 401/403 error logs — expected from unauthenticated requests
   app.useGlobalFilters(new HttpExceptionFilter());
