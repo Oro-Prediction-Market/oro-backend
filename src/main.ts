@@ -8,6 +8,7 @@ import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
 import { BaseExceptionFilter } from "@nestjs/core";
 import { ArgumentsHost, Catch, ExceptionFilter } from "@nestjs/common";
 import helmet from "helmet";
+import * as cookieParser from "cookie-parser";
 import { AppModule } from "./app.module";
 
 // Load environment variables
@@ -43,6 +44,9 @@ dotenv.config();
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  // Parse cookies so @Request().cookies is populated (used for httpOnly auth cookie)
+  app.use(cookieParser());
 
   // Security headers — strict CSP for API routes, relaxed for Swagger UI
   app.use((req: any, res: any, next: any) => {

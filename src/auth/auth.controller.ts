@@ -9,8 +9,10 @@ import {
   BadRequestException,
   UseGuards,
   Request,
+  Response,
   Logger,
 } from "@nestjs/common";
+import type { Response as ExpressResponse } from "express";
 import {
   ApiTags,
   ApiOperation,
@@ -148,6 +150,36 @@ export class AuthController {
     private telegramVerification: TelegramVerificationService,
   ) {}
 
+  private setAuthCookie(res: ExpressResponse, token: string) {
+    const isProduction = process.env.NODE_ENV === "production";
+    res.cookie("oro_auth", token, {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: isProduction ? "strict" : "lax",
+      // Match JWT expiry (7 days). If you shorten JWT_EXPIRES_IN, lower this too.
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+      path: "/",
+    });
+  }
+
+  @Get("refresh")
+  @HttpCode(200)
+  @Public()
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @ApiOperation({ summary: "Silently restore a PWA session from the httpOnly cookie" })
+  async refreshSession(
+    @Request() req: any,
+    @Response({ passthrough: true }) res: ExpressResponse,
+  ) {
+    const token: string | undefined = req.cookies?.["oro_auth"];
+    if (!token) throw new UnauthorizedException("No session cookie");
+
+    const user = await this.authService.getUserFromToken(token);
+    // Re-issue the cookie to reset its maxAge
+    this.setAuthCookie(res, token);
+    return { token, user };
+  }
+
   @Post("telegram")
   @HttpCode(200)
   @Public()
@@ -168,14 +200,17 @@ export class AuthController {
   async dkBankLogin(
     @Body() dto: DKBankAuthWithPasswordDto,
     @Request() req: any,
+    @Response({ passthrough: true }) res: ExpressResponse,
   ) {
     const callerUserId: string | undefined = req.user?.userId;
     try {
-      return await this.authService.loginWithDKBank(
+      const result = await this.authService.loginWithDKBank(
         dto.cid,
         callerUserId,
         dto.password,
       );
+      this.setAuthCookie(res, result.token);
+      return result;
     } catch (e) {
       if (e instanceof UnauthorizedException) {
         await this.authService
@@ -196,8 +231,13 @@ export class AuthController {
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOperation({ summary: "Login or register via BhutanApp OAuth (QR/OTP flow)" })
   @ApiBody({ type: BhutanAppAuthDto })
-  async bhutanAppLogin(@Body() dto: BhutanAppAuthDto) {
-    return this.authService.loginWithBhutanApp(dto);
+  async bhutanAppLogin(
+    @Body() dto: BhutanAppAuthDto,
+    @Response({ passthrough: true }) res: ExpressResponse,
+  ) {
+    const result = await this.authService.loginWithBhutanApp(dto);
+    this.setAuthCookie(res, result.token);
+    return result;
   }
 
   /**
@@ -259,7 +299,10 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: "Revoke the current JWT (logout)" })
-  async logout(@Request() req: any) {
+  async logout(
+    @Request() req: any,
+    @Response({ passthrough: true }) res: ExpressResponse,
+  ) {
     const { jti, exp, userId } = req.user as {
       jti?: string;
       exp?: number;
@@ -268,6 +311,7 @@ export class AuthController {
     if (jti && exp) {
       await this.authService.revokeToken(jti, exp, userId);
     }
+    res.clearCookie("oro_auth", { path: "/" });
     return { ok: true };
   }
 

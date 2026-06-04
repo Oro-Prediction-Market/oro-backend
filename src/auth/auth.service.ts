@@ -947,6 +947,25 @@ export class AuthService {
   }
 
   // ── JWT revocation ────────────────────────────────────────────────────────
+  async getUserFromToken(token: string) {
+    let payload: { sub?: string; jti?: string };
+    try {
+      payload = this.jwtService.verify(token) as typeof payload;
+    } catch {
+      throw new UnauthorizedException("Invalid or expired session");
+    }
+    if (!payload.sub) throw new UnauthorizedException("Invalid token payload");
+
+    const isBlacklisted = payload.jti
+      ? await this.redis.get(`jwt:blacklist:${payload.jti}`)
+      : null;
+    if (isBlacklisted) throw new UnauthorizedException("Session has been revoked");
+
+    const user = await this.userRepo.findOneBy({ id: payload.sub });
+    if (!user) throw new UnauthorizedException("User not found");
+    return stripSensitiveFields(user);
+  }
+
   async revokeToken(jti: string, exp: number, userId: string): Promise<void> {
     const ttl = exp - Math.floor(Date.now() / 1000);
     if (ttl > 0) {
