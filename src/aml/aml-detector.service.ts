@@ -28,13 +28,8 @@ export class AmlDetectorService {
     return [...rdw, ...lgr, ...htf, ...nld];
   }
 
-  /**
-   * HIGH RISK — Deposited then withdrew ≥50% within 2 hours with no bets in between.
-   */
-  private async detectRapidDepositWithdrawal(
-    from: Date,
-    to: Date,
-  ): Promise<AlertCandidate[]> {
+  /** HIGH RISK — Deposited then withdrew ≥50% within 2 hours with no bets in between. */
+  private async detectRapidDepositWithdrawal(from: Date, to: Date): Promise<AlertCandidate[]> {
     const rows = await this.ds.query<any[]>(
       `
       WITH deposits AS (
@@ -82,9 +77,7 @@ export class AmlDetectorService {
     );
 
     return rows.map((r) => {
-      const pct = Math.round(
-        (Number(r.wd_total) / Number(r.deposit_amount)) * 100,
-      );
+      const pct = Math.round((Number(r.wd_total) / Number(r.deposit_amount)) * 100);
       const mins = Math.round(Number(r.gap_min));
       return {
         userId: r.userId,
@@ -106,13 +99,8 @@ export class AmlDetectorService {
     });
   }
 
-  /**
-   * MEDIUM RISK — Deposited >Nu 20,000 total but wagered <15% of that amount.
-   */
-  private async detectLowGamblingRatio(
-    from: Date,
-    to: Date,
-  ): Promise<AlertCandidate[]> {
+  /** MEDIUM RISK — Deposited >Nu 20,000 total but wagered <15% of that amount. */
+  private async detectLowGamblingRatio(from: Date, to: Date): Promise<AlertCandidate[]> {
     const rows = await this.ds.query<any[]>(
       `
       WITH user_deposits AS (
@@ -133,9 +121,7 @@ export class AmlDetectorService {
         u."dkCid",
         d.total_deposited,
         COALESCE(b.total_bet, 0) AS total_bet,
-        ROUND(
-          COALESCE(b.total_bet, 0) / NULLIF(d.total_deposited, 0) * 100, 1
-        ) AS bet_ratio
+        ROUND(COALESCE(b.total_bet, 0) / NULLIF(d.total_deposited, 0) * 100, 1) AS bet_ratio
       FROM user_deposits d
       LEFT JOIN user_bets b ON b."userId" = d."userId"
       JOIN users u ON u.id = d."userId"
@@ -160,20 +146,15 @@ export class AmlDetectorService {
     }));
   }
 
-  /**
-   * MEDIUM RISK — >15 deposit/withdrawal transactions in any single calendar week.
-   */
-  private async detectHighFrequency(
-    from: Date,
-    to: Date,
-  ): Promise<AlertCandidate[]> {
+  /** MEDIUM RISK — >15 deposit/withdrawal transactions in any single calendar week. */
+  private async detectHighFrequency(from: Date, to: Date): Promise<AlertCandidate[]> {
     const rows = await this.ds.query<any[]>(
       `
       SELECT
         t."userId",
         u."dkCid",
-        COUNT(*)::int                               AS tx_count,
-        DATE_TRUNC('week', t."createdAt")           AS week_start
+        COUNT(*)::int                     AS tx_count,
+        DATE_TRUNC('week', t."createdAt") AS week_start
       FROM transactions t
       JOIN users u ON u.id = t."userId"
       WHERE t.type IN ('deposit', 'withdrawal')
@@ -192,20 +173,12 @@ export class AmlDetectorService {
       description: `${r.tx_count} deposit/withdrawal transactions in the week starting ${new Date(r.week_start).toLocaleDateString("en-BT", { timeZone: "Asia/Thimphu" })}`,
       totalAmount: null,
       transactionCount: Number(r.tx_count),
-      metadata: {
-        weekStart: r.week_start,
-        transactionCount: Number(r.tx_count),
-      },
+      metadata: { weekStart: r.week_start, transactionCount: Number(r.tx_count) },
     }));
   }
 
-  /**
-   * LOW RISK — Deposited ≥Nu 14,000 (near daily maximum) on ≥3 separate days.
-   */
-  private async detectNearLimitDeposits(
-    from: Date,
-    to: Date,
-  ): Promise<AlertCandidate[]> {
+  /** LOW RISK — Deposited ≥Nu 14,000 (near daily maximum) on ≥3 separate days. */
+  private async detectNearLimitDeposits(from: Date, to: Date): Promise<AlertCandidate[]> {
     const rows = await this.ds.query<any[]>(
       `
       WITH daily AS (
@@ -221,8 +194,8 @@ export class AmlDetectorService {
       SELECT
         d."userId",
         u."dkCid",
-        COUNT(*)::int          AS near_limit_days,
-        SUM(d.daily_total)     AS cumulative_total
+        COUNT(*)::int      AS near_limit_days,
+        SUM(d.daily_total) AS cumulative_total
       FROM daily d
       JOIN users u ON u.id = d."userId"
       GROUP BY d."userId", u."dkCid"

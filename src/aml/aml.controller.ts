@@ -1,6 +1,23 @@
-import { Controller, Get, Post, Patch, Param, Query, Body, UseGuards, Req, Res } from "@nestjs/common";
+import {
+  Controller,
+  Get,
+  Post,
+  Patch,
+  Param,
+  Query,
+  Body,
+  UseGuards,
+  Req,
+  Res,
+} from "@nestjs/common";
 import { Response } from "express";
-import { ApiBearerAuth, ApiTags, ApiOperation, ApiQuery, ApiParam } from "@nestjs/swagger";
+import {
+  ApiBearerAuth,
+  ApiTags,
+  ApiOperation,
+  ApiQuery,
+  ApiParam,
+} from "@nestjs/swagger";
 import { JwtAuthGuard, AdminGuard } from "../auth/guards";
 import { AmlService } from "./aml.service";
 import { AmlReportService } from "./aml-report.service";
@@ -27,7 +44,9 @@ export class AmlController {
   @ApiOperation({ summary: "Run AML detection scan (Admin). Defaults to last 30 days." })
   runScan(@Body() dto: AmlScanDto) {
     const to = dto.to ? new Date(dto.to) : new Date();
-    const from = dto.from ? new Date(dto.from) : new Date(to.getTime() - 30 * 86_400_000);
+    const from = dto.from
+      ? new Date(dto.from)
+      : new Date(to.getTime() - 30 * 86_400_000);
     return this.aml.runScan(from, to);
   }
 
@@ -56,7 +75,11 @@ export class AmlController {
   @Patch("alerts/:id/resolve")
   @ApiOperation({ summary: "Resolve an AML alert (Admin)" })
   @ApiParam({ name: "id" })
-  resolveAlert(@Param("id") id: string, @Body() dto: ResolveAlertDto, @Req() req: any) {
+  resolveAlert(
+    @Param("id") id: string,
+    @Body() dto: ResolveAlertDto,
+    @Req() req: any,
+  ) {
     return this.aml.resolveAlert(id, req.user.id, dto.resolution);
   }
 
@@ -64,14 +87,18 @@ export class AmlController {
   @ApiOperation({ summary: "List generated AML reports (Admin)" })
   @ApiQuery({ name: "page", required: false })
   @ApiQuery({ name: "limit", required: false })
-  getReports(@Query("page") page = "1", @Query("limit") limit = "20") {
+  getReports(
+    @Query("page") page = "1",
+    @Query("limit") limit = "20",
+  ) {
     return this.aml.getReports(Number(page), Number(limit));
   }
 
   @Post("reports/generate")
   @ApiOperation({ summary: "Generate a new AML report snapshot (Admin)" })
   generateReport(@Body() dto: GenerateReportDto, @Req() req: any) {
-    const adminName: string | null = req.user?.username ?? req.user?.email ?? null;
+    const adminName: string | null =
+      req.user?.username ?? req.user?.email ?? null;
     return this.aml.generateReport(dto, req.user.id, adminName);
   }
 

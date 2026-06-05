@@ -24,6 +24,7 @@ export class AmlService {
     let newCount = 0;
 
     for (const c of candidates) {
+      // Skip if an identical alert type for this user already exists in the scan window
       const exists = await this.alertRepo
         .createQueryBuilder("a")
         .where("a.userId = :userId", { userId: c.userId })
@@ -72,6 +73,7 @@ export class AmlService {
     if (params.from) qb.andWhere("a.createdAt >= :from", { from: new Date(params.from) });
     if (params.to) qb.andWhere("a.createdAt <= :to", { to: new Date(params.to) });
 
+    // Sort: HIGH first, then by date desc
     qb.orderBy(
       `CASE a.riskLevel WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END`,
       "ASC",
