@@ -42,6 +42,9 @@ import { LinkedBankAccount } from "./entities/linked-bank-account.entity";
 import { RevenueDistribution } from "./entities/revenue-distribution.entity";
 import { TerModule } from "./ter/ter.module";
 import { BtcModule } from "./btc/btc.module";
+import { AmlModule } from "./aml/aml.module";
+import { AmlAlert } from "./aml/entities/aml-alert.entity";
+import { AmlReport } from "./aml/entities/aml-report.entity";
 
 @Module({
   imports: [
@@ -106,6 +109,8 @@ import { BtcModule } from "./btc/btc.module";
           UserEvent,
           LinkedBankAccount,
           RevenueDistribution,
+          AmlAlert,
+          AmlReport,
         ],
         synchronize: false,
         migrationsRun: true, // run pending migrations on app startup
@@ -134,6 +139,7 @@ import { BtcModule } from "./btc/btc.module";
     SseModule,
     TerModule,
     BtcModule,
+    AmlModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

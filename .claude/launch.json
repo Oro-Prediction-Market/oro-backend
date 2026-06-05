@@ -1,0 +1,36 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "oro-backend (NestJS)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3000
+    },
+    {
+      "name": "oro-pwa (Vite PWA)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "../oro-pwa", "run", "dev"],
+      "port": 5173
+    },
+    {
+      "name": "oro-tma (Vite TMA)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "../oro-tma", "run", "dev"],
+      "port": 5175
+    },
+    {
+      "name": "oro-admin (Vite Admin)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "../oro-admin", "run", "dev"],
+      "port": 5174
+    },
+    {
+      "name": "ArtistPlatform (Next.js)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "../ArtistPlatform", "run", "dev"],
+      "port": 3000,
+      "autoPort": true
+    }
+  ]
+}
