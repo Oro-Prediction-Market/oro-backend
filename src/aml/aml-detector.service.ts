@@ -45,36 +45,38 @@ export class AmlDetectorService {
           AND t."createdAt" BETWEEN $1 AND $2
           AND t.amount::numeric >= 3000
       ),
-      withdrawals AS (
+      suspicious AS (
         SELECT
-          t."userId",
-          SUM(t.amount::numeric) AS wd_total,
-          MIN(t."createdAt")    AS wd_time
-        FROM transactions t
-        WHERE t.type = 'withdrawal'
-          AND t."createdAt" BETWEEN $1 AND $2
-        GROUP BY t."userId", DATE_TRUNC('day', t."createdAt")
+          d."userId",
+          d.id                         AS deposit_id,
+          d.amt                        AS deposit_amount,
+          d.dt                         AS deposit_time,
+          SUM(w.amount::numeric)       AS wd_total,
+          MIN(w."createdAt")           AS wd_time
+        FROM deposits d
+        JOIN transactions w
+          ON  w."userId"    = d."userId"
+          AND w.type        = 'withdrawal'
+          AND w."createdAt" BETWEEN d.dt AND d.dt + INTERVAL '2 hours'
+        GROUP BY d."userId", d.id, d.amt, d.dt
+        HAVING SUM(w.amount::numeric) >= d.amt * 0.5
       )
       SELECT
-        d."userId",
+        s."userId",
         u."dkCid",
-        d.id          AS deposit_id,
-        d.amt         AS deposit_amount,
-        d.dt          AS deposit_time,
-        w.wd_total,
-        w.wd_time,
-        EXTRACT(EPOCH FROM (w.wd_time - d.dt)) / 60 AS gap_min
-      FROM deposits d
-      JOIN withdrawals w
-        ON d."userId" = w."userId"
-       AND w.wd_time BETWEEN d.dt AND d.dt + INTERVAL '2 hours'
-       AND w.wd_total >= d.amt * 0.5
-      JOIN users u ON u.id = d."userId"
+        s.deposit_id,
+        s.deposit_amount,
+        s.deposit_time,
+        s.wd_total,
+        s.wd_time,
+        EXTRACT(EPOCH FROM (s.wd_time - s.deposit_time)) / 60 AS gap_min
+      FROM suspicious s
+      JOIN users u ON u.id = s."userId"
       WHERE NOT EXISTS (
         SELECT 1 FROM transactions b
-        WHERE b."userId" = d."userId"
-          AND b.type = 'bet_placed'
-          AND b."createdAt" BETWEEN d.dt AND w.wd_time
+        WHERE b."userId"    = s."userId"
+          AND b.type        = 'bet_placed'
+          AND b."createdAt" BETWEEN s.deposit_time AND s.wd_time
       )
       `,
       [from, to],

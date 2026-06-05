@@ -3,7 +3,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, In } from "typeorm";
 import { AmlAlert, AmlAlertType, AmlRiskLevel } from "./entities/aml-alert.entity";
 import { AmlReport, AmlReportType } from "./entities/aml-report.entity";
-import { AmlDetectorService, AlertCandidate } from "./aml-detector.service";
+import { AmlDetectorService } from "./aml-detector.service";
 import { GenerateReportDto } from "./dto/generate-report.dto";
 
 @Injectable()
@@ -173,11 +173,16 @@ export class AmlService {
 
     const alerts =
       report.alertIds.length > 0
-        ? await this.alertRepo.find({
-            where: { id: In(report.alertIds) },
-            relations: ["user"],
-            order: { riskLevel: "ASC", createdAt: "DESC" },
-          })
+        ? await this.alertRepo
+            .createQueryBuilder("a")
+            .leftJoinAndSelect("a.user", "user")
+            .where("a.id IN (:...ids)", { ids: report.alertIds })
+            .orderBy(
+              `CASE a.riskLevel WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END`,
+              "ASC",
+            )
+            .addOrderBy("a.createdAt", "DESC")
+            .getMany()
         : [];
 
     return { report, alerts };
