@@ -74,15 +74,28 @@ function makeService(overrides: {
   marketsService?: any;
   telegram?: any;
   config?: any;
+  redis?: any;
   marketRepo?: any;
 } = {}) {
   const marketsService = overrides.marketsService ?? makeMarketsService();
   const telegram = overrides.telegram ?? makeTelegram();
   const config = overrides.config ?? makeConfig();
+  const redis =
+    overrides.redis ?? {
+      // acquireLock returns a token so withClusterLock runs the cron body in tests
+      acquireLock: jest.fn().mockResolvedValue("test-lock-token"),
+      releaseLock: jest.fn().mockResolvedValue(undefined),
+    };
   const marketRepo = overrides.marketRepo ?? makeMarketRepo();
 
-  const svc = new KeeperService(marketsService, telegram, config, marketRepo as any);
-  return { svc, marketsService, telegram, config, marketRepo };
+  const svc = new KeeperService(
+    marketsService,
+    telegram,
+    config,
+    redis as any,
+    marketRepo as any,
+  );
+  return { svc, marketsService, telegram, config, redis, marketRepo };
 }
 
 // ── setActive / getStatus ─────────────────────────────────────────────────────

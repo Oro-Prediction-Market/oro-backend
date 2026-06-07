@@ -34,6 +34,18 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     return this.client;
   }
 
+  /**
+   * Create a NEW dedicated ioredis connection (same REDIS_URL as the shared client).
+   * For consumers that need their own connection — e.g. the socket.io Redis adapter's
+   * pub/sub pair (a subscriber connection can't run normal commands, so it must NOT
+   * share the main client). Must stay independent of this.client / onModuleInit:
+   * it is invoked at bootstrap (main.ts) before onModuleInit assigns this.client.
+   */
+  createConnection(): Redis {
+    const url = this.config.get<string>("REDIS_URL", "redis://localhost:6379");
+    return new Redis(url, { maxRetriesPerRequest: null });
+  }
+
   async get(key: string): Promise<string | null> {
     try {
       return await this.client.get(key);

@@ -14,6 +14,9 @@ import {
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 
 @Processor(NOTIFICATION_QUEUE, {
+  // Drain jobs in parallel (was default 1 → hours of settlement-DM backlog at a
+  // knockout). Reads the BULLMQ_CONCURRENCY configmap value.
+  concurrency: parseInt(process.env.BULLMQ_CONCURRENCY ?? "12", 10),
   // Telegram allows ~30 msg/sec globally per bot.
   // Capping at 25 jobs/sec here keeps us safely under the limit
   // even when 100k settlement DMs are queued up.

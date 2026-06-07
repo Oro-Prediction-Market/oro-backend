@@ -117,10 +117,14 @@ import { AmlReport } from "./aml/entities/aml-report.entity";
         migrations: [__dirname + "/migrations/*{.js,.ts}"],
         logging: false,
         extra: {
-          max: 20,
+          // App connects DIRECTLY to the CNPG primary (no pooler in path).
+          // 16 HPA pods x 15 = 240 conns, safely under PG max_connections=400.
+          max: 15,
           min: 2,
           idleTimeoutMillis: 30_000,
           connectionTimeoutMillis: 5_000,
+          statement_timeout: 8_000, // kill a stuck query before it pins a connection
+          query_timeout: 8_000,
         },
       }),
     }),

@@ -6,6 +6,7 @@ import { ConfigService } from "@nestjs/config";
 import { MarketsService } from "./markets.service";
 import { Market, MarketStatus } from "../entities/market.entity";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
+import { RedisService } from "../redis/redis.service";
 
 export interface KeeperLogEntry {
   id: number;
@@ -46,8 +47,37 @@ export class KeeperService {
     private readonly marketsService: MarketsService,
     private readonly telegram: TelegramSimpleService,
     private readonly config: ConfigService,
+    private readonly redis: RedisService,
     @InjectRepository(Market) private readonly marketRepo: Repository<Market>,
   ) {}
+
+  /**
+   * Run `fn` only if this pod wins a cluster-wide Redis lock — guarantees the cron
+   * body runs on exactly ONE pod per tick (prevents double market transitions /
+   * double settlement when the backend runs multiple replicas). If Redis is
+   * unavailable the tick is skipped (safe: never run unguarded on all pods).
+   */
+  private async withClusterLock(
+    key: string,
+    ttlSec: number,
+    fn: () => Promise<void>,
+  ): Promise<void> {
+    let token: string | null = null;
+    try {
+      token = await this.redis.acquireLock(key, ttlSec);
+    } catch (e) {
+      this.logger.warn(
+        `[Keeper] lock acquire failed for ${key}; skipping tick: ${(e as Error).message}`,
+      );
+      return;
+    }
+    if (!token) return; // another pod owns this tick (or Redis unavailable)
+    try {
+      await fn();
+    } finally {
+      await this.redis.releaseLock(key, token).catch(() => undefined);
+    }
+  }
 
   // ── Public control API ────────────────────────────────────────────────────
 
@@ -84,6 +114,13 @@ export class KeeperService {
 
   @Cron(CronExpression.EVERY_MINUTE)
   async handleMarketExpirations() {
+    if (!this.isActive) return;
+    await this.withClusterLock("keeper:expiry", 55, () =>
+      this.handleMarketExpirationsImpl(),
+    );
+  }
+
+  private async handleMarketExpirationsImpl() {
     if (!this.isActive) return;
     if (this.expiryRunning) {
       this.addLog(
@@ -213,6 +250,13 @@ export class KeeperService {
   @Cron(CronExpression.EVERY_MINUTE)
   async handleDisputeWindowExpiry() {
     if (!this.isActive) return;
+    await this.withClusterLock("keeper:dispute", 55, () =>
+      this.handleDisputeWindowExpiryImpl(),
+    );
+  }
+
+  private async handleDisputeWindowExpiryImpl() {
+    if (!this.isActive) return;
     if (this.disputeRunning) {
       this.addLog(
         "warn",
@@ -306,6 +350,13 @@ export class KeeperService {
 
   @Cron(CronExpression.EVERY_5_MINUTES)
   async handleAutoProposal() {
+    if (!this.isActive) return;
+    await this.withClusterLock("keeper:autoproposal", 280, () =>
+      this.handleAutoProposalImpl(),
+    );
+  }
+
+  private async handleAutoProposalImpl() {
     if (!this.isActive) return;
     if (this.autoProposalRunning) return;
     this.autoProposalRunning = true;

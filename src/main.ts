@@ -10,6 +10,8 @@ import { ArgumentsHost, Catch, ExceptionFilter } from "@nestjs/common";
 import helmet from "helmet";
 import * as cookieParser from "cookie-parser";
 import { AppModule } from "./app.module";
+import { RedisIoAdapter } from "./redis/redis-io.adapter";
+import { RedisService } from "./redis/redis.service";
 
 // Load environment variables
 dotenv.config();
@@ -44,6 +46,19 @@ dotenv.config();
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  // socket.io horizontal scaling: Redis pub/sub adapter so WS broadcasts reach
+  // clients across ALL backend pods. Falls back to in-memory if Redis is down
+  // (won't block startup).
+  try {
+    const redisIoAdapter = new RedisIoAdapter(app);
+    await redisIoAdapter.connectToRedis(app.get(RedisService));
+    app.useWebSocketAdapter(redisIoAdapter);
+  } catch (e) {
+    new Logger("bootstrap").error(
+      `Redis IO adapter setup failed; using in-memory adapter: ${(e as Error).message}`,
+    );
+  }
 
   // Parse cookies so @Request().cookies is populated (used for httpOnly auth cookie)
   app.use(cookieParser());
