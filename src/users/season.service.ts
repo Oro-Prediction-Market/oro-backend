@@ -38,7 +38,8 @@ export class SeasonService {
 
     // Snapshot top-10 leaderboard at close time — ranked by win rate within
     // this season's date range (min 3 predictions to qualify).
-    const top10 = await this.userRepo
+    // Use getRawAndEntities so season-specific aggregates are available.
+    const { entities: top10users, raw: top10raw } = await this.userRepo
       .createQueryBuilder("u")
       .innerJoin(
         "positions",
@@ -54,8 +55,6 @@ export class SeasonService {
         "u.telegramId",
         "u.reputationScore",
         "u.reputationTier",
-        "u.totalPredictions",
-        "u.correctPredictions",
       ])
       .addSelect("COUNT(p.id)", "seasonTotal")
       .addSelect(
@@ -70,20 +69,22 @@ export class SeasonService {
       )
       .addOrderBy("COUNT(p.id)", "DESC")
       .limit(10)
-      .getMany();
+      .getRawAndEntities();
 
-    const snapshot = top10.map((u, i) => ({
-      rank: i + 1,
-      userId: u.id,
-      firstName: u.firstName,
-      username: u.username,
-      reputationScore: u.reputationScore,
-      reputationTier: u.reputationTier,
-      winRate:
-        u.totalPredictions > 0
-          ? Math.round((u.correctPredictions / u.totalPredictions) * 100)
-          : 0,
-    }));
+    const snapshot = top10users.map((u, i) => {
+      const raw = top10raw[i];
+      const seasonTotal = Number(raw?.seasonTotal ?? 0);
+      const seasonWins = Number(raw?.seasonWins ?? 0);
+      return {
+        rank: i + 1,
+        userId: u.id,
+        firstName: u.firstName,
+        username: u.username,
+        reputationScore: u.reputationScore,
+        reputationTier: u.reputationTier,
+        winRate: seasonTotal > 0 ? Math.round((seasonWins / seasonTotal) * 100) : 0,
+      };
+    });
     await this.seasonRepo.update(active.id, {
       status: SeasonStatus.CLOSED,
       winnersSnapshot: snapshot as any,
@@ -94,7 +95,7 @@ export class SeasonService {
     );
 
     // Credit top-3 prizes and send DMs (fire-and-forget so rollover isn't blocked)
-    this.creditSeasonPrizes(top10.slice(0, 3), active).catch((err: Error) =>
+    this.creditSeasonPrizes(top10users.slice(0, 3), active).catch((err: Error) =>
       this.logger.error(`Season prize crediting failed: ${err.message}`),
     );
   }

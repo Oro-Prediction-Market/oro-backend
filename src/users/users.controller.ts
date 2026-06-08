@@ -522,7 +522,9 @@ export class UsersController {
         .addSelect("COALESCE(SUM(p.amount), 0)", "weeklyBetAmount")
         .innerJoin("p.user", "u")
         .where("p.placedAt >= :monthStart", { monthStart })
+        .andWhere("p.status IN ('won', 'lost')")
         .groupBy("u.id")
+        .having("COUNT(p.id) >= 3")
         .orderBy('"weeklyWins"', "DESC")
         .addOrderBy('"weeklyPredictions"', "DESC")
         .limit(50)
@@ -555,6 +557,9 @@ export class UsersController {
         .createQueryBuilder("p")
         .innerJoin("p.user", "u")
         .where("p.placedAt >= :monthStart", { monthStart })
+        .andWhere("p.status IN ('won', 'lost')")
+        .groupBy("u.id")
+        .having("COUNT(p.id) >= 3")
         .select("COUNT(DISTINCT u.id)", "cnt")
         .getRawOne();
       const totalRanked = Number(totalRankedRaw?.cnt ?? 0);
