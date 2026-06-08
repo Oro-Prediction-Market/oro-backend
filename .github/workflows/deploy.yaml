@@ -58,6 +58,8 @@ jobs:
             --from-literal=JWT_SECRET='${{ secrets.JWT_SECRET }}' \
             --from-literal=TELEGRAM_BOT_TOKEN='${{ secrets.TELEGRAM_BOT_TOKEN }}' \
             --from-literal=TELEGRAM_WEBHOOK_SECRET='${{ secrets.TELEGRAM_WEBHOOK_SECRET }}' \
+            --from-literal=TELEGRAM_WEBHOOK_URL='https://oro.fun/api/bot/webhook' \
+            --from-literal=TELEGRAM_MINI_APP_URL='https://oro.fun' \
             --from-literal=TELEGRAM_CHANNEL_ID='${{ secrets.TELEGRAM_CHANNEL_ID }}' \
             --from-literal=TELEGRAM_CHANNEL_URL='${{ secrets.TELEGRAM_CHANNEL_URL }}' \
             --from-literal=FOOTBALL_DATA_API_KEY='${{ secrets.FOOTBALL_DATA_API_KEY }}' \
