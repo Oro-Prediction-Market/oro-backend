@@ -1,7 +1,7 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, OnApplicationBootstrap } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { InjectRepository, InjectDataSource } from "@nestjs/typeorm";
-import { Repository, DataSource } from "typeorm";
+import { Repository, DataSource, LessThan } from "typeorm";
 import { Season, SeasonStatus } from "../entities/season.entity";
 import { User } from "../entities/user.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
@@ -12,7 +12,7 @@ import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 const SEASON_PRIZES: Record<number, number> = { 1: 150, 2: 100, 3: 50 };
 
 @Injectable()
-export class SeasonService {
+export class SeasonService implements OnApplicationBootstrap {
   private readonly logger = new Logger(SeasonService.name);
 
   constructor(
@@ -21,6 +21,21 @@ export class SeasonService {
     @InjectDataSource() private dataSource: DataSource,
     private readonly telegram: TelegramSimpleService,
   ) {}
+
+  /** Self-heal: if the cron missed a rollover (e.g. pod down on the 1st), catch up on startup. */
+  async onApplicationBootstrap(): Promise<void> {
+    const overdue = await this.seasonRepo.findOne({
+      where: { status: SeasonStatus.ACTIVE, endsAt: LessThan(new Date()) },
+    });
+    if (overdue) {
+      this.logger.warn(`Season ${overdue.id} past its endsAt — running missed rollover`);
+      await this.closeActiveSeason();
+      await this.openNewSeason();
+    } else {
+      // Ensure a season exists for the current month even if none is active yet
+      await this.openNewSeason();
+    }
+  }
 
   /** Run on the 1st of each month at 00:05 UTC to close the previous month and open the next. */
   @Cron("5 0 1 * *")
