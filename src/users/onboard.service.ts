@@ -277,6 +277,25 @@ export class OnboardService {
     });
     await this.userRepo.save(user);
 
+    // Grant one-time 20 Nu welcome free credit — atomic guard prevents double-grant
+    const creditClaim = await this.userRepo.update(
+      { id: user.id, freeCreditGranted: false },
+      { freeCreditGranted: true },
+    );
+    if (creditClaim.affected) {
+      await this.transactionRepo.save(
+        this.transactionRepo.create({
+          type: TransactionType.FREE_CREDIT,
+          amount: 20,
+          balanceBefore: 0,
+          balanceAfter: 20,
+          userId: user.id,
+          isBonus: true,
+          note: "Welcome free credit",
+        }),
+      );
+    }
+
     // Create Telegram auth method
     await this.authMethodRepo.save(
       this.authMethodRepo.create({
@@ -293,8 +312,8 @@ export class OnboardService {
         this.transactionRepo.create({
           type: TransactionType.DEPOSIT,
           amount: 1000,
-          balanceBefore: 0,
-          balanceAfter: 1000,
+          balanceBefore: 20,
+          balanceAfter: 1020,
           userId: user.id,
           note: "Starter credits (dev only)",
         }),

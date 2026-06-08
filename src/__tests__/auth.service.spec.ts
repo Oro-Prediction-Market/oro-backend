@@ -63,7 +63,7 @@ function makeUserRepo(user: any = null) {
     save: jest
       .fn()
       .mockImplementation((u: any) => Promise.resolve({ id: "user-1", ...u })),
-    update: jest.fn().mockResolvedValue(undefined),
+    update: jest.fn().mockResolvedValue({ affected: 1 }),
     createQueryBuilder: jest.fn().mockReturnValue(qb),
   };
 }
@@ -73,7 +73,7 @@ function makeAuthMethodRepo(method: any = null) {
     findOne: jest.fn().mockResolvedValue(method),
     create: jest.fn().mockImplementation((data: any) => data),
     save: jest.fn().mockImplementation((m: any) => Promise.resolve(m)),
-    update: jest.fn().mockResolvedValue(undefined),
+    update: jest.fn().mockResolvedValue({ affected: 1 }),
   };
 }
 
@@ -142,6 +142,7 @@ function makePositionRepo() {
 function makeTelegramSimple() {
   return {
     sendMessage: jest.fn().mockResolvedValue(undefined),
+    getUserProfilePhotoUrl: jest.fn().mockResolvedValue(null),
   };
 }
 
@@ -267,28 +268,18 @@ describe("AuthService.loginWithTelegram", () => {
     delete process.env.TELEGRAM_BOT_TOKEN;
   });
 
-  it("creates a new user on first login", async () => {
-    // No existing auth method, no existing user
+  it("returns pre-KYC response for a brand-new Telegram user", async () => {
     authMethodRepo.findOne.mockResolvedValue(null);
     userRepo.findOneBy.mockResolvedValue(null);
-    userRepo.save.mockResolvedValue({
-      id: "new-user",
-      telegramId: "99999",
-      isAdmin: false,
-    });
-    userRepo.findOneBy.mockResolvedValueOnce(null).mockResolvedValue({
-      id: "new-user",
-      telegramId: "99999",
-      isAdmin: false,
-    });
 
     const initData = buildValidInitData({ id: 99999, username: "newbie" });
     const result = await service.loginWithTelegram(initData);
 
-    expect(result.token).toBe("mock-jwt-token");
-    expect(result.user).not.toHaveProperty("dkPhoneHash");
-    expect(result.user).not.toHaveProperty("telegramPhoneHash");
-    expect(result.user).not.toHaveProperty("phoneNumber");
+    expect(result.token).toBeTruthy();
+    expect(result.isNewUser).toBe(true);
+    expect(result.requiresKYC).toBe(true);
+    expect(result.user).toBeNull();
+    expect(result.telegramProfile).toMatchObject({ telegramId: "99999" });
   });
 
   it("updates profile on subsequent login", async () => {
@@ -338,125 +329,18 @@ describe("AuthService.loginWithTelegram", () => {
     expect(result.user).not.toHaveProperty("phoneNumber");
   });
 
-  it("grants Nu 20 free credit on first registration (all environments)", async () => {
-    const txRepo = makeTransactionRepo();
-    process.env.NODE_ENV = "test";
-
-    service = new AuthService(
-      userRepo as any,
-      authMethodRepo as any,
-      txRepo as any,
-      makeMarketRepo() as any,
-      makePositionRepo() as any,
-      makeJwtService(),
-      makeDkGateway() as any,
-      makeTelegramVerification() as any,
-      makeTelegramSimple() as any,
-      makeAuditService() as any,
-      makeAuditLogRepo() as any,
-      makeRedis() as any,
-      { sendSms: jest.fn().mockResolvedValue(true) } as any,
-    );
-
-    authMethodRepo.findOne.mockResolvedValue(null);
-    userRepo.findOneBy
-      .mockResolvedValueOnce(null)
-      .mockResolvedValue({ id: "new-user", isAdmin: false });
-    userRepo.save.mockResolvedValue({ id: "new-user", isAdmin: false });
-
-    const initData = buildValidInitData({ id: 77777 });
-    await service.loginWithTelegram(initData);
-
-    expect(txRepo.save).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: TransactionType.FREE_CREDIT,
-        amount: 20,
-        isBonus: true,
-      }),
-    );
-  });
-
-  it("does NOT grant dev seed credits in test environment", async () => {
-    const txRepo = makeTransactionRepo();
-    process.env.NODE_ENV = "test";
-
-    service = new AuthService(
-      userRepo as any,
-      authMethodRepo as any,
-      txRepo as any,
-      makeMarketRepo() as any,
-      makePositionRepo() as any,
-      makeJwtService(),
-      makeDkGateway() as any,
-      makeTelegramVerification() as any,
-      makeTelegramSimple() as any,
-      makeAuditService() as any,
-      makeAuditLogRepo() as any,
-      makeRedis() as any,
-      { sendSms: jest.fn().mockResolvedValue(true) } as any,
-    );
-
+  it("returns pre-KYC token for a brand-new Telegram user without creating DB records", async () => {
     authMethodRepo.findOne.mockResolvedValue(null);
     userRepo.findOneBy.mockResolvedValue(null);
-    userRepo.save.mockResolvedValue({ id: "new-user", isAdmin: false });
-    userRepo.findOneBy.mockResolvedValue({ id: "new-user", isAdmin: false });
 
     const initData = buildValidInitData({ id: 77777 });
-    await service.loginWithTelegram(initData);
+    const result = await service.loginWithTelegram(initData);
 
-    expect(txRepo.save).not.toHaveBeenCalledWith(
-      expect.objectContaining({ type: TransactionType.DEPOSIT }),
-    );
-  });
-
-  it("seeds 1000 extra credits in development environment on top of free credit", async () => {
-    const txRepo = makeTransactionRepo();
-    process.env.NODE_ENV = "development";
-
-    service = new AuthService(
-      userRepo as any,
-      authMethodRepo as any,
-      txRepo as any,
-      makeMarketRepo() as any,
-      makePositionRepo() as any,
-      makeJwtService(),
-      makeDkGateway() as any,
-      makeTelegramVerification() as any,
-      makeTelegramSimple() as any,
-      makeAuditService() as any,
-      makeAuditLogRepo() as any,
-      makeRedis() as any,
-      { sendSms: jest.fn().mockResolvedValue(true) } as any,
-    );
-
-    authMethodRepo.findOne.mockResolvedValue(null);
-    userRepo.findOneBy
-      .mockResolvedValueOnce(null) // no existing user by telegramId
-      .mockResolvedValue({ id: "new-user", isAdmin: false }); // freshUser lookup
-    userRepo.save.mockResolvedValue({ id: "new-user", isAdmin: false });
-
-    const initData = buildValidInitData({ id: 88888 });
-    await service.loginWithTelegram(initData);
-
-    // Free credit must fire first
-    expect(txRepo.save).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: TransactionType.FREE_CREDIT,
-        amount: 20,
-        isBonus: true,
-      }),
-    );
-    // Dev seed on top
-    expect(txRepo.save).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: TransactionType.DEPOSIT,
-        amount: 1000,
-        balanceBefore: 20,
-        balanceAfter: 1020,
-      }),
-    );
-
-    process.env.NODE_ENV = "test";
+    expect(result.isNewUser).toBe(true);
+    expect(result.requiresKYC).toBe(true);
+    expect(result.user).toBeNull();
+    // Free credit is granted during registration in OnboardService, not here
+    expect(result.token).toBeTruthy();
   });
 });
 
@@ -521,36 +405,34 @@ describe("AuthService.loginWithTelegram — referral attribution", () => {
     delete process.env.TELEGRAM_BOT_TOKEN;
   });
 
-  it("sets referredByUserId when new user opens a ref_ share link", async () => {
+  it("returns pre-KYC response with referral code preserved for a new user", async () => {
     const initData = buildValidInitData({ id: NEW_USER_TELEGRAM_ID });
-    await service.loginWithTelegram(initData, `ref_${REFERRER_TELEGRAM_ID}`);
+    const result = await service.loginWithTelegram(initData, `ref_${REFERRER_TELEGRAM_ID}`);
 
-    expect(userRepo.create).toHaveBeenCalledWith(
-      expect.objectContaining({ referredByUserId: REFERRER_UUID }),
-    );
+    expect(result.isNewUser).toBe(true);
+    expect(result.requiresKYC).toBe(true);
+    // referralCode is forwarded to OnboardService.registerTelegramUser for attribution
+    expect(result.referralCode).toBe(`ref_${REFERRER_TELEGRAM_ID}`);
   });
 
-  it("strips _m_<marketId> suffix from ChallengeAFriend links and still attributes referral", async () => {
+  it("returns pre-KYC response preserving ChallengeAFriend referral code including _m_ suffix", async () => {
     const initData = buildValidInitData({ id: NEW_USER_TELEGRAM_ID });
-    // Link format generated by ChallengeAFriend.tsx
-    await service.loginWithTelegram(
+    const result = await service.loginWithTelegram(
       initData,
       `ref_${REFERRER_TELEGRAM_ID}_m_some-market-uuid`,
     );
 
-    expect(userRepo.create).toHaveBeenCalledWith(
-      expect.objectContaining({ referredByUserId: REFERRER_UUID }),
-    );
+    expect(result.isNewUser).toBe(true);
+    // Full referral code is preserved so OnboardService can strip and attribute correctly
+    expect(result.referralCode).toBe(`ref_${REFERRER_TELEGRAM_ID}_m_some-market-uuid`);
   });
 
-  it("ignores self-referral (user sharing their own link then clicking it)", async () => {
-    // Same telegram ID for both the link and the person signing up
+  it("returns pre-KYC response for self-referral (deferred self-referral check is in OnboardService)", async () => {
     const initData = buildValidInitData({ id: Number(REFERRER_TELEGRAM_ID) });
-    await service.loginWithTelegram(initData, `ref_${REFERRER_TELEGRAM_ID}`);
+    const result = await service.loginWithTelegram(initData, `ref_${REFERRER_TELEGRAM_ID}`);
 
-    expect(userRepo.create).toHaveBeenCalledWith(
-      expect.objectContaining({ referredByUserId: null }),
-    );
+    expect(result.isNewUser).toBe(true);
+    expect(result.requiresKYC).toBe(true);
   });
 
   it("does NOT overwrite referredByUserId on a returning user who already has a referrer", async () => {
@@ -578,14 +460,14 @@ describe("AuthService.loginWithTelegram — referral attribution", () => {
     expect(updateCall[1]).not.toHaveProperty("referredByUserId");
   });
 
-  it("does NOT set referredByUserId when referrer does not exist", async () => {
+  it("returns pre-KYC response even when the referral code points to a non-existent user", async () => {
     userRepo.findOne.mockResolvedValue(null); // referrer not found
     const initData = buildValidInitData({ id: NEW_USER_TELEGRAM_ID });
-    await service.loginWithTelegram(initData, "ref_999999999");
+    const result = await service.loginWithTelegram(initData, "ref_999999999");
 
-    expect(userRepo.create).toHaveBeenCalledWith(
-      expect.objectContaining({ referredByUserId: null }),
-    );
+    expect(result.isNewUser).toBe(true);
+    // Referrer validation happens in OnboardService.registerTelegramUser
+    expect(result.referralCode).toBe("ref_999999999");
   });
 });
 
@@ -693,7 +575,7 @@ describe("AuthService.loginWithDKBank", () => {
       userId: "u-existing",
       user: existingUser,
     });
-    userRepo.update.mockResolvedValue(undefined);
+    userRepo.update.mockResolvedValue({ affected: 1 });
     userRepo.findOneBy.mockResolvedValue(existingUser);
 
     const result = await service.loginWithDKBank("11000000001", undefined, "test-password");
@@ -703,5 +585,133 @@ describe("AuthService.loginWithDKBank", () => {
       "u-existing",
       expect.objectContaining({ dkCid: "11000000001" }),
     );
+  });
+
+  it("grants Nu 20 free credit for a brand-new DK user (all environments)", async () => {
+    const txRepo = makeTransactionRepo();
+    process.env.NODE_ENV = "test";
+
+    service = new AuthService(
+      userRepo as any,
+      authMethodRepo as any,
+      txRepo as any,
+      makeMarketRepo() as any,
+      makePositionRepo() as any,
+      makeJwtService(),
+      dkGateway as any,
+      telegramVerification as any,
+      makeTelegramSimple() as any,
+      makeAuditService() as any,
+      makeAuditLogRepo() as any,
+      makeRedis() as any,
+      { sendSms: jest.fn().mockResolvedValue(true) } as any,
+    );
+
+    authMethodRepo.findOne.mockResolvedValue(null);
+    // loginWithDKBank runs 4 findOneBy lookups (dkCid, accountNumber,
+    // telegramPhoneHash, dkPhoneHash) before reaching the brand-new-user path
+    userRepo.findOneBy
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue({ id: "new-dk-user", isAdmin: false, pwaPasswordHash: "hashed" });
+    userRepo.save.mockResolvedValue({ id: "new-dk-user", isAdmin: false });
+
+    await service.loginWithDKBank("11000000001", undefined, "test-password");
+
+    expect(txRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: TransactionType.FREE_CREDIT,
+        amount: 20,
+        isBonus: true,
+      }),
+    );
+  });
+
+  it("does NOT grant dev seed credits to a new DK user in test environment", async () => {
+    const txRepo = makeTransactionRepo();
+    process.env.NODE_ENV = "test";
+
+    service = new AuthService(
+      userRepo as any,
+      authMethodRepo as any,
+      txRepo as any,
+      makeMarketRepo() as any,
+      makePositionRepo() as any,
+      makeJwtService(),
+      dkGateway as any,
+      telegramVerification as any,
+      makeTelegramSimple() as any,
+      makeAuditService() as any,
+      makeAuditLogRepo() as any,
+      makeRedis() as any,
+      { sendSms: jest.fn().mockResolvedValue(true) } as any,
+    );
+
+    authMethodRepo.findOne.mockResolvedValue(null);
+    userRepo.findOneBy
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue({ id: "new-dk-user", isAdmin: false, pwaPasswordHash: "hashed" });
+    userRepo.save.mockResolvedValue({ id: "new-dk-user", isAdmin: false });
+
+    await service.loginWithDKBank("11000000001", undefined, "test-password");
+
+    expect(txRepo.save).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: TransactionType.DEPOSIT }),
+    );
+  });
+
+  it("seeds 1000 extra credits on top of free credit for a new DK user in development environment", async () => {
+    const txRepo = makeTransactionRepo();
+    process.env.NODE_ENV = "development";
+
+    service = new AuthService(
+      userRepo as any,
+      authMethodRepo as any,
+      txRepo as any,
+      makeMarketRepo() as any,
+      makePositionRepo() as any,
+      makeJwtService(),
+      dkGateway as any,
+      telegramVerification as any,
+      makeTelegramSimple() as any,
+      makeAuditService() as any,
+      makeAuditLogRepo() as any,
+      makeRedis() as any,
+      { sendSms: jest.fn().mockResolvedValue(true) } as any,
+    );
+
+    authMethodRepo.findOne.mockResolvedValue(null);
+    userRepo.findOneBy
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue({ id: "new-dk-user", isAdmin: false, pwaPasswordHash: "hashed" });
+    userRepo.save.mockResolvedValue({ id: "new-dk-user", isAdmin: false });
+
+    await service.loginWithDKBank("11000000001", undefined, "test-password");
+
+    expect(txRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: TransactionType.FREE_CREDIT,
+        amount: 20,
+        isBonus: true,
+      }),
+    );
+    expect(txRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: TransactionType.DEPOSIT,
+        amount: 1000,
+        balanceBefore: 20,
+        balanceAfter: 1020,
+      }),
+    );
+
+    process.env.NODE_ENV = "test";
   });
 });
