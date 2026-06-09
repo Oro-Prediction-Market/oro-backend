@@ -6,6 +6,7 @@ import {
   UpdateDateColumn,
   OneToMany,
   Index,
+  AfterLoad,
 } from "typeorm";
 import { Outcome } from "./outcome.entity";
 import { Position } from "./position.entity";
@@ -167,4 +168,11 @@ export class Market {
 
   @OneToMany(() => Position, (p) => p.market)
   positions: Position[];
+
+  @AfterLoad()
+  sortOutcomes() {
+    if (this.outcomes?.length) {
+      this.outcomes.sort((a, b) => a.sortOrder - b.sortOrder);
+    }
+  }
 }

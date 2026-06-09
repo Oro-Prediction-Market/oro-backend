@@ -41,6 +41,9 @@ export class Outcome {
   @Column()
   marketId: string;
 
+  @Column({ type: "int", default: 0 })
+  sortOrder: number;
+
   @OneToMany(() => Position, (p) => p.outcome)
   positions: Position[];
 }

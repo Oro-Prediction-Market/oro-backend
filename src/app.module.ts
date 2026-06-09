@@ -112,9 +112,8 @@ import { AmlReport } from "./aml/entities/aml-report.entity";
           AmlAlert,
           AmlReport,
         ],
-        synchronize: false,
-        migrationsRun: true, // run pending migrations on app startup
-        migrations: [__dirname + "/migrations/*{.js,.ts}"],
+        synchronize: true,
+        migrationsRun: false,
         logging: false,
         extra: {
           // App connects DIRECTLY to the CNPG primary (no pooler in path).
