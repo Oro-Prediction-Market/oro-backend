@@ -3,6 +3,7 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  OnModuleInit,
 } from "@nestjs/common";
 import { InjectRepository, InjectDataSource } from "@nestjs/typeorm";
 import { Repository, DataSource } from "typeorm";
@@ -34,7 +35,7 @@ export { OpenPositionDto } from "./dto/open-position.dto";
 export { SubmitDisputeDto } from "./dto/submit-dispute.dto";
 
 @Injectable()
-export class MarketsService {
+export class MarketsService implements OnModuleInit {
   constructor(
     @InjectRepository(Market) private marketRepo: Repository<Market>,
     @InjectRepository(Outcome) private outcomeRepo: Repository<Outcome>,
@@ -47,6 +48,23 @@ export class MarketsService {
     private reputationService: ReputationService,
     private telegram: TelegramSimpleService,
   ) {}
+
+  async onModuleInit() {
+    // Backfill sortOrder for outcomes that were created before the sortOrder column existed.
+    // Uses ctid (physical row order) as a proxy for insertion order within each market.
+    await this.dataSource.query(`
+      WITH ranked AS (
+        SELECT id,
+               ROW_NUMBER() OVER (PARTITION BY "marketId" ORDER BY ctid) - 1 AS rn
+        FROM outcomes
+        WHERE "sortOrder" = 0
+      )
+      UPDATE outcomes
+      SET "sortOrder" = ranked.rn
+      FROM ranked
+      WHERE outcomes.id = ranked.id
+    `);
+  }
 
   /**
    * Returns the last N position events for the live activity ticker.
