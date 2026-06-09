@@ -182,7 +182,8 @@ export class MarketsService {
       .createQueryBuilder("market")
       .leftJoinAndSelect("market.outcomes", "outcome")
       .where("market.status IN (:...activeStatuses)", { activeStatuses })
-      .orderBy("market.createdAt", "DESC");
+      .orderBy("market.createdAt", "DESC")
+      .addOrderBy("outcome.sortOrder", "ASC");
 
     if (q && q.trim()) {
       const safe = q
@@ -212,6 +213,7 @@ export class MarketsService {
       relations: ["outcomes"],
     });
     if (!market) throw new NotFoundException("Market not found");
+    market.outcomes?.sort((a, b) => a.sortOrder - b.sortOrder);
     await this.attachSignal(market);
     await this.redis.setJsonEx(cacheKey, 30, market);
     return market;
@@ -564,6 +566,7 @@ export class MarketsService {
         statuses: [MarketStatus.RESOLVED, MarketStatus.SETTLED],
       })
       .orderBy("market.resolvedAt", "DESC")
+      .addOrderBy("outcome.sortOrder", "ASC")
       .getMany();
 
     if (!markets.length) return [];
@@ -644,6 +647,7 @@ export class MarketsService {
         statuses: [MarketStatus.RESOLVED, MarketStatus.SETTLED],
       })
       .orderBy("market.resolvedAt", "DESC")
+      .addOrderBy("outcome.sortOrder", "ASC")
       .getMany();
 
     if (!markets.length) return [];
