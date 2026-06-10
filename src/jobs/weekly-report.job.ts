@@ -20,6 +20,14 @@ export class WeeklyReportJob {
   /** Every Monday at 3:00 AM UTC (9:00 AM Bhutan time) */
   @Cron("0 3 * * 1")
   async sendWeeklyReport(): Promise<void> {
+    try {
+      await this._sendWeeklyReport();
+    } catch (err: any) {
+      this.logger.error(`[WeeklyReport] Unhandled error: ${err.message}`, err.stack);
+    }
+  }
+
+  private async _sendWeeklyReport(): Promise<void> {
     const now = new Date();
     const weekStart = new Date(now);
     weekStart.setUTCDate(now.getUTCDate() - 7);
@@ -57,7 +65,7 @@ export class WeeklyReportJob {
     }
   }
 
-  // ── Data fetchers ───────────────────────────────────────────────────────────
+  // ── Data fetchers ─────────────────────────────────────────────────────────
 
   private async fetchRevenue(from: Date, to: Date) {
     const row =
@@ -67,7 +75,7 @@ export class WeeklyReportJob {
         .select("COALESCE(SUM(s.houseAmount), 0)", "house")
         .addSelect("COALESCE(SUM(s.totalPool), 0)", "volume")
         .addSelect("COUNT(*)", "settled")
-        .where("s.createdAt >= :from AND s.createdAt < :to", { from, to })
+        .where("s.settledAt >= :from AND s.settledAt < :to", { from, to })
         .andWhere("s.cancelReason IS NULL")
         .getRawOne<{ house: string; volume: string; settled: string }>()) ?? {
         house: "0",
@@ -82,7 +90,7 @@ export class WeeklyReportJob {
       .leftJoin(Settlement, "s", "s.marketId = m.id")
       .addSelect("m.title", "title")
       .addSelect("m.totalPool", "pool")
-      .where("s.createdAt >= :from AND s.createdAt < :to", { from, to })
+      .where("s.settledAt >= :from AND s.settledAt < :to", { from, to })
       .andWhere("s.cancelReason IS NULL")
       .orderBy("m.totalPool", "DESC")
       .limit(1)
