@@ -949,7 +949,6 @@ export class DKBankPaymentService {
     await this.redis.del(`oro:tg-otp:${paymentId}`);
 
     // ── Atomic: balance re-check + DK transfer + ledger debit ────────────────
-    const user = await this.userRepo.findOne({ where: { id: userId } });
     const withdrawalAmount = Number(payment.amount);
 
     const result: { status: "success" | "failed"; failureReason?: string } = {
@@ -957,6 +956,21 @@ export class DKBankPaymentService {
     };
 
     await this.dataSource.transaction(async (em) => {
+      // Lock the USER row first so every balance-affecting operation for this
+      // user serializes. Locking only the payment row (below) is NOT enough:
+      // two *different* pending withdrawals are two different payment rows, so
+      // their locks never collide — both could read the same balance and both
+      // pay out, a double payout against a single balance. The user-row lock
+      // forces the second confirm to wait, then re-read the now-debited balance
+      // and correctly fail. Mirrors the lock pattern in ParimutuelEngine.
+      const lockedUser = await em
+        .getRepository(User)
+        .createQueryBuilder("u")
+        .setLock("pessimistic_write")
+        .where("u.id = :id", { id: userId })
+        .getOne();
+      if (!lockedUser) throw new NotFoundException("User not found");
+
       // Pessimistic lock: re-read payment to prevent concurrent withdrawal attempts
       const lockedPayment = await em
         .getRepository(Payment)
@@ -989,11 +1003,8 @@ export class DKBankPaymentService {
 
       // Bonus credits are play money — they cannot be sent to DK Bank directly.
       // Only the real (non-bonus) portion of the balance is withdrawable.
-      const lockedUser = await em.findOne(User, {
-        where: { id: userId },
-        select: ["id", "bonusBalance"],
-      });
-      const bonusBalance = Number(lockedUser?.bonusBalance ?? 0);
+      // (lockedUser is the row we locked at the top of the transaction.)
+      const bonusBalance = Number(lockedUser.bonusBalance ?? 0);
       const realWithdrawable = balanceBefore - bonusBalance;
 
       if (realWithdrawable < withdrawalAmount) {

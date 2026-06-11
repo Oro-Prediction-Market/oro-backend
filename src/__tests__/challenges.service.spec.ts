@@ -73,12 +73,14 @@ function makeChallengeRepo(
     save: jest.fn().mockImplementation((d: any) => Promise.resolve(d)),
     createQueryBuilder: jest.fn().mockReturnValue({
       leftJoinAndSelect: jest.fn().mockReturnThis(),
+      setLock: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
       addOrderBy: jest.fn().mockReturnThis(),
       limit: jest.fn().mockReturnThis(),
       getMany: jest.fn().mockResolvedValue(challenge ? [challenge] : []),
+      getOne: jest.fn().mockResolvedValue(challenge),
     }),
   };
 }
@@ -108,6 +110,11 @@ function makeDataSource(user: any = makeUser()) {
   const userRepo = {
     findOne: jest.fn().mockResolvedValue(user),
     save: jest.fn().mockImplementation((d: any) => Promise.resolve(d)),
+    createQueryBuilder: jest.fn().mockReturnValue({
+      setLock: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockResolvedValue(user),
+    }),
   };
   const getRepository = jest.fn().mockImplementation((entity: any) => {
     if (entity?.name === "User") return userRepo;
@@ -128,6 +135,21 @@ function makeService(
   const marketRepo = overrides.marketRepo ?? makeMarketRepo();
   const positionRepo = overrides.positionRepo ?? makePositionRepo();
   const dataSource = overrides.dataSource ?? makeDataSource();
+
+  // The service now runs debit/join inside dataSource.transaction(cb => cb(em)).
+  // Provide an EntityManager that routes Challenge → challengeRepo and delegates
+  // User/Transaction to the dataSource's own repos, so locking queries resolve.
+  if (typeof dataSource.transaction !== "function") {
+    const em = {
+      getRepository: jest.fn().mockImplementation((entity: any) => {
+        if (entity?.name === "Challenge") return challengeRepo;
+        return dataSource.getRepository(entity);
+      }),
+    };
+    dataSource.transaction = jest
+      .fn()
+      .mockImplementation((cb: any) => cb(em));
+  }
 
   const sseMock = { emit: jest.fn() } as any;
   const revenueDistMock = { recordDuelDistribution: jest.fn().mockResolvedValue(null) } as any;
