@@ -5,6 +5,7 @@ import { Market } from "../entities/market.entity";
 import { Outcome } from "../entities/outcome.entity";
 import { TerController } from "./ter.controller";
 import { TerPriceService } from "./ter-price.service";
+import { TerPriceSamplerService } from "./ter-price-sampler.service";
 import { TerMarketService } from "./ter-market.service";
 import { MarketsModule } from "../markets/markets.module";
 import { RedisModule } from "../redis/redis.module";
@@ -17,7 +18,7 @@ import { RedisModule } from "../redis/redis.module";
     RedisModule,
   ],
   controllers: [TerController],
-  providers: [TerPriceService, TerMarketService],
+  providers: [TerPriceService, TerPriceSamplerService, TerMarketService],
   exports: [TerPriceService],
 })
 export class TerModule {}

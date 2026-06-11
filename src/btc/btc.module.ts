@@ -5,6 +5,7 @@ import { Market } from "../entities/market.entity";
 import { Outcome } from "../entities/outcome.entity";
 import { BtcController } from "./btc.controller";
 import { BtcPriceService } from "./btc-price.service";
+import { BtcPriceSamplerService } from "./btc-price-sampler.service";
 import { BtcMarketService } from "./btc-market.service";
 import { MarketsModule } from "../markets/markets.module";
 import { RedisModule } from "../redis/redis.module";
@@ -17,7 +18,7 @@ import { RedisModule } from "../redis/redis.module";
     RedisModule,
   ],
   controllers: [BtcController],
-  providers: [BtcPriceService, BtcMarketService],
+  providers: [BtcPriceService, BtcPriceSamplerService, BtcMarketService],
   exports: [BtcPriceService],
 })
 export class BtcModule {}

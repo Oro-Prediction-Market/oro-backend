@@ -1,6 +1,7 @@
 import { Controller, Get, Post, UseGuards } from "@nestjs/common";
 import { ApiTags, ApiOperation } from "@nestjs/swagger";
 import { TerPriceService, TerPrice } from "./ter-price.service";
+import { TerPriceSamplerService } from "./ter-price-sampler.service";
 import { TerMarketService } from "./ter-market.service";
 import { RedisService } from "../redis/redis.service";
 import { Public, JwtAuthGuard, AdminGuard } from "../auth/guards";
@@ -13,6 +14,7 @@ export class TerController {
 
   constructor(
     private readonly terPriceService: TerPriceService,
+    private readonly terPriceSampler: TerPriceSamplerService,
     private readonly terMarketService: TerMarketService,
     private readonly redis: RedisService,
   ) {}
@@ -39,6 +41,23 @@ export class TerController {
     await this.redis.setJsonEx(this.CACHE_KEY, this.CACHE_TTL, price);
 
     return price;
+  }
+
+  @Get("price/history")
+  @Public()
+  @ApiOperation({
+    summary: "Get recent TER price history",
+    description:
+      "Returns the rolling history of recent TER prices sampled every 5 seconds " +
+      "(up to ~5 minutes). Used to seed the live chart on first page load.",
+  })
+  async getPriceHistory(): Promise<TerPrice[]> {
+    const history = await this.terPriceSampler.getHistory();
+    if (history.length > 0) {
+      return history;
+    }
+    // Sampler hasn't produced points yet — return at least the current price
+    return [await this.getPrice()];
   }
 
   @Post("spawn")

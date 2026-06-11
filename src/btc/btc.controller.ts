@@ -1,6 +1,7 @@
 import { Controller, Get, Post, UseGuards } from "@nestjs/common";
 import { ApiTags, ApiOperation } from "@nestjs/swagger";
 import { BtcPriceService, BtcPrice } from "./btc-price.service";
+import { BtcPriceSamplerService } from "./btc-price-sampler.service";
 import { BtcMarketService } from "./btc-market.service";
 import { RedisService } from "../redis/redis.service";
 import { Public, JwtAuthGuard, AdminGuard } from "../auth/guards";
@@ -13,6 +14,7 @@ export class BtcController {
 
   constructor(
     private readonly btcPriceService: BtcPriceService,
+    private readonly btcPriceSampler: BtcPriceSamplerService,
     private readonly btcMarketService: BtcMarketService,
     private readonly redis: RedisService,
   ) {}
@@ -36,6 +38,23 @@ export class BtcController {
     await this.redis.setJsonEx(this.CACHE_KEY, this.CACHE_TTL, price);
 
     return price;
+  }
+
+  @Get("price/history")
+  @Public()
+  @ApiOperation({
+    summary: "Get recent BTC/USD price history",
+    description:
+      "Returns the rolling history of recent BTC/USD prices sampled every 2 seconds " +
+      "(up to ~3 minutes). Used to seed the live chart on first page load.",
+  })
+  async getPriceHistory(): Promise<BtcPrice[]> {
+    const history = await this.btcPriceSampler.getHistory();
+    if (history.length > 0) {
+      return history;
+    }
+    // Sampler hasn't produced points yet — return at least the current price
+    return [await this.getPrice()];
   }
 
   @Post("spawn")
