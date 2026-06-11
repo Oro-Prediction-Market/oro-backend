@@ -54,6 +54,7 @@ import { ProposeResolutionDto } from "./dto/propose-resolution.dto";
 import { GetUsersQueryDto } from "./dto/get-users-query.dto";
 import { ToggleAdminDto } from "./dto/toggle-admin.dto";
 import { HealthCheckResponse } from "./dto/health-check.dto";
+import { csvCell } from "../shared/utils/csv.util";
 
 class CreditUserDto {
   @ApiProperty({ example: 500, description: "Amount to credit (BTN)" })
@@ -1346,11 +1347,7 @@ export class AdminController {
 
     const rows = await qb.getMany();
 
-    const escape = (value: unknown): string => {
-      if (value === null || value === undefined) return "";
-      const str = String(value);
-      return /[",\n\r]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
-    };
+    const escape = csvCell;
 
     const header = [
       "Date",

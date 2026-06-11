@@ -2,6 +2,7 @@ import { Injectable } from "@nestjs/common";
 import * as PDFDocument from "pdfkit";
 import { AmlAlert, AmlAlertType, AmlRiskLevel } from "./entities/aml-alert.entity";
 import { AmlReport } from "./entities/aml-report.entity";
+import { csvCell } from "../shared/utils/csv.util";
 
 const COLOR = {
   GOLD: "#C9A84C",
@@ -26,8 +27,6 @@ const ALERT_TYPE_LABELS: Record<AmlAlertType, string> = {
 @Injectable()
 export class AmlReportService {
   generateCsv(report: AmlReport, alerts: AmlAlert[]): string {
-    const esc = (v: string) => `"${String(v).replace(/"/g, '""')}"`;
-
     const header = [
       "Alert ID", "User CID", "Alert Type", "Risk Level",
       "Description", "Amount (Nu)", "Transaction Count",
@@ -40,13 +39,15 @@ export class AmlReportService {
         a.user?.dkCid ?? "N/A",
         a.alertType,
         a.riskLevel.toUpperCase(),
-        esc(a.description),
+        a.description,
         a.totalAmount ?? "",
         a.transactionCount ?? "",
         new Date(a.createdAt).toISOString(),
         a.isResolved ? "Yes" : "No",
-        a.resolution ? esc(a.resolution) : "",
-      ].join(","),
+        a.resolution ?? "",
+      ]
+        .map(csvCell)
+        .join(","),
     );
 
     const meta = [
