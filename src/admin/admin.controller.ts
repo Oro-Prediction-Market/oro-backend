@@ -11,9 +11,11 @@ import {
   HttpCode,
   Delete,
   Request,
+  Res,
   NotFoundException,
   BadRequestException,
 } from "@nestjs/common";
+import type { Response } from "express";
 import {
   ApiBearerAuth,
   ApiTags,
@@ -1323,6 +1325,71 @@ export class AdminController {
 
     const [data, total] = await qb.getManyAndCount();
     return { data, total };
+  }
+
+  @Get("transactions/export")
+  @ApiOperation({ summary: "Export transactions as CSV — full financial ledger" })
+  @ApiQuery({ name: "type", required: false })
+  async exportTransactions(
+    @Res() res: Response,
+    @Query("type") type?: string,
+  ) {
+    const qb = this.transactionRepo
+      .createQueryBuilder("t")
+      .leftJoinAndSelect("t.user", "user")
+      .orderBy("t.createdAt", "DESC")
+      .take(50000);
+
+    if (type && type !== "all") {
+      qb.where("t.type = :type", { type });
+    }
+
+    const rows = await qb.getMany();
+
+    const escape = (value: unknown): string => {
+      if (value === null || value === undefined) return "";
+      const str = String(value);
+      return /[",\n\r]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+    };
+
+    const header = [
+      "Date",
+      "Transaction ID",
+      "User ID",
+      "Username",
+      "Type",
+      "Amount",
+      "Balance Before",
+      "Balance After",
+      "Bonus",
+      "Note",
+    ];
+    const lines = rows.map((t) =>
+      [
+        t.createdAt.toISOString(),
+        t.id,
+        t.userId,
+        t.user?.username ?? t.user?.firstName ?? "",
+        t.type,
+        t.amount,
+        t.balanceBefore,
+        t.balanceAfter,
+        t.isBonus ? "yes" : "no",
+        t.note ?? "",
+      ]
+        .map(escape)
+        .join(","),
+    );
+    const csv = [header.join(","), ...lines].join("\r\n");
+
+    const date = new Date().toISOString().slice(0, 10);
+    const suffix = type && type !== "all" ? `-${type}` : "";
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="transactions${suffix}-${date}.csv"`,
+    );
+    res.send(csv);
   }
 
   // ── Audit Logs ─────────────────────────────────────────────────────────────
