@@ -4,6 +4,7 @@ import {
   Post,
   Body,
   Headers,
+  Logger,
   UnauthorizedException,
   UseGuards,
 } from "@nestjs/common";
@@ -23,6 +24,8 @@ import { Market, MarketStatus } from "../entities/market.entity";
 @ApiTags("Bot")
 @Controller("bot")
 export class BotController {
+  private readonly logger = new Logger(BotController.name);
+
   constructor(
     private readonly telegramSimpleService: TelegramSimpleService,
     private readonly telegramVerificationService: TelegramVerificationService,
@@ -61,15 +64,24 @@ export class BotController {
     @Body() update: any,
     @Headers("x-telegram-bot-api-secret-token") secretToken: string | undefined,
   ) {
+    // Fail closed: if the webhook secret isn't configured we cannot
+    // authenticate the caller, so reject rather than silently accepting
+    // unauthenticated (and therefore forgeable) Telegram updates. The bot uses
+    // polling in environments without the secret, so this never blocks dev.
     const expected = process.env.TELEGRAM_WEBHOOK_SECRET;
-    if (expected) {
-      const expectedBuf = Buffer.from(expected);
-      const receivedBuf = Buffer.from(secretToken || "");
-      const valid =
-        expectedBuf.length === receivedBuf.length &&
-        timingSafeEqual(expectedBuf, receivedBuf);
-      if (!valid) throw new UnauthorizedException("Invalid webhook token");
+    if (!expected) {
+      this.logger.error(
+        "Rejecting webhook call: TELEGRAM_WEBHOOK_SECRET is not configured. " +
+          "Set it (and register it with Telegram) to enable the webhook.",
+      );
+      throw new UnauthorizedException("Webhook is not configured");
     }
+    const expectedBuf = Buffer.from(expected);
+    const receivedBuf = Buffer.from(secretToken || "");
+    const valid =
+      expectedBuf.length === receivedBuf.length &&
+      timingSafeEqual(expectedBuf, receivedBuf);
+    if (!valid) throw new UnauthorizedException("Invalid webhook token");
     // Bot added to / removed from a group
     if (update.my_chat_member) {
       await this.handleMyChatMember(update.my_chat_member);
