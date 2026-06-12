@@ -194,7 +194,7 @@ export class WeeklyReportJob {
       `👥 <b>Users</b>\n` +
       `🆕 New sign-ups · <b>${users.newUsers}</b>\n` +
       `🔗 DK Bank linked · <b>${users.dkLinked}</b>${pct(users.dkLinked, users.newUsers)}\n` +
-      `🎯 Placed first bet · <b>${users.firstBet}</b>${pct(users.firstBet, users.newUsers)}\n\n` +
+      `🎯 Placed first prediction · <b>${users.firstBet}</b>${pct(users.firstBet, users.newUsers)}\n\n` +
       `━━━━━━━━━━━━━━━━━━━\n\n` +
       `📣 <b>Activity</b>\n` +
       `🗳 Predictions placed · <b>${activity.bets}</b>\n` +
