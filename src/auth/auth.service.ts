@@ -392,7 +392,7 @@ export class AuthService {
    *   written to that existing Telegram user row instead of creating a new one.
    * @param password - Required when the account has a PWA password set.
    */
-  async loginWithDKBank(cid: string, callerUserId?: string, password?: string) {
+  async loginWithDKBank(cid: string, callerUserId?: string, password?: string, referralCode?: string) {
     const account = await this.dkGateway.lookupAccountByCID(cid);
 
     // ── If called by an already-authenticated Telegram user, merge into their row ──
@@ -571,12 +571,25 @@ export class AuthService {
       if (user) {
         // User row exists — just ensure fields are up to date and create the missing auth_method
         const cidChangingHere = user.dkCid !== cid;
+        const earlyPathRef: Record<string, any> = {};
+        if (referralCode && !user.referredByUserId) {
+          const raw = referralCode.startsWith("ref_") ? referralCode.slice(4) : referralCode;
+          const refTelegramId = raw.split("_m_")[0];
+          if (refTelegramId) {
+            const referrer = await this.userRepo.findOne({
+              where: { telegramId: refTelegramId },
+              select: ["id"],
+            });
+            if (referrer) earlyPathRef.referredByUserId = referrer.id;
+          }
+        }
         await this.userRepo.update(user.id, {
           dkCid: cid,
           dkAccountNumber: account.accountNumber,
           dkAccountName: account.accountName,
           phoneNumber: account.phoneNumber || null,
           ...(cidChangingHere ? { dkLinkVerifiedAt: null as any } : {}),
+          ...earlyPathRef,
         });
         await this.telegramVerification.storeDKPhoneHash(
           user.id,
@@ -631,6 +644,18 @@ export class AuthService {
       }
 
       // Brand new user — create account linked to DK Bank identity
+      let newUserReferredByUserId: string | null = null;
+      if (referralCode) {
+        const raw = referralCode.startsWith("ref_") ? referralCode.slice(4) : referralCode;
+        const refTelegramId = raw.split("_m_")[0];
+        if (refTelegramId) {
+          const referrer = await this.userRepo.findOne({
+            where: { telegramId: refTelegramId },
+            select: ["id"],
+          });
+          if (referrer) newUserReferredByUserId = referrer.id;
+        }
+      }
       user = this.userRepo.create({
         firstName: account.accountName.split(" ")[0] || account.accountName,
         lastName: account.accountName.split(" ").slice(1).join(" ") || null,
@@ -638,6 +663,7 @@ export class AuthService {
         dkAccountNumber: account.accountNumber,
         dkAccountName: account.accountName,
         phoneNumber: account.phoneNumber || null,
+        referredByUserId: newUserReferredByUserId,
       });
       await this.userRepo.save(user);
 
@@ -694,11 +720,25 @@ export class AuthService {
       await this.authMethodRepo.save(authMethod);
     } else {
       // Existing user — keep DK fields in sync
+      const existingForRef = await this.userRepo.findOneBy({ id: authMethod.userId });
+      const dkLateRef: Record<string, any> = {};
+      if (referralCode && existingForRef && !existingForRef.referredByUserId) {
+        const raw = referralCode.startsWith("ref_") ? referralCode.slice(4) : referralCode;
+        const refTelegramId = raw.split("_m_")[0];
+        if (refTelegramId) {
+          const referrer = await this.userRepo.findOne({
+            where: { telegramId: refTelegramId },
+            select: ["id"],
+          });
+          if (referrer) dkLateRef.referredByUserId = referrer.id;
+        }
+      }
       await this.userRepo.update(authMethod.userId, {
         dkCid: cid,
         dkAccountNumber: account.accountNumber,
         dkAccountName: account.accountName,
         phoneNumber: account.phoneNumber || null,
+        ...dkLateRef,
       });
       // Re-hash the DK phone in case the registered number changed
       await this.telegramVerification.storeDKPhoneHash(
@@ -1016,6 +1056,7 @@ export class AuthService {
     username?: string;
     phoneNumber?: string;
     email?: string;
+    referralCode?: string;
   }) {
     // ── Verify BhutanApp JWT signature (RS256) ────────────────────────────────
     const rawKey = process.env.BHUTANAPP_JWT_PUBLIC_KEY;
@@ -1101,6 +1142,17 @@ export class AuthService {
       if (!user.email && dto.email) updates.email = dto.email;
       if (!user.phoneNumber && dto.phoneNumber)
         updates.phoneNumber = dto.phoneNumber;
+      if (dto.referralCode && !user.referredByUserId) {
+        const raw = dto.referralCode.startsWith("ref_") ? dto.referralCode.slice(4) : dto.referralCode;
+        const refTelegramId = raw.split("_m_")[0];
+        if (refTelegramId) {
+          const referrer = await this.userRepo.findOne({
+            where: { telegramId: refTelegramId },
+            select: ["id"],
+          });
+          if (referrer) updates.referredByUserId = referrer.id;
+        }
+      }
       if (Object.keys(updates).length)
         await this.userRepo.update(user.id, updates);
 
@@ -1145,6 +1197,18 @@ export class AuthService {
     }
 
     // ── Brand new user — BhutanApp is the primary identity ────────────────────
+    let bhutanNewUserReferredById: string | null = null;
+    if (dto.referralCode) {
+      const raw = dto.referralCode.startsWith("ref_") ? dto.referralCode.slice(4) : dto.referralCode;
+      const refTelegramId = raw.split("_m_")[0];
+      if (refTelegramId) {
+        const referrer = await this.userRepo.findOne({
+          where: { telegramId: refTelegramId },
+          select: ["id"],
+        });
+        if (referrer) bhutanNewUserReferredById = referrer.id;
+      }
+    }
     const nameParts = dto.fullName.trim().split(" ");
     user = this.userRepo.create({
       firstName: nameParts[0] || dto.fullName,
@@ -1154,6 +1218,7 @@ export class AuthService {
       // Users can set their own username in settings.
       phoneNumber: dto.phoneNumber || null,
       email: dto.email || null,
+      referredByUserId: bhutanNewUserReferredById,
       // Mirror Telegram onboarding: explicit starter reputation so callers
       // can sort/filter by score without null-handling everywhere. The DB
       // default exists but TypeORM may not apply it when nullable=true.

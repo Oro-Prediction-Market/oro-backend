@@ -28,4 +28,9 @@ export class BhutanAppAuthDto {
   @IsOptional()
   @IsString()
   email?: string;
+
+  @ApiProperty({ required: false, description: "Referral code from Telegram startParam" })
+  @IsOptional()
+  @IsString()
+  referralCode?: string;
 }

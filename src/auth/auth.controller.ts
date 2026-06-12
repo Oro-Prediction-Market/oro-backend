@@ -79,6 +79,11 @@ class DKBankAuthWithPasswordDto {
   @IsOptional()
   @IsString()
   password?: string;
+
+  @ApiProperty({ required: false, description: "Referral code from Telegram startParam" })
+  @IsOptional()
+  @IsString()
+  referralCode?: string;
 }
 
 class PwaStatusDto {
@@ -208,6 +213,7 @@ export class AuthController {
         dto.cid,
         callerUserId,
         dto.password,
+        dto.referralCode,
       );
       this.setAuthCookie(res, result.token);
       return result;
