@@ -16,12 +16,12 @@ export class BtcPriceService {
 
   async fetchPrice(): Promise<BtcPrice> {
     try {
-      return await this.fetchFromBinance();
+      return await this.fetchFromCoinbase();
     } catch (error) {
       this.logger.warn(
-        `Binance fetch failed: ${error.message}. Falling back to Coinbase.`,
+        `Coinbase fetch failed: ${error.message}. Falling back to Binance.`,
       );
-      return await this.fetchFromCoinbase();
+      return await this.fetchFromBinance();
     }
   }
 
