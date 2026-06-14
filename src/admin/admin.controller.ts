@@ -618,6 +618,80 @@ export class AdminController {
       .sort((a, b) => b.totalResolutions - a.totalResolutions);
   }
 
+  @Get("platform-accuracy")
+  @ApiOperation({
+    summary:
+      "Platform accuracy trend: per-settlement ratio of winning-outcome pool to total pool, grouped by week.",
+  })
+  async getPlatformAccuracy() {
+    // For each settled market (deduplicated), compute what fraction of the
+    // total bet pool landed on the winning outcome. Average across all markets
+    // gives the overall crowd accuracy; weekly grouping gives the trend line.
+    const rows = await this.dataSource.query(`
+      WITH canonical AS (
+        SELECT DISTINCT ON (s."marketId")
+          s."marketId",
+          s."winningOutcomeId",
+          s."totalPool",
+          s."settledAt"
+        FROM settlements s
+        INNER JOIN markets m ON m.id = s."marketId"
+        WHERE s."cancelReason" IS NULL
+          AND s."totalPool" > 0
+        ORDER BY s."marketId", s."settledAt" ASC
+      ),
+      with_winner AS (
+        SELECT
+          c."marketId",
+          c."settledAt",
+          c."totalPool",
+          o."totalBetAmount" AS "winnerPool"
+        FROM canonical c
+        INNER JOIN outcomes o
+          ON o.id = c."winningOutcomeId"
+          AND o."marketId" = c."marketId"
+      )
+      SELECT
+        TO_CHAR(DATE_TRUNC('week', "settledAt"), 'YYYY-MM-DD') AS week,
+        COUNT(*)::int AS "marketCount",
+        ROUND(AVG("winnerPool"::numeric / "totalPool"::numeric) * 100, 1) AS "avgAccuracyPct"
+      FROM with_winner
+      GROUP BY DATE_TRUNC('week', "settledAt")
+      ORDER BY DATE_TRUNC('week', "settledAt") ASC
+    `);
+
+    const overall = await this.dataSource.query(`
+      WITH canonical AS (
+        SELECT DISTINCT ON (s."marketId")
+          s."winningOutcomeId",
+          s."totalPool",
+          s."marketId"
+        FROM settlements s
+        INNER JOIN markets m ON m.id = s."marketId"
+        WHERE s."cancelReason" IS NULL
+          AND s."totalPool" > 0
+        ORDER BY s."marketId", s."settledAt" ASC
+      )
+      SELECT
+        COUNT(*)::int AS "totalMarkets",
+        ROUND(AVG(o."totalBetAmount"::numeric / c."totalPool"::numeric) * 100, 1) AS "overallAccuracyPct"
+      FROM canonical c
+      INNER JOIN outcomes o
+        ON o.id = c."winningOutcomeId"
+        AND o."marketId" = c."marketId"
+    `);
+
+    return {
+      overallAccuracyPct: Number(overall[0]?.overallAccuracyPct ?? 0),
+      totalMarkets: Number(overall[0]?.totalMarkets ?? 0),
+      trend: rows.map((r: any) => ({
+        week: r.week,
+        marketCount: r.marketCount,
+        avgAccuracyPct: Number(r.avgAccuracyPct),
+      })),
+    };
+  }
+
   @Post("markets/:id/cancel")
   @HttpCode(200)
   @ApiOperation({ summary: "Cancel market & refund all positions" })
