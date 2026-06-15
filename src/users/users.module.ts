@@ -1,6 +1,5 @@
 import { Module } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
-import { ScheduleModule } from "@nestjs/schedule";
 import { JwtModule } from "@nestjs/jwt";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import { User } from "../entities/user.entity";
@@ -31,7 +30,6 @@ import { TelegramModule } from "../telegram/telegram.module";
       Season,
       DKGatewayAuthToken,
     ]),
-    ScheduleModule.forRoot(),
     TelegramModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
