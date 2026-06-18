@@ -353,8 +353,24 @@ export class RevenueDistributionService {
     return this.distributionRepo.find({ where: { marketId } });
   }
 
-  async getAll(): Promise<RevenueDistribution[]> {
-    return this.distributionRepo.find({ order: { createdAt: "DESC" } });
+  async getAll(
+    page = 1,
+    limit = 20,
+    status?: DistributionStatus,
+  ): Promise<{
+    data: RevenueDistribution[];
+    total: number;
+    page: number;
+    limit: number;
+  }> {
+    const where = status ? { status } : {};
+    const [data, total] = await this.distributionRepo.findAndCount({
+      where,
+      order: { createdAt: "DESC" },
+      skip: (page - 1) * limit,
+      take: limit,
+    });
+    return { data, total, page, limit };
   }
 
   async getSummary(): Promise<{

@@ -35,6 +35,7 @@ import {
 } from "../markets/markets.service";
 import { KeeperService } from "../markets/keeper.service";
 import { RevenueDistributionService } from "../markets/revenue-distribution.service";
+import { DistributionStatus } from "../entities/revenue-distribution.entity";
 import { FixturesService } from "./fixtures.service";
 import { AuditService } from "./audit.service";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
@@ -1674,9 +1675,17 @@ export class AdminController {
   }
 
   @Get("revenue/all")
-  @ApiOperation({ summary: "Get all revenue distributions" })
-  async getAllRevenue() {
-    return this.revenueDistributionService.getAll();
+  @ApiOperation({ summary: "Get all revenue distributions (paginated)" })
+  async getAllRevenue(
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
+    @Query("status") status?: string,
+  ) {
+    return this.revenueDistributionService.getAll(
+      page ? Number(page) : 1,
+      limit ? Number(limit) : 20,
+      status as DistributionStatus | undefined,
+    );
   }
 
   @Get("revenue/account")
