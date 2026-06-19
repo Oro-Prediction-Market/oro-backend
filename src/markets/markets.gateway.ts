@@ -5,7 +5,7 @@ import {
   OnGatewayConnection,
   OnGatewayDisconnect,
 } from "@nestjs/websockets";
-import { Logger } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { Server, Socket } from "socket.io";
 
 export interface MarketUpdatedPayload {
@@ -19,6 +19,7 @@ export interface MarketUpdatedPayload {
   }[];
 }
 
+@Injectable()
 @WebSocketGateway({
   cors: {
     origin: "*",

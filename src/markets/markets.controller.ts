@@ -12,6 +12,13 @@ import {
   HttpStatus,
   BadRequestException,
 } from "@nestjs/common";
+import { IsString, MaxLength } from "class-validator";
+
+class FeedHeartbeatDto {
+  @IsString()
+  @MaxLength(64)
+  sessionId!: string;
+}
 import {
   ApiBearerAuth,
   ApiTags,
@@ -42,6 +49,37 @@ export class MarketsController {
     @InjectRepository(User) private userRepo: Repository<User>,
     private redis: RedisService,
   ) {}
+
+  // Sorted-set key — members are session IDs, scores are Unix timestamps (seconds)
+  private static readonly FEED_PRESENCE_KEY = "presence:feed";
+  // Consider a session active if it heartbeated within this window
+  private static readonly PRESENCE_TTL_SEC = 45;
+
+  /**
+   * Called by the feed page on mount and every 30 s.
+   * Upserts the caller's session into the presence set and returns the live viewer count.
+   */
+  @Post("feed/heartbeat")
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Feed page presence heartbeat — returns live viewer count" })
+  async feedHeartbeat(@Body() dto: FeedHeartbeatDto) {
+    const { sessionId } = dto;
+    const key = MarketsController.FEED_PRESENCE_KEY;
+    const ttl = MarketsController.PRESENCE_TTL_SEC;
+    const now = Math.floor(Date.now() / 1000);
+    const cutoff = now - ttl;
+    try {
+      const r = this.redis.redis;
+      // Upsert this session with current timestamp, then prune stale entries
+      await r.zadd(key, now, sessionId);
+      await r.zremrangebyscore(key, "-inf", cutoff);
+      const count = await r.zcard(key);
+      return { count };
+    } catch {
+      return { count: 0 };
+    }
+  }
 
   @Get()
   @Public()
