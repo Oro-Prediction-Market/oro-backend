@@ -63,8 +63,8 @@ export class TerMarketService {
       // Market closes in 24 hours
       const closesAt = new Date(now.getTime() + 24 * 60 * 60 * 1000);
 
-      // Betting closes 2 minutes before market close
-      const bettingClosesAt = new Date(closesAt.getTime() - 2 * 60 * 1000);
+      // Betting closes 4 hours before market close
+      const bettingClosesAt = new Date(closesAt.getTime() - 4 * 60 * 60 * 1000);
 
       await this.dataSource.transaction(async (manager) => {
         // Create market
@@ -184,7 +184,7 @@ export class TerMarketService {
     for (const market of markets) {
       // Just log it - the frontend will check bettingClosesAt
       this.logger.log(
-        `Betting closed on TER market ${market.id} at ${now.toISOString()}`,
+        `Betting closed on TER market ${market.id} at ${now.toISOString()} (4h before settlement)`,
       );
     }
   }
@@ -322,7 +322,7 @@ export class TerMarketService {
       const p = price ?? (await this.terPriceService.fetchPrice());
       const now = new Date();
       const closesAt = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-      const bettingClosesAt = new Date(closesAt.getTime() - 2 * 60 * 1000);
+      const bettingClosesAt = new Date(closesAt.getTime() - 4 * 60 * 60 * 1000);
 
       await this.dataSource.transaction(async (manager) => {
         const market = manager.create(Market, {
