@@ -208,10 +208,11 @@ export class TerMarketService {
     // Fetch settlement price
     const settlementPrice = await this.terPriceService.fetchPrice();
 
-    // Get reference price from metadata
-    const referenceMidPrice = market.metadata?.referenceTerPrice;
+    // Get reference buy price from metadata (fall back to midPrice for legacy markets)
+    const referenceBuyPrice =
+      market.metadata?.referenceBuyPrice ?? market.metadata?.referenceTerPrice;
 
-    if (!referenceMidPrice) {
+    if (!referenceBuyPrice) {
       this.logger.error(
         `TER market ${market.id} has no reference price in metadata`,
       );
@@ -222,12 +223,12 @@ export class TerMarketService {
       return;
     }
 
-    // Determine winner: UP if settlement > reference, DOWN if settlement < reference
+    // Determine winner: UP if settlement buy price > reference buy price, DOWN if lower
     let winnerLabel: "UP" | "DOWN" | null = null;
 
-    if (settlementPrice.midPrice > referenceMidPrice) {
+    if (settlementPrice.buyPrice > referenceBuyPrice) {
       winnerLabel = "UP";
-    } else if (settlementPrice.midPrice < referenceMidPrice) {
+    } else if (settlementPrice.buyPrice < referenceBuyPrice) {
       winnerLabel = "DOWN";
     }
 
@@ -263,10 +264,7 @@ export class TerMarketService {
       closeXauUsd: settlementPrice.xauUsd,
     };
 
-    const referenceBuyPrice = (market.metadata?.referenceBuyPrice || 0).toFixed(
-      4,
-    );
-    const evidenceNote = `TER price at close: Nu ${settlementPrice.buyPrice.toFixed(4)} (mid: Nu ${settlementPrice.midPrice.toFixed(4)}) vs open: Nu ${referenceBuyPrice} (mid: Nu ${referenceMidPrice.toFixed(4)})`;
+    const evidenceNote = `TER buy price at close: Nu ${settlementPrice.buyPrice.toFixed(4)} vs open: Nu ${referenceBuyPrice.toFixed(4)} → ${winnerLabel}`;
 
     await this.marketRepo.update(market.id, {
       status: MarketStatus.CLOSED,
