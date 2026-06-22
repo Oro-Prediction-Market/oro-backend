@@ -8,8 +8,8 @@ import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 
 // Real-money prizes paid every month to the top-3 finishers.
-// #1 → Nu 150, #2 → Nu 100, #3 → Nu 50
-const SEASON_PRIZES: Record<number, number> = { 1: 150, 2: 100, 3: 50 };
+// #1 → Nu 500, #2 → Nu 400, #3 → Nu 300
+const SEASON_PRIZES: Record<number, number> = { 1: 500, 2: 400, 3: 300 };
 
 @Injectable()
 export class SeasonService implements OnApplicationBootstrap {
