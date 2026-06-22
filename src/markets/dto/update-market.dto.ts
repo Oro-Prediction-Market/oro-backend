@@ -49,4 +49,10 @@ export class UpdateMarketDto {
   @IsOptional()
   @IsString()
   settlementSource?: string;
+
+  /** Knockout bracket slot id for wc-match markets, e.g. "r16-3" (stored in metadata.bracketSlot) */
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  bracketSlot?: string;
 }

@@ -86,4 +86,10 @@ export class CreateMarketDto {
   @IsOptional()
   @IsString()
   mechanism?: string;
+
+  /** Knockout bracket slot id for wc-match markets, e.g. "r16-3" (stored in metadata.bracketSlot) */
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  bracketSlot?: string;
 }

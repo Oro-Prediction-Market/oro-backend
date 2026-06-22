@@ -170,6 +170,7 @@ export class MarketsService implements OnModuleInit {
         externalMarketType: dto.externalMarketType ?? null,
         settlementSource: dto.settlementSource ?? null,
         subcategory: dto.subcategory ?? null,
+        metadata: dto.bracketSlot ? { bracketSlot: dto.bracketSlot } : null,
       });
 
       const saved = await this.marketRepo.save(market);
@@ -303,6 +304,11 @@ export class MarketsService implements OnModuleInit {
     if (dto.houseEdgePct !== undefined) market.houseEdgePct = dto.houseEdgePct;
     if (dto.liquidityParam !== undefined)
       market.liquidityParam = dto.liquidityParam;
+    if (dto.bracketSlot !== undefined)
+      market.metadata = {
+        ...(market.metadata ?? {}),
+        bracketSlot: dto.bracketSlot || undefined,
+      };
 
     // Rename outcome labels matched by ID — order-independent, safe
     if (dto.outcomes && dto.outcomes.length > 0) {

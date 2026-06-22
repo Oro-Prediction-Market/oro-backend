@@ -7,6 +7,7 @@ import { Settlement } from "../entities/settlement.entity";
 import { Position } from "../entities/position.entity";
 import { Market } from "../entities/market.entity";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
+import { RedisService } from "../redis/redis.service";
 
 @Injectable()
 export class WeeklyReportJob {
@@ -15,11 +16,28 @@ export class WeeklyReportJob {
   constructor(
     @InjectDataSource() private dataSource: DataSource,
     private readonly telegram: TelegramSimpleService,
+    private readonly redis: RedisService,
   ) {}
 
   /** Every Monday at 3:00 AM UTC (9:00 AM Bhutan time) */
   @Cron("0 3 * * 1")
   async sendWeeklyReport(): Promise<void> {
+    // Single-leader guard: the app runs multiple instances, each with its own
+    // scheduler, so without this every instance would send the report. The lock
+    // key is week-specific and intentionally NOT released — the first instance
+    // to win sends, the rest skip, and the key expires before next Monday.
+    const weekKey = new Date().toISOString().slice(0, 10); // Monday's UTC date
+    const lock = await this.redis.acquireLock(
+      `cron:weekly-report:${weekKey}`,
+      6 * 3600,
+    );
+    if (!lock) {
+      this.logger.log(
+        "[WeeklyReport] Another instance already holds the lock — skipping",
+      );
+      return;
+    }
+
     try {
       await this._sendWeeklyReport();
     } catch (err: any) {
