@@ -348,6 +348,80 @@ export class MarketsService implements OnModuleInit {
     return saved;
   }
 
+  /**
+   * Add a new outcome to an existing market. Only allowed while the market is
+   * still accepting bets (UPCOMING or OPEN) — once it is CLOSED or beyond,
+   * the outcome set is frozen so settlement math stays sound.
+   *
+   * In a parimutuel market each outcome has its own independent pool, so a
+   * late-added outcome simply starts at a zero pool; existing positions are
+   * unaffected. LMSR probabilities are recomputed across all outcomes.
+   */
+  async addOutcome(
+    marketId: string,
+    label: string,
+    imageUrl?: string | null,
+  ): Promise<Market> {
+    const market = await this.findOne(marketId);
+
+    if (
+      market.status !== MarketStatus.UPCOMING &&
+      market.status !== MarketStatus.OPEN
+    ) {
+      throw new BadRequestException(
+        `Cannot add an outcome to a market in "${market.status}" state. ` +
+          `Outcomes can only be added while the market is Upcoming or Open.`,
+      );
+    }
+
+    const cleanLabel = (label ?? "").trim();
+    if (!cleanLabel) {
+      throw new BadRequestException("Outcome label is required");
+    }
+
+    const existing = await this.outcomeRepo.find({ where: { marketId } });
+    if (
+      existing.some(
+        (o) => o.label.trim().toLowerCase() === cleanLabel.toLowerCase(),
+      )
+    ) {
+      throw new BadRequestException(
+        `An outcome labelled "${cleanLabel}" already exists on this market`,
+      );
+    }
+
+    const nextSortOrder =
+      existing.reduce((max, o) => Math.max(max, o.sortOrder), -1) + 1;
+
+    const outcome = this.outcomeRepo.create({
+      marketId,
+      label: cleanLabel,
+      imageUrl: imageUrl ?? null,
+      totalBetAmount: 0,
+      currentOdds: 0,
+      lmsrProbability: 0,
+      isWinner: false,
+      sortOrder: nextSortOrder,
+    });
+    await this.outcomeRepo.save(outcome);
+
+    // Recompute LMSR probabilities across the full (now larger) outcome set
+    const all = await this.outcomeRepo.find({ where: { marketId } });
+    const probs = this.lmsrService.calculateProbabilities(
+      all,
+      Number(market.liquidityParam) || 1000,
+    );
+    await Promise.all(
+      all.map((o, i) => {
+        o.lmsrProbability = probs[i];
+        return this.outcomeRepo.save(o);
+      }),
+    );
+
+    await this.invalidateMarketCache(marketId);
+    return this.findOne(marketId);
+  }
+
   async placeBet(userId: string, marketId: string, dto: OpenPositionDto) {
     return this.engine.placePosition(
       userId,

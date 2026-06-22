@@ -50,6 +50,7 @@ import { User } from "../entities/user.entity";
 import { Payment } from "../entities/payment.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { TransitionDto } from "./dto/transition.dto";
+import { AddOutcomeDto } from "./dto/add-outcome.dto";
 import { ResolveDto } from "./dto/resolve.dto";
 import { ProposeResolutionDto } from "./dto/propose-resolution.dto";
 import { GetUsersQueryDto } from "./dto/get-users-query.dto";
@@ -393,6 +394,36 @@ export class AdminController {
       meta: {
         fields: Object.keys(dto).filter((k) => (dto as any)[k] !== undefined),
       },
+      ipAddress: req.ip,
+    });
+    return result;
+  }
+
+  @Post("markets/:id/outcomes")
+  @ApiOperation({
+    summary:
+      "Add a new outcome to a market (allowed while Upcoming or Open)",
+  })
+  async addOutcome(
+    @Param("id") id: string,
+    @Body() dto: AddOutcomeDto,
+    @Request() req: any,
+  ) {
+    const before = await this.marketsService.findOne(id);
+    const result = await this.marketsService.addOutcome(
+      id,
+      dto.label,
+      dto.imageUrl ?? null,
+    );
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action: AuditAction.MARKET_TRANSITION, // reuse closest action; no MARKET_UPDATE exists
+      entityType: "market",
+      entityId: id,
+      before: { outcomes: before.outcomes?.map((o) => o.label) },
+      after: { outcomes: result.outcomes?.map((o) => o.label) },
+      meta: { addedOutcome: dto.label },
       ipAddress: req.ip,
     });
     return result;
