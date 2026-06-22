@@ -6,7 +6,7 @@ import {
 } from "@nestjs/common";
 import { InjectRepository, InjectDataSource } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
-import { Repository, DataSource, In } from "typeorm";
+import { Repository, DataSource, In, EntityManager } from "typeorm";
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
 import { RedisService } from "../redis/redis.service";
@@ -17,7 +17,6 @@ import { Payment } from "../entities/payment.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { Settlement } from "../entities/settlement.entity";
 import { Dispute, DisputeBondStatus } from "../entities/dispute.entity";
-import { Challenge, ChallengeStatus } from "../entities/challenge.entity";
 import { User } from "../entities/user.entity";
 import { LMSRService } from "./lmsr.service";
 import { ReputationService } from "./reputation.service";
@@ -81,7 +80,7 @@ export class ParimutuelEngine implements OnModuleInit {
   ) {}
 
   private async getCreditsBalance(
-    em: { getRepository: Function },
+    em: EntityManager,
     userId: string,
   ): Promise<number> {
     const { balance } = await em
@@ -205,23 +204,6 @@ export class ParimutuelEngine implements OnModuleInit {
         if (!user.phoneNumber) {
           throw new BadRequestException(
             "A verified phone number is required to place a bet. Go to Wallet Page → Link DK Bank.",
-          );
-        }
-
-        // Block betting when the user already has an ACTIVE duel on this market.
-        // An ACTIVE duel means both sides have locked a wager on a specific outcome —
-        // placing an additional parimutuel bet on the *opposite* outcome would be a
-        // self-contradicting position, and placing on the *same* outcome would give
-        // the user an unfair double stake advantage.
-        const activeDuel = await em.findOne(Challenge, {
-          where: [
-            { marketId, creatorId: userId, status: ChallengeStatus.ACTIVE },
-            { marketId, joinerId: userId, status: ChallengeStatus.ACTIVE },
-          ],
-        });
-        if (activeDuel) {
-          throw new BadRequestException(
-            "You have an active duel on this market. Settle or wait for the duel to complete before placing a new bet.",
           );
         }
 
@@ -431,13 +413,6 @@ export class ParimutuelEngine implements OnModuleInit {
         this.logger.error(`Referral bonus credit failed: ${err.message}`),
       );
 
-      // Bust cache NOW (before returning) so the immediate refetch gets fresh data
-      await this.redis.del(
-        "oro:cache:markets:all",
-        `oro:cache:market:${marketId}`,
-      );
-      await this.redis.del(`oro:cache:balance:${userId}`);
-
       const result = completedPosition! as Position & {
         streak?: { count: number; dayInCycle: number; boostActive: boolean };
       };
@@ -449,8 +424,6 @@ export class ParimutuelEngine implements OnModuleInit {
         };
       }
       return result;
-    } catch (err) {
-      throw err;
     } finally {
       if (lockToken)
         await this.redis.releaseLock(`market:${marketId}`, lockToken);
@@ -1390,8 +1363,8 @@ Good luck! 🍀
         await this.reputationService
           .recordContrarianOutcome(
             bet.userId,
-            (bet as any).predictedProbability != null
-              ? Number((bet as any).predictedProbability)
+            bet.predictedProbability != null
+              ? Number(bet.predictedProbability)
               : null,
             bet.status === PositionStatus.WON,
           )
@@ -1649,12 +1622,7 @@ Good luck! 🍀
    * markets without issuing one query per bet.
    */
   private async refundPositions(
-    em: {
-      getRepository: Function;
-      find: Function;
-      save: Function;
-      create: Function;
-    },
+    em: EntityManager,
     bets: Position[],
     note: string,
   ): Promise<void> {
