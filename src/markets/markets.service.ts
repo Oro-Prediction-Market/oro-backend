@@ -195,6 +195,8 @@ export class MarketsService implements OnModuleInit {
       MarketStatus.OPEN,
       MarketStatus.CLOSED,
       MarketStatus.RESOLVING,
+      MarketStatus.RESOLVED,
+      MarketStatus.SETTLED,
     ];
 
     const qb = this.marketRepo
