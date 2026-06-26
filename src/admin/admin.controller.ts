@@ -279,6 +279,21 @@ export class AdminController {
       },
       ipAddress: req.ip,
     });
+    // NOTE: Channel announcement is no longer sent automatically on create.
+    // Use POST /admin/markets/:id/announce to broadcast a market when desired.
+    return market;
+  }
+
+  // ⚠️ DO NOT DELETE THIS ENDPOINT.
+  // Channel announcement was intentionally removed from createMarket so that
+  // creating a market no longer spams the Telegram channel. This endpoint is
+  // the *only* way to broadcast a market to the channel now — it is triggered
+  // manually by an admin (the 📣 Announce button in Market Management). Removing
+  // it would leave admins with no way to announce new markets at all.
+  @Post("markets/:id/announce")
+  @ApiOperation({ summary: "Announce a market to the Telegram channel" })
+  async announceMarket(@Param("id") id: string, @Request() req: any) {
+    const market = await this.marketsService.findOne(id);
     const miniAppUrl = process.env.TELEGRAM_MINI_APP_URL || "";
     const outcomes = (market.outcomes ?? [])
       .map((o) => `• ${o.label}`)
@@ -292,7 +307,16 @@ export class AdminController {
     await this.telegramSimple.postToChannel(
       `🚀 <b>NEW MARKET</b>\n\n📊 <b>${market.title}</b>\n\n🎲 <b>Outcomes:</b>\n${outcomes}\n\n⏰ Closes: ${closesAt}\n\n👉 <a href="${miniAppUrl}">Predict Now</a>`,
     );
-    return market;
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action: AuditAction.MARKET_UPDATE,
+      entityType: "market",
+      entityId: market.id,
+      after: { announced: true, title: market.title },
+      ipAddress: req.ip,
+    });
+    return { success: true };
   }
 
   @Get("markets")
@@ -498,6 +522,12 @@ export class AdminController {
       windowMinutes >= 60
         ? `${windowMinutes / 60} hour${windowMinutes > 60 ? "s" : ""}`
         : `${windowMinutes} minutes`;
+    // RESOLUTION ANNOUNCEMENT — intentional, keep it.
+    // Unlike market creation, this channel post is tied to a deliberate admin
+    // action (proposing an outcome / opening the objection window), not a
+    // routine event, so it does NOT spam users. Keep posting it automatically
+    // here. If this ever needs the same manual-only treatment as create, move
+    // it to a dedicated endpoint rather than deleting it.
     await this.telegramSimple.postToChannel(
       `⚖️ <b>OBJECTION WINDOW OPEN</b>\n\n` +
         `📊 <b>${before.title}</b>\n\n` +
@@ -571,6 +601,11 @@ export class AdminController {
             ? `✅ Correct objectors: bonds returned + rewarded\n`
             : `❌ Wrong objectors: bonds forfeited`)
         : "";
+    // WINNER ANNOUNCEMENT — intentional, keep it.
+    // Posting the final winner + evidence when a market settles is a deliberate,
+    // one-time-per-market event triggered by the admin resolving it, so it is
+    // not noisy and users expect it. Keep posting it automatically here. Do not
+    // remove it along with the create-time announcement cleanup.
     await this.telegramSimple.postToChannel(
       `✅ <b>MARKET SETTLED</b>\n\n` +
         `📊 <b>${before.title}</b>\n\n` +
