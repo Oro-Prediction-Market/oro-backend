@@ -639,16 +639,20 @@ export class MarketsService implements OnModuleInit {
     // Bust balance cache
     await this.redis.del(`oro:cache:balance:${userId}`);
 
-    // Notify admin channel
-    this.telegram
-      .postToChannel(
-        `⚠️ <b>New Objection — Bond Locked</b>\n` +
-          `Market: <i>${market.title}</i>\n` +
-          `User: ${userId}\n` +
-          `Bond: <b>Nu ${bondAmount}</b>\n` +
-          `Reason: ${dto.reason.slice(0, 200)}`,
-      )
-      .catch(() => undefined);
+    // Channel notification for new objections was intentionally disabled to
+    // avoid spamming the Telegram channel — with many markets, members felt
+    // disturbed by the volume of objection alerts. Objections are still
+    // recorded and visible to admins in the admin panel.
+    // To re-enable, uncomment the block below:
+    // this.telegram
+    //   .postToChannel(
+    //     `⚠️ <b>New Objection — Bond Locked</b>\n` +
+    //       `Market: <i>${market.title}</i>\n` +
+    //       `User: ${userId}\n` +
+    //       `Bond: <b>Nu ${bondAmount}</b>\n` +
+    //       `Reason: ${dto.reason.slice(0, 200)}`,
+    //   )
+    //   .catch(() => undefined);
 
     await this.invalidateMarketCache(marketId);
     return {
