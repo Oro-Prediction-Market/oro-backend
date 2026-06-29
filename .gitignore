@@ -31,3 +31,6 @@ graphify-out/
 
 # Test coverage
 coverage/
+
+# Use bun.lock (prod) / yarn.lock (dev); npm lockfile is not used
+package-lock.json
