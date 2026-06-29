@@ -6,10 +6,11 @@ import { Season, SeasonStatus } from "../entities/season.entity";
 import { User } from "../entities/user.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
+import { RedisService } from "../redis/redis.service";
 
 // Real-money prizes paid every month to the top-3 finishers.
-// #1 → Nu 500, #2 → Nu 400, #3 → Nu 300
-const SEASON_PRIZES: Record<number, number> = { 1: 500, 2: 400, 3: 300 };
+// #1 → Nu 700, #2 → Nu 500, #3 → Nu 350
+const SEASON_PRIZES: Record<number, number> = { 1: 700, 2: 500, 3: 350 };
 
 @Injectable()
 export class SeasonService implements OnApplicationBootstrap {
@@ -20,6 +21,7 @@ export class SeasonService implements OnApplicationBootstrap {
     @InjectRepository(User) private userRepo: Repository<User>,
     @InjectDataSource() private dataSource: DataSource,
     private readonly telegram: TelegramSimpleService,
+    private readonly redis: RedisService,
   ) {}
 
   /** Self-heal: if the cron missed a rollover (e.g. pod down on the 1st), catch up on startup. */
@@ -40,6 +42,23 @@ export class SeasonService implements OnApplicationBootstrap {
   /** Run on the 1st of each month at 00:05 UTC to close the previous month and open the next. */
   @Cron("5 0 1 * *")
   async rolloverSeason(): Promise<void> {
+    // Single-leader guard: the app runs multiple replicas, each with its own
+    // scheduler. Without this, every replica would close the season AND credit
+    // top-3 prizes — risking duplicate payouts. The lock key is month-specific
+    // and intentionally NOT released: the first replica to win runs the rollover,
+    // the rest skip, and the key expires long before next month's tick.
+    const monthKey = new Date().toISOString().slice(0, 7); // "YYYY-MM"
+    const lock = await this.redis.acquireLock(
+      `cron:season-rollover:${monthKey}`,
+      6 * 3600,
+    );
+    if (!lock) {
+      this.logger.log(
+        "[Season] Another replica already holds the rollover lock — skipping",
+      );
+      return;
+    }
+
     this.logger.log("Rolling over monthly season…");
     await this.closeActiveSeason();
     await this.openNewSeason();

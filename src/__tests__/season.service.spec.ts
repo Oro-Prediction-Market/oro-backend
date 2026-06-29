@@ -17,13 +17,26 @@ function makeSeasonRepo(activeSeason: any = null) {
 
 function makeUserRepo(users: any[] = []) {
   const qb: any = {
+    innerJoin: jest.fn().mockReturnThis(),
     select: jest.fn().mockReturnThis(),
+    addSelect: jest.fn().mockReturnThis(),
     where: jest.fn().mockReturnThis(),
     andWhere: jest.fn().mockReturnThis(),
+    groupBy: jest.fn().mockReturnThis(),
+    having: jest.fn().mockReturnThis(),
     orderBy: jest.fn().mockReturnThis(),
     addOrderBy: jest.fn().mockReturnThis(),
     limit: jest.fn().mockReturnThis(),
     getMany: jest.fn().mockResolvedValue(users),
+    // closeActiveSeason ranks by season aggregates; mirror each user's stats
+    // into the raw row so winRate computes without an actual DB.
+    getRawAndEntities: jest.fn().mockResolvedValue({
+      entities: users,
+      raw: users.map((u) => ({
+        seasonTotal: u.totalPredictions ?? 0,
+        seasonWins: u.correctPredictions ?? 0,
+      })),
+    }),
   };
   return { createQueryBuilder: jest.fn().mockReturnValue(qb) };
 }
@@ -47,13 +60,21 @@ function makeTelegram() {
   return { sendMessage: jest.fn().mockResolvedValue(undefined) };
 }
 
+function makeRedis() {
+  // Default: this replica wins the rollover lock so the body runs.
+  return {
+    acquireLock: jest.fn().mockResolvedValue("lock-token"),
+    releaseLock: jest.fn().mockResolvedValue(undefined),
+  };
+}
+
 describe("SeasonService", () => {
   describe("openNewSeason", () => {
     it("creates a new season when none exists for current week", async () => {
       const seasonRepo = makeSeasonRepo();
       // findOne for duplicate check returns null (no existing season)
       seasonRepo.findOne.mockResolvedValue(null);
-      const svc = new SeasonService(seasonRepo as any, makeUserRepo() as any, makeDataSource() as any, makeTelegram() as any);
+      const svc = new SeasonService(seasonRepo as any, makeUserRepo() as any, makeDataSource() as any, makeTelegram() as any, makeRedis() as any);
 
       const result = await svc.openNewSeason();
 
@@ -70,7 +91,7 @@ describe("SeasonService", () => {
       };
       const seasonRepo = makeSeasonRepo();
       seasonRepo.findOne.mockResolvedValue(existing);
-      const svc = new SeasonService(seasonRepo as any, makeUserRepo() as any, makeDataSource() as any, makeTelegram() as any);
+      const svc = new SeasonService(seasonRepo as any, makeUserRepo() as any, makeDataSource() as any, makeTelegram() as any, makeRedis() as any);
 
       const result = await svc.openNewSeason();
 
@@ -82,7 +103,7 @@ describe("SeasonService", () => {
   describe("closeActiveSeason", () => {
     it("does nothing when no active season exists", async () => {
       const seasonRepo = makeSeasonRepo(null);
-      const svc = new SeasonService(seasonRepo as any, makeUserRepo() as any, makeDataSource() as any, makeTelegram() as any);
+      const svc = new SeasonService(seasonRepo as any, makeUserRepo() as any, makeDataSource() as any, makeTelegram() as any, makeRedis() as any);
 
       await svc.closeActiveSeason();
 
@@ -117,6 +138,7 @@ describe("SeasonService", () => {
         makeUserRepo(users) as any,
         makeDataSource() as any,
         makeTelegram() as any,
+        makeRedis() as any,
       );
 
       await svc.closeActiveSeason();
@@ -136,7 +158,7 @@ describe("SeasonService", () => {
     it("returns active season", async () => {
       const active = { id: "s1", status: SeasonStatus.ACTIVE };
       const seasonRepo = makeSeasonRepo(active);
-      const svc = new SeasonService(seasonRepo as any, makeUserRepo() as any, makeDataSource() as any, makeTelegram() as any);
+      const svc = new SeasonService(seasonRepo as any, makeUserRepo() as any, makeDataSource() as any, makeTelegram() as any, makeRedis() as any);
 
       const result = await svc.getCurrentSeason();
 
@@ -145,7 +167,7 @@ describe("SeasonService", () => {
 
     it("returns null when no active season", async () => {
       const seasonRepo = makeSeasonRepo(null);
-      const svc = new SeasonService(seasonRepo as any, makeUserRepo() as any, makeDataSource() as any, makeTelegram() as any);
+      const svc = new SeasonService(seasonRepo as any, makeUserRepo() as any, makeDataSource() as any, makeTelegram() as any, makeRedis() as any);
 
       const result = await svc.getCurrentSeason();
 
@@ -161,7 +183,7 @@ describe("SeasonService", () => {
       ];
       const seasonRepo = makeSeasonRepo();
       seasonRepo.find.mockResolvedValue(closed);
-      const svc = new SeasonService(seasonRepo as any, makeUserRepo() as any, makeDataSource() as any, makeTelegram() as any);
+      const svc = new SeasonService(seasonRepo as any, makeUserRepo() as any, makeDataSource() as any, makeTelegram() as any, makeRedis() as any);
 
       const result = await svc.getSeasonHistory(5);
 
