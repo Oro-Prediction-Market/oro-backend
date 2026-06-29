@@ -29,6 +29,7 @@ import { ParimutuelEngine } from "./parimutuel.engine";
 import { LMSRService } from "./lmsr.service";
 import { ReputationService } from "./reputation.service";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
+import { bracketAdvance, WC_KICKOFFS } from "./wc-knockout";
 export { CreateMarketDto } from "./dto/create-market.dto";
 export { UpdateMarketDto } from "./dto/update-market.dto";
 export { OpenPositionDto } from "./dto/open-position.dto";
@@ -486,7 +487,80 @@ export class MarketsService implements OnModuleInit {
         )
         .catch(() => undefined);
     }
+    // Knockout: once this match is decided, advance the winner into the next
+    // round and open that fixture for betting (no-op for non-bracket markets).
+    await this.maybeAdvanceBracket(marketId);
     return result;
+  }
+
+  /**
+   * When a wc-match market resolves, check whether its sibling feeder match is
+   * also resolved. If both winners are known and the next-round market doesn't
+   * exist yet, create it (two winners as outcomes) and open it immediately.
+   *
+   * Idempotent and best-effort: any failure is logged, never thrown, so it can
+   * never break market resolution.
+   */
+  private async maybeAdvanceBracket(resolvedMarketId: string): Promise<void> {
+    try {
+      const market = await this.findOne(resolvedMarketId);
+      if (!market || market.subcategory !== "wc-match") return;
+      const slotId = (market.metadata as any)?.bracketSlot as
+        | string
+        | undefined;
+      if (!slotId) return;
+
+      const adv = bracketAdvance(slotId);
+      if (!adv) return; // final, or unrecognised slot id
+
+      // Load all wc-match markets once so we can resolve siblings + dedupe.
+      const wcMatches = await this.marketRepo.find({
+        where: { subcategory: "wc-match" },
+        relations: ["outcomes"],
+      });
+      const bySlot = (sid: string) =>
+        wcMatches.find((m) => (m.metadata as any)?.bracketSlot === sid);
+
+      // Already created (by a prior feeder's resolution or by an admin)? Stop.
+      if (bySlot(adv.nextSlotId)) return;
+
+      const isResolved = (m?: Market) =>
+        !!m &&
+        (m.status === MarketStatus.RESOLVED ||
+          m.status === MarketStatus.SETTLED);
+      const winnerLabel = (m: Market) =>
+        m.outcomes?.find((o) => o.id === m.resolvedOutcomeId)?.label;
+
+      const feederA = bySlot(adv.feeders[0]);
+      const feederB = bySlot(adv.feeders[1]);
+      // Both feeders must be decided before the next fixture is known.
+      if (!isResolved(feederA) || !isResolved(feederB)) return;
+
+      const teamA = winnerLabel(feederA!);
+      const teamB = winnerLabel(feederB!);
+      if (!teamA || !teamB) return;
+
+      const kickoff = WC_KICKOFFS[adv.nextSlotId] ?? undefined;
+      const created = await this.create({
+        title: `${teamA} vs ${teamB}`,
+        subcategory: "wc-match",
+        bracketSlot: adv.nextSlotId,
+        outcomes: [{ label: teamA }, { label: teamB }],
+        opensAt: new Date().toISOString(),
+        closesAt: kickoff,
+      } as CreateMarketDto);
+
+      // Open right away so bettors don't wait for the keeper's next tick.
+      await this.transition(created.id, MarketStatus.OPEN);
+
+      this.telegram
+        .postToChannel(
+          `🏆 <b>Knockout advance:</b> ${teamA} vs ${teamB} — betting is now open!`,
+        )
+        .catch(() => undefined);
+    } catch (err) {
+      console.error("maybeAdvanceBracket failed:", err);
+    }
   }
 
   async cancel(marketId: string) {
