@@ -940,11 +940,29 @@ export class MarketsService implements OnModuleInit {
     });
   }
 
+  /** Full objection records incl. objector identity — for ADMIN review use only. */
   getDisputesByMarket(marketId: string): Promise<Dispute[]> {
     return this.disputeRepo.find({
       where: { marketId },
       order: { createdAt: "DESC" },
     });
+  }
+
+  /**
+   * Public-safe view of a market's objections — `userId`/`user` are deliberately
+   * omitted so an unauthenticated caller cannot enumerate which users objected
+   * to which markets. Used by the @Public() markets endpoint only.
+   */
+  async getPublicDisputesByMarket(marketId: string) {
+    const disputes = await this.getDisputesByMarket(marketId);
+    return disputes.map((d) => ({
+      id: d.id,
+      reason: d.reason,
+      upheld: d.upheld,
+      bondAmount: d.bondAmount,
+      bondStatus: d.bondStatus,
+      createdAt: d.createdAt,
+    }));
   }
 
   /** Returns objection count, window info, and the bond cost for this user to object. */

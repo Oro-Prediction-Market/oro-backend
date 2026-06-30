@@ -115,9 +115,17 @@ export class ChallengesController {
       outcomeId: challenge.outcomeId,
       outcomeLabel: challenge.outcome?.label ?? null,
       creatorId: challenge.creatorId,
-      creatorName: challenge.creator?.username ?? challenge.creator?.telegramId ?? null,
+      // Never expose raw telegramId (a directly-resolvable account handle) to
+      // other users — fall back to first name, then a generic label.
+      creatorName:
+        challenge.creator?.username ??
+        challenge.creator?.firstName ??
+        "Anonymous",
       joinerId: challenge.joinerId ?? null,
-      joinerName: challenge.joiner?.username ?? challenge.joiner?.telegramId ?? null,
+      joinerName:
+        challenge.joiner?.username ??
+        challenge.joiner?.firstName ??
+        null,
       winnerId: challenge.winnerId ?? null,
       wagerAmount: ghostActive ? null : Number(challenge.wagerAmount ?? 0),
       isOwner,

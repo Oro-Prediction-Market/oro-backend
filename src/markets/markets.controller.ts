@@ -207,7 +207,7 @@ export class MarketsController {
   @ApiOperation({ summary: "Get disputes for a market" })
   @ApiResponse({ status: 200, type: [Dispute] })
   getDisputes(@Param("id") id: string) {
-    return this.marketsService.getDisputesByMarket(id);
+    return this.marketsService.getPublicDisputesByMarket(id);
   }
 
   @Get(":id/dispute-info")

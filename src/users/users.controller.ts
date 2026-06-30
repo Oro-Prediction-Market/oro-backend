@@ -497,6 +497,7 @@ export class UsersController {
     @Query("period") period: "all" | "week" = "all",
   ) {
     const myId: string | null = req.user?.userId ?? null;
+    const anon = myId == null;
 
     if (period === "week") {
       const monthStart = new Date();
@@ -536,10 +537,10 @@ export class UsersController {
         return {
           rank: i + 1,
           id: r.id,
-          firstName: r.firstName,
-          lastName: r.lastName,
-          username: r.username,
-          photoUrl: r.photoUrl,
+          firstName: anon ? "Predictor" : r.firstName,
+          lastName: anon ? null : r.lastName,
+          username: anon ? null : r.username,
+          photoUrl: anon ? null : r.photoUrl,
           reputationScore:
             r.reputationScore !== null ? Number(r.reputationScore) : null,
           reputationTier: r.reputationTier,
@@ -599,10 +600,10 @@ export class UsersController {
     const board = rows.entities.map((u, i) => ({
       rank: i + 1,
       id: u.id,
-      firstName: u.firstName,
-      lastName: u.lastName,
-      username: u.username,
-      photoUrl: u.photoUrl,
+      firstName: anon ? "Predictor" : u.firstName,
+      lastName: anon ? null : u.lastName,
+      username: anon ? null : u.username,
+      photoUrl: anon ? null : u.photoUrl,
       reputationScore: u.reputationScore,
       reputationTier: u.reputationTier,
       totalPredictions: u.totalPredictions,
