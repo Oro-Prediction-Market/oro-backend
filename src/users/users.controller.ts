@@ -525,9 +525,12 @@ export class UsersController {
         .where("p.placedAt >= :monthStart", { monthStart })
         .andWhere("p.status IN ('won', 'lost')")
         .groupBy("u.id")
-        .having("COUNT(p.id) >= 3")
-        .orderBy('"weeklyWins"', "DESC")
-        .addOrderBy('"weeklyPredictions"', "DESC")
+        .having("COUNT(p.id) >= 10")
+        .orderBy(
+          "SUM(CASE WHEN p.status = 'won' THEN 1 ELSE 0 END)::float / COUNT(p.id)",
+          "DESC",
+        )
+        .addOrderBy("COUNT(p.id)", "DESC")
         .limit(50)
         .getRawMany();
 
@@ -554,16 +557,19 @@ export class UsersController {
         };
       });
 
-      const totalRankedRaw = await this.betRepo
+      // One row per qualifying user (>=10 monthly predictions); count the rows.
+      // NB: GROUP BY u.id + COUNT(DISTINCT u.id) + getRawOne() always returns 1,
+      // because each group is a single user — hence the old "1 ranked" bug.
+      const totalRankedRows = await this.betRepo
         .createQueryBuilder("p")
         .innerJoin("p.user", "u")
         .where("p.placedAt >= :monthStart", { monthStart })
         .andWhere("p.status IN ('won', 'lost')")
         .groupBy("u.id")
-        .having("COUNT(p.id) >= 3")
-        .select("COUNT(DISTINCT u.id)", "cnt")
-        .getRawOne();
-      const totalRanked = Number(totalRankedRaw?.cnt ?? 0);
+        .having("COUNT(p.id) >= 10")
+        .select("u.id", "id")
+        .getRawMany();
+      const totalRanked = totalRankedRows.length;
 
       const meInBoard = board.find((r) => r.isMe);
       return {

@@ -96,7 +96,7 @@ export class SeasonService implements OnApplicationBootstrap {
         "seasonWins",
       )
       .groupBy("u.id")
-      .having("COUNT(p.id) >= 3")
+      .having("COUNT(p.id) >= 10")
       .orderBy(
         `SUM(CASE WHEN p.status = 'won' THEN 1 ELSE 0 END)::float / COUNT(p.id)`,
         "DESC",
