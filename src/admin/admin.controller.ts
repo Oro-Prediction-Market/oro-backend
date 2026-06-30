@@ -51,6 +51,7 @@ import { Payment } from "../entities/payment.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { TransitionDto } from "./dto/transition.dto";
 import { AddOutcomeDto } from "./dto/add-outcome.dto";
+import { SetOutcomeEliminatedDto } from "./dto/set-outcome-eliminated.dto";
 import { ResolveDto } from "./dto/resolve.dto";
 import { ProposeResolutionDto } from "./dto/propose-resolution.dto";
 import { GetUsersQueryDto } from "./dto/get-users-query.dto";
@@ -448,6 +449,38 @@ export class AdminController {
       before: { outcomes: before.outcomes?.map((o) => o.label) },
       after: { outcomes: result.outcomes?.map((o) => o.label) },
       meta: { addedOutcome: dto.label },
+      ipAddress: req.ip,
+    });
+    return result;
+  }
+
+  @Patch("markets/:id/outcomes/:outcomeId/eliminated")
+  @ApiOperation({
+    summary:
+      "Mark an outcome as eliminated (stops new bets on it) or restore it",
+  })
+  async setOutcomeEliminated(
+    @Param("id") id: string,
+    @Param("outcomeId") outcomeId: string,
+    @Body() dto: SetOutcomeEliminatedDto,
+    @Request() req: any,
+  ) {
+    const before = await this.marketsService.findOne(id);
+    const beforeOutcome = before.outcomes?.find((o) => o.id === outcomeId);
+    const result = await this.marketsService.setOutcomeEliminated(
+      id,
+      outcomeId,
+      dto.isEliminated,
+    );
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action: AuditAction.MARKET_TRANSITION, // reuse closest action; no MARKET_UPDATE exists
+      entityType: "market",
+      entityId: id,
+      before: { outcomeId, isEliminated: beforeOutcome?.isEliminated },
+      after: { outcomeId, isEliminated: dto.isEliminated },
+      meta: { outcomeLabel: beforeOutcome?.label, outcomeId },
       ipAddress: req.ip,
     });
     return result;

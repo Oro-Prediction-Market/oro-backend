@@ -431,6 +431,30 @@ export class MarketsService implements OnModuleInit {
     return this.findOne(marketId);
   }
 
+  async setOutcomeEliminated(
+    marketId: string,
+    outcomeId: string,
+    isEliminated: boolean,
+  ): Promise<Market> {
+    const outcome = await this.outcomeRepo.findOne({
+      where: { id: outcomeId, marketId },
+    });
+    if (!outcome) {
+      throw new BadRequestException("Outcome not found in this market");
+    }
+    if (outcome.isWinner) {
+      throw new BadRequestException(
+        "Cannot eliminate an outcome that is already marked as a winner",
+      );
+    }
+
+    outcome.isEliminated = isEliminated;
+    await this.outcomeRepo.save(outcome);
+
+    await this.invalidateMarketCache(marketId);
+    return this.findOne(marketId);
+  }
+
   async placeBet(userId: string, marketId: string, dto: OpenPositionDto) {
     return this.engine.placePosition(
       userId,

@@ -34,6 +34,9 @@ export class Outcome {
   @Column({ default: false })
   isWinner: boolean;
 
+  @Column({ default: false })
+  isEliminated: boolean;
+
   @ManyToOne(() => Market, (m) => m.outcomes, { onDelete: "CASCADE" })
   @JoinColumn()
   market: Market;

@@ -186,6 +186,11 @@ export class ParimutuelEngine implements OnModuleInit {
         if (!outcome)
           throw new BadRequestException("Outcome not found in this market");
 
+        if (outcome.isEliminated)
+          throw new BadRequestException(
+            `No longer accepting bets on "${outcome.label}" — this outcome has been eliminated.`,
+          );
+
         const user = await em.findOne(User, { where: { id: userId } });
         if (!user) throw new BadRequestException("User not found");
 
