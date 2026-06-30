@@ -525,7 +525,7 @@ export class UsersController {
         .where("p.placedAt >= :monthStart", { monthStart })
         .andWhere("p.status IN ('won', 'lost')")
         .groupBy("u.id")
-        .having("COUNT(p.id) >= 10")
+        .having("COUNT(p.id) >= 15")
         .orderBy(
           "SUM(CASE WHEN p.status = 'won' THEN 1 ELSE 0 END)::float / COUNT(p.id)",
           "DESC",
@@ -566,7 +566,7 @@ export class UsersController {
         .where("p.placedAt >= :monthStart", { monthStart })
         .andWhere("p.status IN ('won', 'lost')")
         .groupBy("u.id")
-        .having("COUNT(p.id) >= 10")
+        .having("COUNT(p.id) >= 15")
         .select("u.id", "id")
         .getRawMany();
       const totalRanked = totalRankedRows.length;
