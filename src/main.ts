@@ -2,8 +2,13 @@ import "reflect-metadata";
 import * as dotenv from "dotenv";
 // Set Bhutan timezone (UTC+6) before anything else
 process.env.TZ = "Asia/Thimphu";
-import { NestFactory, HttpAdapterHost } from "@nestjs/core";
-import { ValidationPipe, HttpException, Logger } from "@nestjs/common";
+import { NestFactory, HttpAdapterHost, Reflector } from "@nestjs/core";
+import {
+  ValidationPipe,
+  HttpException,
+  Logger,
+  ClassSerializerInterceptor,
+} from "@nestjs/common";
 import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
 import { BaseExceptionFilter } from "@nestjs/core";
 import { ArgumentsHost, Catch, ExceptionFilter } from "@nestjs/common";
@@ -138,6 +143,11 @@ async function bootstrap() {
       transform: true,
     }),
   );
+
+  // Global response serialization — strips @Exclude()'d fields (e.g. password
+  // and phone-identity hashes on User) from every entity returned by the API,
+  // including nested relations (payment.user, transaction.user, dispute.user).
+  app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
 
   // Swagger docs — controlled by SWAGGER_ENABLED env var.
   // Default: enabled in non-prod, disabled in prod (set SWAGGER_ENABLED=true to override).

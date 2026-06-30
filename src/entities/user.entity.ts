@@ -7,6 +7,7 @@ import {
   OneToMany,
   Index,
 } from "typeorm";
+import { Exclude } from "class-transformer";
 import { AuthMethod } from "./auth-method.entity";
 import { Position } from "./position.entity";
 import { Payment } from "./payment.entity";
@@ -85,6 +86,7 @@ export class User {
    * Compared against dkPhoneHash on every payment to confirm identity.
    * NEVER stores the raw phone number.
    */
+  @Exclude()
   @Column({ type: "varchar", nullable: true })
   telegramPhoneHash: string | null;
 
@@ -92,6 +94,7 @@ export class User {
    * HMAC-SHA-256 hash of the phone number returned by DK Bank for this CID.
    * Set at registration / DK-link time.
    */
+  @Exclude()
   @Column({ type: "varchar", nullable: true })
   dkPhoneHash: string | null;
 
@@ -244,6 +247,7 @@ export class User {
    * Set from the TMA Settings page. Null = no PWA password set yet
    * (CID-only login is allowed for backwards compat until the user sets one).
    */
+  @Exclude()
   @Column({ type: "varchar", nullable: true })
   pwaPasswordHash: string | null;
 
