@@ -579,7 +579,7 @@ export class MarketsService implements OnModuleInit {
 
       this.telegram
         .postToChannel(
-          `🏆 <b>Knockout advance:</b> ${teamA} vs ${teamB} — betting is now open!`,
+          `🏆 <b>Knockout advance:</b> ${teamA} vs ${teamB} — prediction is now open!`,
         )
         .catch(() => undefined);
     } catch (err) {
