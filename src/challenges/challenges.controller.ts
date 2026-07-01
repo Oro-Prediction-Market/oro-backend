@@ -98,8 +98,7 @@ export class ChallengesController {
 
   private toResponse(challenge: any, currentUserId: string) {
     const botUsername = process.env.BOT_USERNAME ?? "OroPredictBot";
-    const appPath = process.env.BOT_APP_PATH ?? "app";
-    const link = `https://t.me/${botUsername}/${appPath}?startapp=challenge_${challenge.creatorId}_m_${challenge.marketId}_o_${challenge.outcomeId}`;
+    const link = `https://t.me/${botUsername}?startapp=challenge_${challenge.id}`;
 
     const isOwner = challenge.creatorId === currentUserId;
     // Ghost card: hide wager amount from non-owners while challenge is still OPEN
