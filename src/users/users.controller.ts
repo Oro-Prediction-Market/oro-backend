@@ -458,7 +458,7 @@ export class UsersController {
 
     const botUsername =
       this.config.get<string>("TELEGRAM_BOT_USERNAME") ?? "OroPredictBot";
-    const referralLink = `https://t.me/${botUsername}/app?startapp=ref_${user?.telegramId ?? userId}`;
+    const referralLink = `https://t.me/${botUsername}?startapp=ref_${user?.telegramId ?? userId}`;
 
     // Browser/PWA share link — opens oro.fun with the ref code in the query
     // string, which the PWA reads on load and forwards as referralCode at login.

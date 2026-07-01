@@ -216,7 +216,7 @@ export class BotController {
           const isReferral = cmdPayload.startsWith("ref_");
           const botUsername = process.env.BOT_USERNAME || "OroPredictBot";
           const miniAppLink = isReferral
-            ? `https://t.me/${botUsername}/app?startapp=${cmdPayload}`
+            ? `https://t.me/${botUsername}?startapp=${cmdPayload}`
             : miniAppUrl;
 
           const payload: Record<string, unknown> = {

@@ -3,7 +3,7 @@ import { ParimutuelEngine } from "../markets/parimutuel.engine";
 
 /**
  * Verifies GET /users/me/referral returns a DIRECT Mini App deep link
- * (t.me/<bot>/app?startapp=ref_<telegramId>) so the referral code lands in
+ * (t.me/<bot>?startapp=ref_<telegramId>) so the referral code lands in
  * start_param on first launch — instead of the old bot-chat ?start= link that
  * required the invitee to also tap the bot's "Open Oro" button.
  */
@@ -41,12 +41,12 @@ describe("UsersController.getReferral link format", () => {
     return controller;
   }
 
-  it("returns a direct /app?startapp=ref_<telegramId> deep link", async () => {
+  it("returns a direct ?startapp=ref_<telegramId> deep link", async () => {
     const controller = buildController("12345");
     const res = await controller.getReferral({ user: { userId: "user-uuid" } });
 
     expect(res.referralLink).toBe(
-      "https://t.me/OroPredictBot/app?startapp=ref_12345",
+      "https://t.me/OroPredictBot?startapp=ref_12345",
     );
   });
 
@@ -55,7 +55,7 @@ describe("UsersController.getReferral link format", () => {
     const res = await controller.getReferral({ user: { userId: "user-uuid" } });
 
     expect(res.referralLink).not.toContain("?start=");
-    expect(res.referralLink).toContain("/app?startapp=");
+    expect(res.referralLink).toContain("?startapp=");
   });
 
   it("honours the configured bot username", async () => {
@@ -63,7 +63,7 @@ describe("UsersController.getReferral link format", () => {
     const res = await controller.getReferral({ user: { userId: "user-uuid" } });
 
     expect(res.referralLink).toBe(
-      "https://t.me/SomeOtherBot/app?startapp=ref_999",
+      "https://t.me/SomeOtherBot?startapp=ref_999",
     );
   });
 
