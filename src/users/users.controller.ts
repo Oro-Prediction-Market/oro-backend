@@ -458,7 +458,7 @@ export class UsersController {
 
     const botUsername =
       this.config.get<string>("TELEGRAM_BOT_USERNAME") ?? "OroPredictBot";
-    const referralLink = `https://t.me/${botUsername}?start=ref_${user?.telegramId ?? userId}`;
+    const referralLink = `https://t.me/${botUsername}/app?startapp=ref_${user?.telegramId ?? userId}`;
 
     // Total bonus credited across all referrals
     const { total } = await this.transactionRepo
