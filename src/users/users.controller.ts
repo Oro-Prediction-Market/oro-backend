@@ -460,6 +460,14 @@ export class UsersController {
       this.config.get<string>("TELEGRAM_BOT_USERNAME") ?? "OroPredictBot";
     const referralLink = `https://t.me/${botUsername}/app?startapp=ref_${user?.telegramId ?? userId}`;
 
+    // Browser/PWA share link — opens oro.fun with the ref code in the query
+    // string, which the PWA reads on load and forwards as referralCode at login.
+    const refId = user?.telegramId ?? userId;
+    const webBase = (
+      this.config.get<string>("FRONTEND_URL") ?? "https://oro.fun"
+    ).replace(/\/+$/, "");
+    const webReferralLink = `${webBase}/?ref=${refId}`;
+
     // Total bonus credited across all referrals
     const { total } = await this.transactionRepo
       .createQueryBuilder("t")
@@ -477,6 +485,7 @@ export class UsersController {
 
     return {
       referralLink,
+      webReferralLink,
       referredCount,
       convertedCount,
       totalEarned: Number(total),
