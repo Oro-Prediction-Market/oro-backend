@@ -47,6 +47,12 @@ export interface TelegramInitData {
   photo_url?: string;
   auth_date: number;
   hash: string;
+  /**
+   * Deep-link start param carried inside the signed initData when the Mini App
+   * is opened via `t.me/<bot>?startapp=<param>`. Used as the authoritative
+   * source for referral attribution — independent of any frontend capture.
+   */
+  start_param?: string;
 }
 
 @Injectable()
@@ -121,13 +127,26 @@ export class AuthService {
 
     const userJson = params.get("user");
     if (!userJson) throw new UnauthorizedException("Missing user in initData");
-    return { ...JSON.parse(userJson), auth_date: authDate, hash };
+    return {
+      ...JSON.parse(userJson),
+      auth_date: authDate,
+      hash,
+      start_param: params.get("start_param") ?? undefined,
+    };
   }
 
   // ── Login / Register via Telegram ─────────────────────────────────────────
   async loginWithTelegram(rawInitData: string, referralCode?: string) {
     const tgUser = this.validateTelegramInitData(rawInitData);
     const providerId = String(tgUser.id);
+
+    // Prefer the referral code the frontend forwarded, but fall back to the
+    // start_param embedded in the signed initData. The latter is authoritative
+    // and immune to frontend capture bugs / cold-launch timing.
+    const initDataStartParam = tgUser.start_param?.startsWith("ref_")
+      ? tgUser.start_param
+      : undefined;
+    const effectiveReferralCode = referralCode ?? initDataStartParam;
 
     // Check for existing auth method or user
     const authMethod = await this.authMethodRepo.findOne({
@@ -170,7 +189,7 @@ export class AuthService {
           username: tgUser.username,
           photoUrl,
         },
-        referralCode,
+        referralCode: effectiveReferralCode,
       };
     }
 
@@ -178,10 +197,10 @@ export class AuthService {
 
     // Resolve referrer for late attribution (user already exists but has no referrer)
     let referredByUserId: string | null = null;
-    if (referralCode) {
-      const raw = referralCode.startsWith("ref_")
-        ? referralCode.slice(4)
-        : referralCode;
+    if (effectiveReferralCode) {
+      const raw = effectiveReferralCode.startsWith("ref_")
+        ? effectiveReferralCode.slice(4)
+        : effectiveReferralCode;
       const refTelegramId = raw.split("_m_")[0];
       if (refTelegramId && refTelegramId !== providerId) {
         const referrer = await this.userRepo.findOne({
@@ -193,6 +212,8 @@ export class AuthService {
     }
     this.logger.log(
       `[Referral] returning user tg=${providerId} referralCode=${referralCode ?? "<none>"} ` +
+        `initDataStartParam=${tgUser.start_param ?? "<none>"} ` +
+        `effective=${effectiveReferralCode ?? "<none>"} ` +
         `resolvedReferrer=${referredByUserId ?? "<none>"} ` +
         `existingReferrer=${existingUser.referredByUserId ?? "<null>"} ` +
         `willAttribute=${!!(referredByUserId && !existingUser.referredByUserId)}`,
