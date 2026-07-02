@@ -1510,7 +1510,7 @@ export class AdminController {
 
     const qb = this.transactionRepo
       .createQueryBuilder("t")
-      .leftJoinAndSelect("t.user", "user")
+      .leftJoinAndSelect("t.user", "txUser")
       .orderBy("t.createdAt", "DESC")
       .skip(skip)
       .take(take);
@@ -1526,10 +1526,10 @@ export class AdminController {
       const term = `%${safe}%`;
       qb.andWhere(
         `(
-          LOWER(t.id::text)                    LIKE :term ESCAPE '\\'
-          OR LOWER(COALESCE(user.username,''))  LIKE :term ESCAPE '\\'
-          OR LOWER(COALESCE(user."firstName",'')) LIKE :term ESCAPE '\\'
-          OR LOWER(COALESCE(t.note,''))         LIKE :term ESCAPE '\\'
+          LOWER(t.id::text)                        LIKE :term ESCAPE '\\'
+          OR LOWER(COALESCE("txUser".username,''))  LIKE :term ESCAPE '\\'
+          OR LOWER(COALESCE("txUser"."firstName",'')) LIKE :term ESCAPE '\\'
+          OR LOWER(COALESCE(t.note,''))             LIKE :term ESCAPE '\\'
         )`,
         { term },
       );
