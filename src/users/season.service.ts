@@ -12,6 +12,21 @@ import { RedisService } from "../redis/redis.service";
 // #1 → Nu 700, #2 → Nu 500, #3 → Nu 350
 const SEASON_PRIZES: Record<number, number> = { 1: 700, 2: 500, 3: 350 };
 
+// ── Season leaderboard scoring ──────────────────────────────────────────────
+// Ranking blends prediction skill with volume so the board rewards
+// players who are both accurate AND active — not pure luck on a tiny sample.
+//
+//   score = SKILL_WEIGHT * winRate + VOLUME_WEIGHT * volNorm
+//
+// winRate is 0..1 (wins / resolved picks). volNorm is the user's volume
+// log-compressed and normalized to the top qualifier (0..1), so a whale can't
+// run away with the board — doubling an already-large stake barely moves it.
+// Only real-money (non-bonus) resolved picks count toward volume.
+// Tune the weights here; they must sum to 1.
+const SEASON_MIN_PICKS = 15;
+const SEASON_SKILL_WEIGHT = 0.6;
+const SEASON_VOLUME_WEIGHT = 0.4;
+
 @Injectable()
 export class SeasonService implements OnApplicationBootstrap {
   private readonly logger = new Logger(SeasonService.name);
@@ -70,10 +85,12 @@ export class SeasonService implements OnApplicationBootstrap {
     });
     if (!active) return;
 
-    // Snapshot top-10 leaderboard at close time — ranked by win rate within
-    // this season's date range (min 3 predictions to qualify).
-    // Use getRawAndEntities so season-specific aggregates are available.
-    const { entities: top10users, raw: top10raw } = await this.userRepo
+    // Pull every qualifier (≥ SEASON_MIN_PICKS resolved picks this season) with
+    // its wins and real-money volume, then rank by the blended skill+volume
+    // score in JS (volume normalization needs the cohort's max, so we can't just
+    // ORDER BY in SQL). Use getRawAndEntities so aggregates ride alongside the
+    // User entities we later hand to prize crediting.
+    const { entities: qualifierUsers, raw: qualifierRaw } = await this.userRepo
       .createQueryBuilder("u")
       .innerJoin(
         "positions",
@@ -95,30 +112,54 @@ export class SeasonService implements OnApplicationBootstrap {
         `SUM(CASE WHEN p.status = 'won' THEN 1 ELSE 0 END)`,
         "seasonWins",
       )
-      .groupBy("u.id")
-      .having("COUNT(p.id) >= 15")
-      .orderBy(
-        `SUM(CASE WHEN p.status = 'won' THEN 1 ELSE 0 END)::float / COUNT(p.id)`,
-        "DESC",
+      // Real-money volume only — bonus-funded (free-credit) bets are excluded so
+      // the board can't be inflated with free stakes.
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN p."isBonusFunded" = false THEN p.amount ELSE 0 END), 0)`,
+        "seasonVolume",
       )
-      .addOrderBy("COUNT(p.id)", "DESC")
-      .limit(10)
+      .groupBy("u.id")
+      .having("COUNT(p.id) >= :minPicks", { minPicks: SEASON_MIN_PICKS })
       .getRawAndEntities();
 
-    const snapshot = top10users.map((u, i) => {
-      const raw = top10raw[i];
-      const seasonTotal = Number(raw?.seasonTotal ?? 0);
-      const seasonWins = Number(raw?.seasonWins ?? 0);
-      return {
-        rank: i + 1,
-        userId: u.id,
-        firstName: u.firstName,
-        username: u.username,
-        reputationScore: u.reputationScore,
-        reputationTier: u.reputationTier,
-        winRate: seasonTotal > 0 ? Math.round((seasonWins / seasonTotal) * 100) : 0,
-      };
+    // Zip entities with their aggregates and derive win rate + volume.
+    const rows = qualifierUsers.map((user, i) => {
+      const raw = qualifierRaw[i];
+      const total = Number(raw?.seasonTotal ?? 0);
+      const wins = Number(raw?.seasonWins ?? 0);
+      const volume = Number(raw?.seasonVolume ?? 0);
+      return { user, total, wins, volume, winRate: total > 0 ? wins / total : 0 };
     });
+
+    // Log-compress + normalize volume to the top qualifier, then blend.
+    const maxVolume = rows.reduce((m, r) => Math.max(m, r.volume), 0);
+    const scored = rows
+      .map((r) => ({
+        ...r,
+        score:
+          SEASON_SKILL_WEIGHT * r.winRate +
+          SEASON_VOLUME_WEIGHT *
+            (maxVolume > 0 ? Math.log1p(r.volume) / Math.log1p(maxVolume) : 0),
+      }))
+      // Rank by blended score; break ties on raw win rate, then volume.
+      .sort(
+        (a, b) =>
+          b.score - a.score || b.winRate - a.winRate || b.volume - a.volume,
+      );
+
+    const top10 = scored.slice(0, 10);
+
+    const snapshot = top10.map((r, i) => ({
+      rank: i + 1,
+      userId: r.user.id,
+      firstName: r.user.firstName,
+      username: r.user.username,
+      reputationScore: r.user.reputationScore,
+      reputationTier: r.user.reputationTier,
+      winRate: r.total > 0 ? Math.round(r.winRate * 100) : 0,
+      volume: Math.round(r.volume),
+      score: Math.round(r.score * 10000) / 10000,
+    }));
     await this.seasonRepo.update(active.id, {
       status: SeasonStatus.CLOSED,
       winnersSnapshot: snapshot as any,
@@ -129,7 +170,10 @@ export class SeasonService implements OnApplicationBootstrap {
     );
 
     // Credit top-3 prizes and send DMs (fire-and-forget so rollover isn't blocked)
-    this.creditSeasonPrizes(top10users.slice(0, 3), active).catch((err: Error) =>
+    this.creditSeasonPrizes(
+      top10.slice(0, 3).map((r) => r.user),
+      active,
+    ).catch((err: Error) =>
       this.logger.error(`Season prize crediting failed: ${err.message}`),
     );
   }
