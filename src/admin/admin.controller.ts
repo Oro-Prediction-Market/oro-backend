@@ -1495,24 +1495,67 @@ export class AdminController {
   @Get("transactions")
   @ApiOperation({ summary: "List all transactions — full financial ledger" })
   @ApiQuery({ name: "type", required: false })
+  @ApiQuery({ name: "search", required: false, type: String })
+  @ApiQuery({ name: "page", required: false, type: Number })
   @ApiQuery({ name: "limit", required: false, type: Number })
   async listTransactions(
     @Query("type") type?: string,
-    @Query("limit") limit = "1000",
+    @Query("search") search?: string,
+    @Query("page") page = "1",
+    @Query("limit") limit = "50",
   ) {
-    const take = Math.min(Number(limit) || 1000, 2000);
+    const take = Math.min(Math.max(Number(limit) || 50, 1), 200);
+    const pageNum = Math.max(Number(page) || 1, 1);
+    const skip = (pageNum - 1) * take;
+
     const qb = this.transactionRepo
       .createQueryBuilder("t")
       .leftJoinAndSelect("t.user", "user")
       .orderBy("t.createdAt", "DESC")
+      .skip(skip)
       .take(take);
 
     if (type && type !== "all") {
-      qb.where("t.type = :type", { type });
+      qb.andWhere("t.type = :type", { type });
+    }
+
+    // Server-side search across id, username, first name and note so it spans
+    // the whole ledger — not just the rows on the current page.
+    if (search && search.trim()) {
+      const safe = search.trim().toLowerCase().replace(/[%_\\]/g, "\\$&");
+      const term = `%${safe}%`;
+      qb.andWhere(
+        `(
+          LOWER(t.id::text)                    LIKE :term ESCAPE '\\'
+          OR LOWER(COALESCE(user.username,''))  LIKE :term ESCAPE '\\'
+          OR LOWER(COALESCE(user."firstName",'')) LIKE :term ESCAPE '\\'
+          OR LOWER(COALESCE(t.note,''))         LIKE :term ESCAPE '\\'
+        )`,
+        { term },
+      );
     }
 
     const [data, total] = await qb.getManyAndCount();
-    return { data, total };
+
+    // Whole-ledger per-type counts for the summary cards (independent of the
+    // active type filter / pagination, so the totals stay stable).
+    const rawCounts = await this.transactionRepo
+      .createQueryBuilder("t")
+      .select("t.type", "type")
+      .addSelect("COUNT(*)", "count")
+      .groupBy("t.type")
+      .getRawMany();
+    const counts: Record<string, number> = {};
+    for (const r of rawCounts) counts[r.type] = Number(r.count);
+
+    return {
+      data,
+      total,
+      page: pageNum,
+      limit: take,
+      pages: Math.ceil(total / take),
+      counts,
+    };
   }
 
   @Get("transactions/export")
