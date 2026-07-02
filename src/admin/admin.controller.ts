@@ -974,6 +974,7 @@ export class AdminController {
         "lba",
         'lba."userId" = u.id AND lba."isDefault" = true AND lba."isVerified" = true',
       )
+      .leftJoin("users", "ref", 'ref.id = u."referredByUserId"')
       .select([
         "u.id",
         "u.firstName",
@@ -987,6 +988,7 @@ export class AdminController {
         "u.telegramLinkedAt",
         "u.reputationTier",
         "u.totalPredictions",
+        "u.referredByUserId",
         "u.createdAt",
         "u.updatedAt",
       ])
@@ -998,7 +1000,13 @@ export class AdminController {
       .addSelect(
         'COALESCE(lba."accountName", u."dkAccountName")',
         "dkAccountName",
-      );
+      )
+      .addSelect(
+        `NULLIF(TRIM(COALESCE(ref."firstName", '') || ' ' || COALESCE(ref."lastName", '')), '')`,
+        "referredByName",
+      )
+      .addSelect("ref.username", "referredByUsername")
+      .addSelect("ref.telegramId", "referredByTelegramId");
 
     // ── Full-text search ────────────────────────────────────────────────────
     if (search && search.trim()) {
@@ -1064,6 +1072,11 @@ export class AdminController {
       dkCid: raw[i]?.dkCid ?? user.dkCid ?? null,
       dkAccountNumber: raw[i]?.dkAccountNumber ?? user.dkAccountNumber ?? null,
       dkAccountName: raw[i]?.dkAccountName ?? user.dkAccountName ?? null,
+      // Referrer (who referred this user) — null for organic sign-ups
+      referredByUserId: user.referredByUserId ?? null,
+      referredByName: raw[i]?.referredByName ?? null,
+      referredByUsername: raw[i]?.referredByUsername ?? null,
+      referredByTelegramId: raw[i]?.referredByTelegramId ?? null,
     }));
 
     return {
