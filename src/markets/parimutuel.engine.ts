@@ -361,14 +361,15 @@ export class ParimutuelEngine implements OnModuleInit {
         .updateStreak(userId)
         .catch(() => null);
 
-      // If day-7 boost is active, credit the bonus payout immediately
+      // If the day-7 boost is active, ARM this bet. The +20% bonus is NOT paid
+      // now — it's credited at settlement only if this bet WINS (see settleMarket),
+      // as 20% of the actual payout. This matches the user-facing promise that
+      // "your next winning payout gets a 1.2× boost".
       if (streakResult?.boostActive && completedPosition) {
-        const bonusAmount =
-          Math.round(amount * (STREAK_BONUS_MULT - 1) * 100) / 100;
-        this.streakService
-          .creditStreakBonus(userId, completedPosition.id, bonusAmount)
+        await this.betRepo
+          .update(completedPosition.id, { streakBoostArmed: true })
           .catch((err: any) =>
-            this.logger.error(`Streak bonus credit failed: ${err.message}`),
+            this.logger.error(`Arming streak boost failed: ${err.message}`),
           );
       }
 
@@ -1168,6 +1169,41 @@ export class ParimutuelEngine implements OnModuleInit {
             stakeAmount: stake,
             note: `Payout for winning prediction on: ${winner.label}`,
           });
+
+          // ── Day-7 streak boost ──────────────────────────────────────────────
+          // If this bet armed the boost at placement AND it won, credit an extra
+          // 20% of the actual payout as a separate streak-bonus transaction.
+          if (bet.streakBoostArmed) {
+            const boostBonus = parseFloat(
+              (withdrawablePayout * (STREAK_BONUS_MULT - 1)).toFixed(2),
+            );
+            if (boostBonus > 0) {
+              const boostBefore = getBalance(bet.userId);
+              balanceDelta.set(
+                bet.userId,
+                (balanceDelta.get(bet.userId) ?? 0) + boostBonus,
+              );
+              // NB: deliberately NOT added to `totalPaidOut` — that figure tracks
+              // pool distribution (drives Settlement.totalPaidOut / breakage). The
+              // streak boost is platform-funded extra, tracked via its own
+              // STREAK_BONUS ledger row instead.
+              txToInsert.push({
+                type: TransactionType.STREAK_BONUS,
+                amount: boostBonus,
+                balanceBefore: boostBefore,
+                balanceAfter: boostBefore + boostBonus,
+                positionId: bet.id,
+                userId: bet.userId,
+                isBonus: false,
+                // Keep the key set identical to the payout row above so the bulk
+                // INSERT's column list is uniform regardless of chunk ordering.
+                stakeAmount: null,
+                note: `🔥 Day-7 streak bonus (+${Math.round(
+                  (STREAK_BONUS_MULT - 1) * 100,
+                )}% of payout)`,
+              });
+            }
+          }
         } else {
           bet.status = PositionStatus.LOST;
           if (bet.isBonusFunded) {

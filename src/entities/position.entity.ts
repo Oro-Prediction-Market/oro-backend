@@ -67,6 +67,14 @@ export class Position {
   @Column({ type: "boolean", default: false })
   isBonusFunded: boolean;
 
+  /**
+   * True if this bet was placed on the 7th day of a bet streak and "armed" the
+   * Day-7 boost. If the bet WINS, settlement credits an extra 20% of its payout
+   * as a streak bonus (STREAK_BONUS_MULT). Set once per streak cycle at placement.
+   */
+  @Column({ type: "boolean", default: false })
+  streakBoostArmed: boolean;
+
   @CreateDateColumn()
   placedAt: Date;
 
