@@ -210,14 +210,6 @@ export class AuthService {
         if (referrer) referredByUserId = referrer.id;
       }
     }
-    this.logger.log(
-      `[Referral] returning user tg=${providerId} referralCode=${referralCode ?? "<none>"} ` +
-        `initDataStartParam=${tgUser.start_param ?? "<none>"} ` +
-        `effective=${effectiveReferralCode ?? "<none>"} ` +
-        `resolvedReferrer=${referredByUserId ?? "<none>"} ` +
-        `existingReferrer=${existingUser.referredByUserId ?? "<null>"} ` +
-        `willAttribute=${!!(referredByUserId && !existingUser.referredByUserId)}`,
-    );
 
     const updateFields: any = {
       telegramId: providerId,
