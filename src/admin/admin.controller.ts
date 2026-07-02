@@ -1390,12 +1390,13 @@ export class AdminController {
     // IMPORTANT: some bet_placed rows are already tagged isBonus=true — those are
     // already excluded from totalRealBalance and must NOT be counted here again.
     // Only the isBonus=false portion of bonus spending causes deflation.
-    const outstandingBonusRow = await em
-      .getRepository(User)
-      .query(
-        `SELECT COALESCE(SUM("bonusBalance"), 0)::float AS total FROM users`,
-      )
-      .then((r: any[]) => parseFloat(r[0].total));
+    // Outstanding bonus = bonus still held by users. Derive it from the transaction
+    // ledger (SUM of isBonus=true), NOT the users.bonusBalance column: that column is
+    // never incremented on bonus grant (see auth.service welcome-credit path), so it
+    // sits at 0 while the ledger holds the true bonus. Reading the stale column here
+    // put the reconciliation's two sides on different sources of truth and produced a
+    // large phantom discrepancy. totalBonusBalance is the isBonus=true ledger sum.
+    const outstandingBonusRow = totalBonusBalance;
 
     // Bonus already tagged isBonus=true in transactions (already excluded from realBalance)
     const bonusAlreadyTaggedRow = await em
