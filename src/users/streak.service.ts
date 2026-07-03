@@ -34,69 +34,74 @@ export class StreakService {
    * and returns streak metadata for the response.
    */
   async updateStreak(userId: string): Promise<StreakUpdateResult> {
-    const user = await this.userRepo.findOne({
-      where: { id: userId },
-      select: ["id", "betStreakCount", "betStreakLastAt", "streakBoostUsed"],
-    });
+    return this.dataSource.transaction(async (em) => {
+      const userRepo = em.getRepository(User);
 
-    if (!user) {
-      return { newStreak: 1, boostActive: false, dayInCycle: 1 };
-    }
+      const user = await userRepo.findOne({
+        where: { id: userId },
+        select: ["id", "betStreakCount", "betStreakLastAt", "streakBoostUsed"],
+        lock: { mode: "pessimistic_write" },
+      });
 
-    const todayUtc = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-    const lastDate = user.betStreakLastAt;
+      if (!user) {
+        return { newStreak: 1, boostActive: false, dayInCycle: 1 };
+      }
 
-    let newStreak: number;
-    let streakBoostUsed = user.streakBoostUsed;
+      const todayUtc = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+      const lastDate = user.betStreakLastAt;
 
-    if (!lastDate) {
-      // First ever bet
-      newStreak = 1;
-      streakBoostUsed = false;
-    } else if (lastDate === todayUtc) {
-      // Already bet today — streak unchanged
-      newStreak = user.betStreakCount || 1;
-    } else {
-      const yesterday = new Date();
-      yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-      const yesterdayUtc = yesterday.toISOString().slice(0, 10);
+      let newStreak: number;
+      let streakBoostUsed = user.streakBoostUsed;
 
-      if (lastDate === yesterdayUtc) {
-        // Consecutive day
-        newStreak = (user.betStreakCount || 0) + 1;
-        // If we just crossed a new cycle (streak reset to 1 after boost), reset flag
-        if (newStreak % STREAK_BONUS_DAY === 1) streakBoostUsed = false;
-      } else {
-        // Gap — reset
+      if (!lastDate) {
+        // First ever bet
         newStreak = 1;
         streakBoostUsed = false;
+      } else if (lastDate === todayUtc) {
+        // Already bet today — streak unchanged
+        newStreak = user.betStreakCount || 1;
+      } else {
+        const yesterday = new Date();
+        yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+        const yesterdayUtc = yesterday.toISOString().slice(0, 10);
+
+        if (lastDate === yesterdayUtc) {
+          // Consecutive day
+          newStreak = (user.betStreakCount || 0) + 1;
+          // If we just crossed a new cycle (streak reset to 1 after boost), reset flag
+          if (newStreak % STREAK_BONUS_DAY === 1) streakBoostUsed = false;
+        } else {
+          // Gap — reset
+          newStreak = 1;
+          streakBoostUsed = false;
+        }
       }
-    }
 
-    const dayInCycle = ((newStreak - 1) % STREAK_BONUS_DAY) + 1; // 1–7
-    const isDay7 = dayInCycle === STREAK_BONUS_DAY;
-    const boostActive = isDay7 && !streakBoostUsed && lastDate !== todayUtc;
+      const dayInCycle = ((newStreak - 1) % STREAK_BONUS_DAY) + 1; // 1–7
+      const isDay7 = dayInCycle === STREAK_BONUS_DAY;
+      const boostActive = isDay7 && !streakBoostUsed && lastDate !== todayUtc;
 
-    if (boostActive) streakBoostUsed = true;
+      if (boostActive) streakBoostUsed = true;
 
-    // Persist (only if something changed)
-    if (
-      user.betStreakCount !== newStreak ||
-      user.betStreakLastAt !== todayUtc ||
-      user.streakBoostUsed !== streakBoostUsed
-    ) {
-      await this.userRepo.update(userId, {
-        betStreakCount: newStreak,
-        betStreakLastAt: todayUtc,
-        streakBoostUsed,
-      });
-    }
+      // Persist (only if something changed)
+      if (
+        user.betStreakCount !== newStreak ||
+        user.betStreakLastAt !== todayUtc ||
+        user.streakBoostUsed !== streakBoostUsed
+      ) {
+        await userRepo.update(userId, {
+          betStreakCount: newStreak,
+          betStreakLastAt: todayUtc,
+          streakBoostUsed,
+        });
+      }
 
-    this.logger.log(
-      `Streak update user=${userId} streak=${newStreak} day=${dayInCycle} boost=${boostActive}`,
-    );
+      this.logger.log(
+        `Streak update user=${userId} streak=${newStreak} day=${dayInCycle} boost=${boostActive}`,
+      );
 
-    return { newStreak, boostActive, dayInCycle };
+      return { newStreak, boostActive, dayInCycle };
+    });
   }
 
   /** Read-only snapshot for the /users/me endpoint. */

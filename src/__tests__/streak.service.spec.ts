@@ -38,9 +38,15 @@ function makeTransactionRepo() {
   return { createQueryBuilder: jest.fn().mockReturnValue(qb) };
 }
 
-function makeDataSource(txResult?: any) {
+function makeDataSource(txResult?: any, userRepo?: any) {
+  const txRepo = makeTransactionRepo();
   const em = {
-    getRepository: jest.fn().mockReturnValue(makeTransactionRepo()),
+    // updateStreak reads/writes User inside the transaction; route it to the
+    // same userRepo the test set up so its findOne/update mocks are observed.
+    getRepository: jest.fn().mockImplementation((entity: any) => {
+      if (userRepo && entity && entity.name === "User") return userRepo;
+      return txRepo;
+    }),
     save: jest.fn().mockResolvedValue(txResult ?? {}),
     create: jest.fn().mockImplementation((_e: any, d: any) => d),
   };
@@ -55,7 +61,7 @@ function makeService(userRepo: any, txRepo?: any, dataSource?: any) {
   return new StreakService(
     userRepo,
     txRepo ?? makeTransactionRepo(),
-    dataSource ?? makeDataSource(),
+    dataSource ?? makeDataSource(undefined, userRepo),
     sseMock,
   );
 }
