@@ -1,0 +1,269 @@
+name: Security scan
+run-name: "Security scan · ${{ github.event.inputs.scan_type || 'sast-sca' }} · ${{ github.event_name }}"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PORTABLE, DROP-IN SECURITY SCAN
+# Copy this single file into any repo's .github/workflows/ — it works as-is,
+# no other setup required:
+#   • Trivy auto-detects lockfiles (npm/pnpm/yarn/go/…); Semgrep auto-detects langs
+#   • Picks up project-specific Semgrep rules from ./.semgrep/ if present
+#   • Auto-skips the image + Dockerfile jobs when there is no Dockerfile
+#   • Report-only: findings go to the run Summary + artifacts; nothing blocks
+#
+# Manual runs (Actions ▸ Run workflow) offer a scan-depth choice.
+# PRs always run the fast default (sast-sca).
+#
+# Make it a blocking gate later: in Semgrep drop `| tee … || true` and add
+# `--error`; in Trivy set `exit-code: "1"`; then require the checks in the
+# branch-protection rule on main.
+# ═══════════════════════════════════════════════════════════════════════════
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      scan_type:
+        description: "Scan depth (manual runs). PRs always use sast-sca."
+        type: choice
+        required: true
+        default: sast-sca
+        options:
+          - sast-sca # Semgrep (SAST) + Trivy fs (deps/secrets/IaC)
+          - sast # Semgrep only
+          - sca # Trivy filesystem only (deps/secrets/IaC)
+          - image # build + Trivy image scan (base-OS CVEs)
+          - dockerfile # Hadolint only
+          - k8s # Trivy config: K8s / IaC manifest misconfig (opt-in, NOT included in full)
+          - full # everything else (SAST + SCA + image + dockerfile), all severities + OWASP/CWE packs
+
+permissions:
+  contents: read
+
+env:
+  SCAN_TYPE: ${{ github.event.inputs.scan_type || 'sast-sca' }}
+
+jobs:
+  sast-semgrep:
+    name: SAST · Semgrep
+    if: ${{ contains(fromJSON('["sast-sca","sast","full"]'), github.event.inputs.scan_type || 'sast-sca') }}
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep:latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run Semgrep
+        run: |
+          CONFIGS="--config p/default --config p/security-audit --config p/secrets"
+          [ -d .semgrep ] && CONFIGS="$CONFIGS --config .semgrep" # project rules, if any
+          if [ "$SCAN_TYPE" = "full" ]; then
+            CONFIGS="$CONFIGS --config p/owasp-top-ten --config p/cwe-top-25"
+          fi
+          echo "scan_type=$SCAN_TYPE"
+          semgrep scan $CONFIGS --metrics off 2>&1 | tee semgrep-report.txt || true
+
+      - name: Publish Semgrep report to summary
+        if: always()
+        run: |
+          {
+            echo "## 🔎 Semgrep — SAST"
+            echo ""
+            echo '```'
+            tail -c 16000 semgrep-report.txt 2>/dev/null || echo "(no report generated)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Semgrep report
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: semgrep-report
+          path: semgrep-report.txt
+          if-no-files-found: ignore
+
+  sca-trivy:
+    name: SCA + secrets + IaC · Trivy
+    if: ${{ contains(fromJSON('["sast-sca","sca","full"]'), github.event.inputs.scan_type || 'sast-sca') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run Trivy (table report)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: ${{ env.SCAN_TYPE == 'full' && 'CRITICAL,HIGH,MEDIUM,LOW' || 'HIGH,CRITICAL' }}
+          ignore-unfixed: ${{ env.SCAN_TYPE != 'full' }}
+          format: table
+          output: trivy-report.txt
+          exit-code: "0"
+
+      - name: Run Trivy (json artifact)
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: ${{ env.SCAN_TYPE == 'full' && 'CRITICAL,HIGH,MEDIUM,LOW' || 'HIGH,CRITICAL' }}
+          ignore-unfixed: ${{ env.SCAN_TYPE != 'full' }}
+          format: json
+          output: trivy-report.json
+          exit-code: "0"
+
+      - name: Publish Trivy report to summary
+        if: always()
+        run: |
+          {
+            echo "## 🛡️ Trivy — SCA / secrets / misconfig"
+            echo ""
+            echo '```'
+            tail -c 16000 trivy-report.txt 2>/dev/null || echo "(no report generated)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Trivy report
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: trivy-report
+          path: |
+            trivy-report.txt
+            trivy-report.json
+          if-no-files-found: ignore
+
+  dockerfile-hadolint:
+    name: Dockerfile · Hadolint
+    if: ${{ contains(fromJSON('["dockerfile","full"]'), github.event.inputs.scan_type || 'sast-sca') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Detect Dockerfile
+        id: df
+        run: |
+          if [ -f Dockerfile ]; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Run Hadolint
+        if: steps.df.outputs.exists == 'true'
+        run: |
+          docker run --rm -i hadolint/hadolint:latest hadolint - < Dockerfile 2>&1 \
+            | tee hadolint-report.txt || true
+
+      - name: Publish Hadolint report to summary
+        if: always()
+        run: |
+          {
+            echo "## 🐳 Hadolint — Dockerfile best-practices / hardening"
+            echo ""
+            if [ "${{ steps.df.outputs.exists }}" != "true" ]; then
+              echo "_No Dockerfile found — skipped._"
+            else
+              echo '```'
+              tail -c 12000 hadolint-report.txt 2>/dev/null || echo "(no findings)"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Hadolint report
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: hadolint-report
+          path: hadolint-report.txt
+          if-no-files-found: ignore
+
+  container-image-scan:
+    name: Container image · Trivy
+    if: ${{ contains(fromJSON('["image","full"]'), github.event.inputs.scan_type || 'sast-sca') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Detect Dockerfile
+        id: df
+        run: |
+          if [ -f Dockerfile ]; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Build image (for scanning)
+        if: steps.df.outputs.exists == 'true'
+        continue-on-error: true
+        run: docker build -t local/app:scan .
+
+      - name: Trivy image scan (table)
+        if: steps.df.outputs.exists == 'true'
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: local/app:scan
+          scanners: vuln,secret
+          severity: ${{ env.SCAN_TYPE == 'full' && 'CRITICAL,HIGH,MEDIUM,LOW' || 'HIGH,CRITICAL' }}
+          ignore-unfixed: ${{ env.SCAN_TYPE != 'full' }}
+          format: table
+          output: trivy-image.txt
+          exit-code: "0"
+
+      - name: Publish image scan to summary
+        if: always()
+        run: |
+          {
+            echo "## 📦 Trivy — container image (base OS + installed packages)"
+            echo ""
+            if [ "${{ steps.df.outputs.exists }}" != "true" ]; then
+              echo "_No Dockerfile found — image scan skipped._"
+            else
+              echo '```'
+              tail -c 16000 trivy-image.txt 2>/dev/null || echo "(no report — image build may have failed)"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload image scan report
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: trivy-image-report
+          path: trivy-image.txt
+          if-no-files-found: ignore
+
+  k8s-iac-scan:
+    name: K8s / IaC manifests · Trivy config
+    # opt-in only (scan_type=k8s); deliberately NOT part of 'full'
+    if: ${{ (github.event.inputs.scan_type || 'sast-sca') == 'k8s' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Trivy config (K8s / IaC misconfig)
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: CRITICAL,HIGH,MEDIUM
+          format: table
+          output: trivy-k8s.txt
+          exit-code: "0"
+
+      - name: Publish K8s/IaC report to summary
+        if: always()
+        run: |
+          {
+            echo "## ☸️ Trivy config — K8s / IaC manifest misconfig"
+            echo ""
+            echo '```'
+            tail -c 16000 trivy-k8s.txt 2>/dev/null || echo "(no manifests found / no report)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload K8s/IaC report
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: trivy-k8s-report
+          path: trivy-k8s.txt
+          if-no-files-found: ignore
