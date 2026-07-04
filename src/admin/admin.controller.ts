@@ -549,26 +549,25 @@ export class AdminController {
       },
       ipAddress: req.ip,
     });
-    const miniAppUrl = process.env.TELEGRAM_MINI_APP_URL || "";
-    const marketDeepLink = miniAppUrl ? `${miniAppUrl}?startapp=m_${id}` : "";
-    const windowLabel =
-      windowMinutes >= 60
-        ? `${windowMinutes / 60} hour${windowMinutes > 60 ? "s" : ""}`
-        : `${windowMinutes} minutes`;
-    // RESOLUTION ANNOUNCEMENT — intentional, keep it.
-    // Unlike market creation, this channel post is tied to a deliberate admin
-    // action (proposing an outcome / opening the objection window), not a
-    // routine event, so it does NOT spam users. Keep posting it automatically
-    // here. If this ever needs the same manual-only treatment as create, move
-    // it to a dedicated endpoint rather than deleting it.
-    await this.telegramSimple.postToChannel(
-      `⚖️ <b>OBJECTION WINDOW OPEN</b>\n\n` +
-        `📊 <b>${before.title}</b>\n\n` +
-        `🔖 <b>Proposed Winner:</b> ${proposedOutcome?.label ?? "N/A"}\n` +
-        `⏳ Window: ${windowLabel} — object if you disagree\n` +
-        `💡 Evidence will be published when the market is settled.\n\n` +
-        `👉 <a href="${marketDeepLink || miniAppUrl}">View Market</a>`,
-    );
+    // OBJECTION WINDOW ANNOUNCEMENT — intentionally disabled.
+    // We no longer post to the Telegram channel when the objection window opens.
+    // Proposing an outcome opens the window silently; the final outcome is still
+    // announced when the market settles (see resolveMarket). Kept here (commented)
+    // so it can be re-enabled if we ever want to announce the window again.
+    // const miniAppUrl = process.env.TELEGRAM_MINI_APP_URL || "";
+    // const marketDeepLink = miniAppUrl ? `${miniAppUrl}?startapp=m_${id}` : "";
+    // const windowLabel =
+    //   windowMinutes >= 60
+    //     ? `${windowMinutes / 60} hour${windowMinutes > 60 ? "s" : ""}`
+    //     : `${windowMinutes} minutes`;
+    // await this.telegramSimple.postToChannel(
+    //   `⚖️ <b>OBJECTION WINDOW OPEN</b>\n\n` +
+    //     `📊 <b>${before.title}</b>\n\n` +
+    //     `🔖 <b>Proposed Winner:</b> ${proposedOutcome?.label ?? "N/A"}\n` +
+    //     `⏳ Window: ${windowLabel} — object if you disagree\n` +
+    //     `💡 Evidence will be published when the market is settled.\n\n` +
+    //     `👉 <a href="${marketDeepLink || miniAppUrl}">View Market</a>`,
+    // );
     return result;
   }
 
