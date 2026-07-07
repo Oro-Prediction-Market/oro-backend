@@ -238,6 +238,27 @@ export class AdminController {
       FROM users
     `);
 
+    // Marketing cost: real Nu the platform hands out as promotional rewards.
+    // These are credited to users as isBonus=false transactions (they spend like
+    // real money) but have no external deposit backing — they are a pure platform
+    // expense. Three programmes today:
+    //   • referral  → referral_bonus (Nu 25 + 5% of first bet) + referral_prize
+    //   • streak    → streak_bonus (Day-7 boost)
+    //   • season    → season_prize
+    const marketingResult = await this.dataSource.query(`
+      SELECT
+        COALESCE(SUM(CASE WHEN type IN ('referral_bonus','referral_prize') THEN amount ELSE 0 END), 0)::float AS "referral",
+        COALESCE(SUM(CASE WHEN type = 'streak_bonus' THEN amount ELSE 0 END), 0)::float AS "streak",
+        COALESCE(SUM(CASE WHEN type = 'season_prize' THEN amount ELSE 0 END), 0)::float AS "season",
+        COUNT(*)::int AS "count"
+      FROM transactions
+      WHERE type IN ('referral_bonus','referral_prize','streak_bonus','season_prize')
+        AND "isBonus" = false
+    `);
+    const marketingReferral = parseFloat(marketingResult[0].referral);
+    const marketingStreak = parseFloat(marketingResult[0].streak);
+    const marketingSeason = parseFloat(marketingResult[0].season);
+
     return {
       houseIncome: parseFloat(settledResult[0].houseIncome),
       settledPool: parseFloat(settledResult[0].settledPool),
@@ -258,6 +279,15 @@ export class AdminController {
         realPayoutsFundedByBonus: parseFloat(
           bonusResult[0].bonusFundedRealPayouts,
         ),
+      },
+      // Marketing cost: promotional rewards credited to users as real spendable
+      // money (isBonus=false) with no deposit backing — a pure platform expense.
+      marketing: {
+        total: marketingReferral + marketingStreak + marketingSeason,
+        referral: marketingReferral,
+        streak: marketingStreak,
+        season: marketingSeason,
+        count: parseInt(marketingResult[0].count, 10),
       },
     };
   }
@@ -1383,6 +1413,26 @@ export class AdminController {
       )
       .then((r: any[]) => parseFloat(r[0].total));
 
+    // Platform reward credits: referral bonus (Nu 25 + 5% of first bet, capped),
+    // Day-7 streak boost, and season prizes. All are recorded isBonus=false (so they
+    // count toward totalRealBalance) but are platform-funded — no external deposit and
+    // NOT part of the settlement pool (the streak boost is deliberately excluded from
+    // Settlement.totalPaidOut, see parimutuel.engine). They therefore inflate
+    // totalRealBalance with no offsetting term and must be added to expected, exactly
+    // like nonBonusFreeCredits. None of these types appear elsewhere in the formula, so
+    // this cannot double-count.
+    const platformRewardCreditsRow = await em
+      .getRepository(Transaction)
+      .query(
+        `
+      SELECT COALESCE(SUM(amount), 0)::float AS total
+      FROM transactions
+      WHERE type IN ('referral_bonus', 'streak_bonus', 'season_prize', 'referral_prize')
+        AND "isBonus" = false
+    `,
+      )
+      .then((r: any[]) => parseFloat(r[0].total));
+
     // Bonus spent as real: bonus bets recorded as isBonus=false but funded from
     // bonusBalance. This deflates the real balance sum without a corresponding
     // real money event.
@@ -1418,6 +1468,7 @@ export class AdminController {
     // expectedUserBalances = what users SHOULD hold based purely on external money
     // + bonus real payouts (real Nu that entered wallets from bonus-loss events)
     // + non-bonus free credits (platform credits with no payment backing)
+    // + platform reward credits (referral bonus, streak boost, season prizes)
     // - bonus spent as real (bonus bets recorded as isBonus=false deflate real balance)
     const expectedUserBalances =
       netExternalFlow -
@@ -1425,7 +1476,8 @@ export class AdminController {
       breakage -
       pendingBetsRealAmount +
       bonusFundedRealPayoutsRow +
-      nonBonusFreeCreditsRow -
+      nonBonusFreeCreditsRow +
+      platformRewardCreditsRow -
       bonusSpentAsReal;
     const discrepancy = totalRealBalance - expectedUserBalances;
 
@@ -1464,6 +1516,7 @@ export class AdminController {
         bonusFundedRealPayouts: bonusFundedRealPayoutsRow,
         totalBonusIssued: totalBonusIssuedRow,
         nonBonusFreeCredits: nonBonusFreeCreditsRow,
+        platformRewardCredits: platformRewardCreditsRow,
         bonusSpentAsReal,
         outstandingBonus: outstandingBonusRow,
         expectedUserBalances,
