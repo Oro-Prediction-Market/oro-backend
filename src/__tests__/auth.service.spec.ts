@@ -587,7 +587,7 @@ describe("AuthService.loginWithDKBank", () => {
     );
   });
 
-  it("grants Nu 20 free credit for a brand-new DK user (all environments)", async () => {
+  it("does NOT grant Nu 20 free credit for a brand-new DK user (welcome credit disabled)", async () => {
     const txRepo = makeTransactionRepo();
     process.env.NODE_ENV = "test";
 
@@ -620,11 +620,9 @@ describe("AuthService.loginWithDKBank", () => {
 
     await service.loginWithDKBank("11000000001", undefined, "test-password");
 
-    expect(txRepo.save).toHaveBeenCalledWith(
+    expect(txRepo.save).not.toHaveBeenCalledWith(
       expect.objectContaining({
         type: TransactionType.FREE_CREDIT,
-        amount: 20,
-        isBonus: true,
       }),
     );
   });
@@ -665,7 +663,7 @@ describe("AuthService.loginWithDKBank", () => {
     );
   });
 
-  it("seeds 1000 extra credits on top of free credit for a new DK user in development environment", async () => {
+  it("seeds 1000 starter credits for a new DK user in development environment", async () => {
     const txRepo = makeTransactionRepo();
     process.env.NODE_ENV = "development";
 
@@ -696,19 +694,17 @@ describe("AuthService.loginWithDKBank", () => {
 
     await service.loginWithDKBank("11000000001", undefined, "test-password");
 
-    expect(txRepo.save).toHaveBeenCalledWith(
+    expect(txRepo.save).not.toHaveBeenCalledWith(
       expect.objectContaining({
         type: TransactionType.FREE_CREDIT,
-        amount: 20,
-        isBonus: true,
       }),
     );
     expect(txRepo.save).toHaveBeenCalledWith(
       expect.objectContaining({
         type: TransactionType.DEPOSIT,
         amount: 1000,
-        balanceBefore: 20,
-        balanceAfter: 1020,
+        balanceBefore: 0,
+        balanceAfter: 1000,
       }),
     );
 

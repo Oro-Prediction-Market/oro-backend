@@ -692,24 +692,25 @@ export class AuthService {
         account.phoneNumber,
       );
 
-      // Grant one-time 20 Nu welcome free credit — atomic guard prevents double-grant
-      const creditClaim = await this.userRepo.update(
-        { id: user.id, freeCreditGranted: false },
-        { freeCreditGranted: true },
-      );
-      if (creditClaim.affected) {
-        await this.transactionRepo.save(
-          this.transactionRepo.create({
-            type: TransactionType.FREE_CREDIT,
-            amount: 20,
-            balanceBefore: 0,
-            balanceAfter: 20,
-            userId: user.id,
-            isBonus: true,
-            note: "Welcome free credit",
-          }),
-        );
-      }
+      // Welcome free credit disabled — no longer granting Nu 20 on signup/login.
+      // Kept for reference in case the promotion is re-enabled.
+      // const creditClaim = await this.userRepo.update(
+      //   { id: user.id, freeCreditGranted: false },
+      //   { freeCreditGranted: true },
+      // );
+      // if (creditClaim.affected) {
+      //   await this.transactionRepo.save(
+      //     this.transactionRepo.create({
+      //       type: TransactionType.FREE_CREDIT,
+      //       amount: 20,
+      //       balanceBefore: 0,
+      //       balanceAfter: 20,
+      //       userId: user.id,
+      //       isBonus: true,
+      //       note: "Welcome free credit",
+      //     }),
+      //   );
+      // }
 
       // Dev-only seed credits — not available in staging or production
       if (process.env.NODE_ENV === "development") {
@@ -717,8 +718,8 @@ export class AuthService {
           this.transactionRepo.create({
             type: TransactionType.DEPOSIT,
             amount: 1000,
-            balanceBefore: 20,
-            balanceAfter: 1020,
+            balanceBefore: 0,
+            balanceAfter: 1000,
             userId: user.id,
             note: "Starter credits",
           }),
