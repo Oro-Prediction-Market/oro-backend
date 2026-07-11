@@ -343,3 +343,172 @@ describe("MarketsService channel auto-posts", () => {
     );
   });
 });
+
+// ─── createGroup: political grouped multi-binary markets ────────────────────
+
+describe("MarketsService.createGroup — grouped Yes/No candidate markets", () => {
+  function makeCreateService() {
+    const savedMarkets: any[] = [];
+    let nextId = 1;
+    const mockMarketRepo = {
+      create: jest.fn((d: any) => d),
+      save: jest.fn((d: any) => {
+        const saved = { id: `m${nextId++}`, ...d };
+        savedMarkets.push(saved);
+        return Promise.resolve(saved);
+      }),
+      findOne: jest.fn(({ where: { id } }: any) =>
+        Promise.resolve(savedMarkets.find((m) => m.id === id) ?? null),
+      ),
+    };
+    const mockReputationService = {
+      computeMarketSignal: jest.fn().mockResolvedValue({}),
+      computeSignalConfidence: jest.fn().mockResolvedValue({
+        participantCount: 0,
+        reputationDepth: 0,
+        maturityScore: 0,
+        composite: 0,
+      }),
+      computeReputationWeightedShares: jest.fn().mockResolvedValue({}),
+    };
+    const mockRedis = {
+      getJson: jest.fn().mockResolvedValue(null),
+      setJsonEx: jest.fn().mockResolvedValue(undefined),
+      del: jest.fn().mockResolvedValue(undefined),
+    };
+    const mockOutcomeRepo = { create: jest.fn((d: any) => d), save: jest.fn() };
+    const svc = new MarketsService(
+      mockMarketRepo as any,
+      mockOutcomeRepo as any,
+      null as any, // disputeRepo
+      null as any, // userRepo
+      null as any, // engine
+      new LMSRService(),
+      null as any, // dataSource
+      mockRedis as any,
+      mockReputationService as any,
+      { postToChannel: jest.fn().mockResolvedValue(undefined) } as any,
+    );
+    return { svc, savedMarkets };
+  }
+
+  const groupDto = {
+    title: "Who will win the 2026 election?",
+    description: "National election winner",
+    closesAt: "2026-12-31T00:00:00.000Z",
+    houseEdgePct: 5,
+    liquidityParam: 1000,
+    candidates: [
+      { name: "Sonam", imageUrl: "https://img/sonam.png" },
+      { name: "Tenzin", imageUrl: null },
+    ],
+  } as any;
+
+  it("creates one Yes/No child market per candidate", async () => {
+    const { svc } = makeCreateService();
+    const markets = await svc.createGroup(groupDto);
+    expect(markets).toHaveLength(2);
+    for (const m of markets) {
+      expect(m.outcomes.map((o: any) => o.label)).toEqual(["Yes", "No"]);
+    }
+  });
+
+  it("links all children with one shared groupId + groupTitle", async () => {
+    const { svc } = makeCreateService();
+    const markets = await svc.createGroup(groupDto);
+    expect(markets[0].groupId).toBeTruthy();
+    expect(markets[1].groupId).toBe(markets[0].groupId);
+    expect(markets.map((m) => m.groupTitle)).toEqual([
+      groupDto.title,
+      groupDto.title,
+    ]);
+  });
+
+  it("titles each child with the event + candidate and stores the candidate in metadata", async () => {
+    const { svc } = makeCreateService();
+    const markets = await svc.createGroup(groupDto);
+    expect(markets[0].title).toBe("Who will win the 2026 election? — Sonam");
+    expect(markets[1].title).toBe("Who will win the 2026 election? — Tenzin");
+    expect(markets[0].metadata).toEqual({ candidate: "Sonam" });
+    expect(markets[1].metadata).toEqual({ candidate: "Tenzin" });
+  });
+
+  it("defaults category to political and uses candidate image with event-image fallback", async () => {
+    const { svc } = makeCreateService();
+    const markets = await svc.createGroup({
+      ...groupDto,
+      imageUrl: "https://img/event.png",
+    });
+    expect(markets.map((m) => m.category)).toEqual(["political", "political"]);
+    expect(markets[0].imageUrl).toBe("https://img/sonam.png");
+    expect(markets[1].imageUrl).toBe("https://img/event.png");
+  });
+});
+
+// ─── create: category assignment ─────────────────────────────────────────────
+
+describe("MarketsService.create — category assignment", () => {
+  function makeCreateService() {
+    const mockMarketRepo = {
+      create: jest.fn((d: any) => d),
+      save: jest.fn((d: any) => Promise.resolve({ id: "m1", ...d })),
+      findOne: jest.fn(({ where: { id } }: any) =>
+        Promise.resolve({ id, outcomes: [] }),
+      ),
+    };
+    const mockRedis = {
+      getJson: jest.fn().mockResolvedValue(null),
+      setJsonEx: jest.fn().mockResolvedValue(undefined),
+      del: jest.fn().mockResolvedValue(undefined),
+    };
+    const svc = new MarketsService(
+      mockMarketRepo as any,
+      { create: jest.fn((d: any) => d), save: jest.fn() } as any,
+      null as any,
+      null as any,
+      null as any,
+      new LMSRService(),
+      null as any,
+      mockRedis as any,
+      {
+        computeMarketSignal: jest.fn().mockResolvedValue({}),
+        computeSignalConfidence: jest.fn().mockResolvedValue({
+          participantCount: 0,
+          reputationDepth: 0,
+          maturityScore: 0,
+          composite: 0,
+        }),
+        computeReputationWeightedShares: jest.fn().mockResolvedValue({}),
+      } as any,
+      { postToChannel: jest.fn().mockResolvedValue(undefined) } as any,
+    );
+    return { svc, mockMarketRepo };
+  }
+
+  const baseDto = {
+    title: "T",
+    outcomes: [{ label: "Yes" }, { label: "No" }],
+  } as any;
+
+  it("persists the category the admin picked", async () => {
+    const { svc, mockMarketRepo } = makeCreateService();
+    await svc.create({ ...baseDto, category: "political" });
+    expect(mockMarketRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ category: "political" }),
+    );
+  });
+
+  it("falls back to 'other' for unknown or missing categories", async () => {
+    const { svc, mockMarketRepo } = makeCreateService();
+    await svc.create({ ...baseDto, category: "not-a-category" });
+    await svc.create(baseDto);
+    expect(mockMarketRepo.create).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ category: "other" }),
+    );
+    expect(mockMarketRepo.create).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ category: "other" }),
+    );
+  });
+});

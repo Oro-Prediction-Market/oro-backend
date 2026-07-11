@@ -5,6 +5,7 @@ import {
   IsNumber,
   IsDateString,
   IsArray,
+  IsUUID,
   Min,
   Max,
 } from "class-validator";
@@ -92,4 +93,22 @@ export class CreateMarketDto {
   @IsOptional()
   @IsString()
   bracketSlot?: string;
+
+  /** Shared id linking child markets of one grouped event (set internally by createGroup) */
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsUUID()
+  groupId?: string;
+
+  /** Umbrella event title for grouped markets */
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  groupTitle?: string;
+
+  /** Candidate this child market represents (stored in metadata.candidate) */
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  candidate?: string;
 }

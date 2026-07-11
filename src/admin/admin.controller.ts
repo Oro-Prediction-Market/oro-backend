@@ -33,6 +33,7 @@ import {
   CreateMarketDto,
   UpdateMarketDto,
 } from "../markets/markets.service";
+import { CreateMarketGroupDto } from "../markets/dto/create-market-group.dto";
 import { KeeperService } from "../markets/keeper.service";
 import { RevenueDistributionService } from "../markets/revenue-distribution.service";
 import { DistributionStatus } from "../entities/revenue-distribution.entity";
@@ -313,6 +314,33 @@ export class AdminController {
     // NOTE: Channel announcement is no longer sent automatically on create.
     // Use POST /admin/markets/:id/announce to broadcast a market when desired.
     return market;
+  }
+
+  @Post("markets/group")
+  @ApiOperation({
+    summary:
+      "Create a grouped multi-binary event: one Yes/No child market per candidate, sharing a groupId",
+  })
+  async createMarketGroup(
+    @Body() dto: CreateMarketGroupDto,
+    @Request() req: any,
+  ) {
+    const markets = await this.marketsService.createGroup(dto);
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action: AuditAction.MARKET_CREATE,
+      entityType: "market-group",
+      entityId: markets[0]?.groupId ?? "",
+      after: {
+        title: dto.title,
+        candidates: dto.candidates.map((c) => c.name),
+        closesAt: dto.closesAt,
+        marketIds: markets.map((m) => m.id),
+      },
+      ipAddress: req.ip,
+    });
+    return markets;
   }
 
   // ⚠️ DO NOT DELETE THIS ENDPOINT.

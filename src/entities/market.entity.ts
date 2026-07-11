@@ -31,6 +31,7 @@ export enum MarketCategory {
   WEATHER = "weather",
   ENTERTAINMENT = "entertainment",
   ECONOMY = "economy",
+  POLITICAL = "political",
   OTHER = "other",
 }
 
@@ -80,6 +81,14 @@ export class Market {
 
   @Column({ type: "varchar", nullable: true })
   subcategory: string | null;
+
+  @Index()
+  @Column({ type: "uuid", nullable: true })
+  groupId: string | null;
+
+  /** Umbrella event title shown when rendering the group, e.g. "Who will win the 2026 election?" */
+  @Column({ type: "varchar", nullable: true })
+  groupTitle: string | null;
 
   @Column({ type: "text", nullable: true })
   resolutionCriteria: string;

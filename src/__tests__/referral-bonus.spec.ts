@@ -108,6 +108,7 @@ function makeEngine(ds: any) {
     null as any, // marketsGateway
     null as any, // sse (overridden below)
     null as any, // revenueDistributionService
+    ({ addBulk: async () => [] }) as any, // notificationQueue
   );
 
   // Inject mocked redis, logger, and sse

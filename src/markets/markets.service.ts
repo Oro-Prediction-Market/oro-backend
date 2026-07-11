@@ -8,7 +8,9 @@ import {
 import { InjectRepository, InjectDataSource } from "@nestjs/typeorm";
 import { Repository, DataSource } from "typeorm";
 import { RedisService } from "../redis/redis.service";
+import { randomUUID } from "crypto";
 import { CreateMarketDto } from "./dto/create-market.dto";
+import { CreateMarketGroupDto } from "./dto/create-market-group.dto";
 import { UpdateMarketDto } from "./dto/update-market.dto";
 import { OpenPositionDto } from "./dto/open-position.dto";
 import { SubmitDisputeDto } from "./dto/submit-dispute.dto";
@@ -151,6 +153,16 @@ export class MarketsService implements OnModuleInit {
         o.lmsrProbability = initialProbs[i];
       });
 
+      const category = Object.values(MarketCategory).includes(
+        dto.category as MarketCategory,
+      )
+        ? (dto.category as MarketCategory)
+        : MarketCategory.OTHER;
+
+      const metadata: Record<string, any> = {};
+      if (dto.bracketSlot) metadata.bracketSlot = dto.bracketSlot;
+      if (dto.candidate) metadata.candidate = dto.candidate;
+
       // 3. Create market and link outcomes (cascade will handle saving them)
       const market = this.marketRepo.create({
         title: dto.title,
@@ -170,8 +182,11 @@ export class MarketsService implements OnModuleInit {
         externalSource: dto.externalSource ?? null,
         externalMarketType: dto.externalMarketType ?? null,
         settlementSource: dto.settlementSource ?? null,
+        category,
         subcategory: dto.subcategory ?? null,
-        metadata: dto.bracketSlot ? { bracketSlot: dto.bracketSlot } : null,
+        groupId: dto.groupId ?? null,
+        groupTitle: dto.groupTitle ?? null,
+        metadata: Object.keys(metadata).length ? metadata : null,
       });
 
       const saved = await this.marketRepo.save(market);
@@ -182,6 +197,35 @@ export class MarketsService implements OnModuleInit {
       console.error("❌ Error in MarketsService.create:", err);
       throw err;
     }
+  }
+
+  async createGroup(dto: CreateMarketGroupDto): Promise<Market[]> {
+    const groupId = randomUUID();
+    const markets: Market[] = [];
+    for (const candidate of dto.candidates) {
+      const market = await this.create({
+        title: `${dto.title} — ${candidate.name}`,
+        description: dto.description,
+        imageUrl: candidate.imageUrl ?? dto.imageUrl,
+        resolutionCriteria: dto.resolutionCriteria,
+        opensAt: dto.opensAt,
+        closesAt: dto.closesAt,
+        houseEdgePct: dto.houseEdgePct,
+        liquidityParam: dto.liquidityParam,
+        category: dto.category ?? MarketCategory.POLITICAL,
+        subcategory: dto.subcategory,
+        settlementSource: dto.settlementSource,
+        outcomes: [
+          { label: "Yes", imageUrl: null },
+          { label: "No", imageUrl: null },
+        ],
+        groupId,
+        groupTitle: dto.title,
+        candidate: candidate.name,
+      });
+      markets.push(market);
+    }
+    return markets;
   }
 
   async findAll(q?: string): Promise<Market[]> {
