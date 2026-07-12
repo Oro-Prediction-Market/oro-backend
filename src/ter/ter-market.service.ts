@@ -17,6 +17,9 @@ export class TerMarketService {
   private spawning = false;
   private readonly processingMarkets = new Set<string>();
 
+  /** Length of each phase (betting and measuring) in ms */
+  private static readonly PHASE_MS = 24 * 60 * 60 * 1000;
+
   constructor(
     @InjectRepository(Market)
     private readonly marketRepo: Repository<Market>,
@@ -26,110 +29,90 @@ export class TerMarketService {
   ) {}
 
   /**
-   * Spawn a new TER market every 24 hours
-   * Runs at midnight each day
-   * Only spawns if no active TER market exists
+   * Safety-net spawn check at midnight (also used by the admin spawn
+   * endpoint). The primary spawn path is the reference lock step, which
+   * opens the next round the moment betting closes on the current one.
    */
   @Cron("0 0 * * *")
   async spawnMarket(): Promise<void> {
-    if (this.spawning) return;
-    this.spawning = true;
-    this.logger.log("Checking if we should spawn a new TER market...");
+    await this.ensureBettableMarket();
+  }
 
+  /**
+   * Main lifecycle tick, every 3 seconds:
+   *   1. lock reference prices on rounds whose betting phase just ended
+   *   2. settle rounds whose measuring phase just ended
+   */
+  @Interval(3_000)
+  async tick(): Promise<void> {
+    await this.lockReferencePrices();
+    await this.closeAndResolveMarkets();
+  }
+
+  /**
+   * Find OPEN markets past bettingClosesAt that have no reference price yet,
+   * lock the current price as their reference, then open the next round.
+   */
+  async lockReferencePrices(): Promise<void> {
+    const now = new Date();
+
+    const markets = await this.marketRepo
+      .createQueryBuilder("market")
+      .where("market.externalSource = :source", { source: "ter" })
+      .andWhere("market.status = :status", { status: MarketStatus.OPEN })
+      .andWhere("market.bettingClosesAt <= :now", { now })
+      .andWhere("market.closesAt > :now", { now })
+      .getMany();
+
+    const toLock = markets.filter(
+      (m) =>
+        m.metadata?.referenceBuyPrice == null &&
+        m.metadata?.referenceTerPrice == null &&
+        !this.processingMarkets.has(m.id),
+    );
+
+    if (toLock.length === 0) return;
+
+    // Claim before the (slow) price fetch so an overlapping tick skips these
+    toLock.forEach((m) => this.processingMarkets.add(m.id));
     try {
-      // Check if there's already an active TER market (open or upcoming)
-      const existingMarket = await this.marketRepo.findOne({
-        where: {
-          externalSource: "ter",
-          status: MarketStatus.OPEN,
-        },
-      });
-
-      if (existingMarket) {
-        this.logger.log(
-          `TER market ${existingMarket.id} is still open. Skipping spawn.`,
-        );
-        return;
-      }
-
-      this.logger.log("No active TER market found. Spawning new one...");
-
-      // Fetch current TER price
       const price = await this.terPriceService.fetchPrice();
 
-      // Market opens immediately
-      const now = new Date();
-
-      // Market closes in 24 hours
-      const closesAt = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-
-      // Betting closes 4 hours before market close
-      const bettingClosesAt = new Date(closesAt.getTime() - 4 * 60 * 60 * 1000);
-
-      await this.dataSource.transaction(async (manager) => {
-        // Create market
-        const market = manager.create(Market, {
-          title: "TER — UP or DOWN in 24 hours?",
-          category: MarketCategory.OTHER,
-          status: MarketStatus.OPEN,
-          opensAt: now,
-          closesAt,
-          bettingClosesAt,
-          externalSource: "ter",
-          externalMarketType: "price-prediction",
-          houseEdgePct: 5,
-          liquidityParam: 1000,
+      for (const market of toLock) {
+        await this.marketRepo.update(market.id, {
           metadata: {
-            isTer: true,
+            ...(market.metadata || {}),
             referenceTerPrice: price.midPrice,
             referenceBuyPrice: price.buyPrice,
             referenceSellPrice: price.sellPrice,
             openXauUsd: price.xauUsd,
-          },
+            referenceLockedAt: new Date().toISOString(),
+          } as any,
         });
-
-        const savedMarket = await manager.save(Market, market);
-
-        // Create UP and DOWN outcomes
-        const upOutcome = manager.create(Outcome, {
-          marketId: savedMarket.id,
-          label: "UP",
-          description: "TER price will increase",
-          totalPool: 0,
-        });
-
-        const downOutcome = manager.create(Outcome, {
-          marketId: savedMarket.id,
-          label: "DOWN",
-          description: "TER price will decrease",
-          totalPool: 0,
-        });
-
-        await manager.save(Outcome, [upOutcome, downOutcome]);
-
         this.logger.log(
-          `Created TER market ${savedMarket.id} with reference price Nu ${price.buyPrice.toFixed(4)}`,
+          `[Lock] TER market ${market.id} reference locked at Nu ${price.buyPrice.toFixed(4)}`,
         );
-      });
+      }
     } catch (error) {
       this.logger.error(
-        `Failed to spawn TER market: ${error.message}`,
+        `Failed to lock TER reference price: ${error.message}`,
         error.stack,
       );
+      return; // retried on the next tick
     } finally {
-      this.spawning = false;
+      toLock.forEach((m) => this.processingMarkets.delete(m.id));
     }
+
+    // Betting just closed on a round — open the next one immediately
+    await this.ensureBettableMarket();
   }
 
   /**
-   * Close and resolve TER markets that have reached their close time
-   * Runs every 3 seconds
+   * Close and resolve TER markets that have reached their close time.
    */
-  @Interval(3_000)
   async closeAndResolveMarkets(): Promise<void> {
     const now = new Date();
 
-    // Find all open TER markets that should be closed
     const markets = await this.marketRepo
       .createQueryBuilder("market")
       .leftJoinAndSelect("market.outcomes", "outcome")
@@ -159,39 +142,7 @@ export class TerMarketService {
   }
 
   /**
-   * Close betting on TER markets 2 minutes before close
-   * Runs every minute
-   */
-  @Cron("* * * * *")
-  async closeBetting(): Promise<void> {
-    const now = new Date();
-
-    // Find all open TER markets where betting should close
-    const markets = await this.marketRepo
-      .createQueryBuilder("market")
-      .where("market.externalSource = :source", { source: "ter" })
-      .andWhere("market.status = :status", { status: MarketStatus.OPEN })
-      .andWhere("market.bettingClosesAt <= :now", { now })
-      .andWhere("market.closesAt > :now", { now })
-      .getMany();
-
-    if (markets.length === 0) {
-      return;
-    }
-
-    this.logger.log(`Closing betting on ${markets.length} TER market(s)`);
-
-    for (const market of markets) {
-      // Just log it - the frontend will check bettingClosesAt
-      this.logger.log(
-        `Betting closed on TER market ${market.id} at ${now.toISOString()} (4h before settlement)`,
-      );
-    }
-  }
-
-  /**
-   * Close and resolve a single TER market
-   * After resolution, immediately spawns the next market
+   * Close and resolve a single TER market.
    */
   private async closeAndResolve(market: Market): Promise<void> {
     if (this.processingMarkets.has(market.id)) {
@@ -203,129 +154,134 @@ export class TerMarketService {
     this.processingMarkets.add(market.id);
 
     try {
-    this.logger.log(`Closing and resolving TER market ${market.id}`);
+      this.logger.log(`Closing and resolving TER market ${market.id}`);
 
-    // Fetch settlement price
-    const settlementPrice = await this.terPriceService.fetchPrice();
+      // Reference buy price locked at betting close (fall back to midPrice
+      // for legacy markets that snapshotted at spawn)
+      const referenceBuyPrice =
+        market.metadata?.referenceBuyPrice ??
+        market.metadata?.referenceTerPrice;
 
-    // Get reference buy price from metadata (fall back to midPrice for legacy markets)
-    const referenceBuyPrice =
-      market.metadata?.referenceBuyPrice ?? market.metadata?.referenceTerPrice;
+      if (!referenceBuyPrice) {
+        // Reference lock never succeeded (price API down for the whole
+        // measuring phase) — refund everyone rather than settle blind.
+        this.logger.error(
+          `TER market ${market.id} has no reference price in metadata — cancelling and refunding`,
+        );
+        await this.engine.cancelMarket(market.id);
+        await this.ensureBettableMarket();
+        return;
+      }
 
-    if (!referenceBuyPrice) {
-      this.logger.error(
-        `TER market ${market.id} has no reference price in metadata`,
+      const settlementPrice = await this.terPriceService.fetchPrice();
+
+      // Determine winner: UP if settlement buy price > reference buy price
+      let winnerLabel: "UP" | "DOWN" | null = null;
+
+      if (settlementPrice.buyPrice > referenceBuyPrice) {
+        winnerLabel = "UP";
+      } else if (settlementPrice.buyPrice < referenceBuyPrice) {
+        winnerLabel = "DOWN";
+      }
+
+      // If prices are equal, cancel the market
+      if (!winnerLabel) {
+        this.logger.log(
+          `TER market ${market.id} settlement price equals reference price - cancelling`,
+        );
+        await this.engine.cancelMarket(market.id);
+        await this.ensureBettableMarket();
+        return;
+      }
+
+      const winningOutcome = market.outcomes.find(
+        (o) => o.label === winnerLabel,
       );
-      // Cancel the market
-      await this.engine.cancelMarket(market.id);
-      // Still spawn next market
-      await this.spawnNextMarket();
-      return;
-    }
 
-    // Determine winner: UP if settlement buy price > reference buy price, DOWN if lower
-    let winnerLabel: "UP" | "DOWN" | null = null;
+      if (!winningOutcome) {
+        this.logger.error(
+          `Could not find ${winnerLabel} outcome in TER market ${market.id}`,
+        );
+        await this.engine.cancelMarket(market.id);
+        await this.ensureBettableMarket();
+        return;
+      }
 
-    if (settlementPrice.buyPrice > referenceBuyPrice) {
-      winnerLabel = "UP";
-    } else if (settlementPrice.buyPrice < referenceBuyPrice) {
-      winnerLabel = "DOWN";
-    }
+      // Update market metadata with settlement data
+      const updatedMetadata = {
+        ...(market.metadata || {}),
+        settlementTerPrice: settlementPrice.midPrice,
+        settlementBuyPrice: settlementPrice.buyPrice,
+        settlementSellPrice: settlementPrice.sellPrice,
+        closeXauUsd: settlementPrice.xauUsd,
+      };
 
-    // If prices are equal, cancel the market
-    if (!winnerLabel) {
+      const evidenceNote = `TER buy price at close: Nu ${settlementPrice.buyPrice.toFixed(4)} vs reference: Nu ${referenceBuyPrice.toFixed(4)} → ${winnerLabel}`;
+
+      await this.marketRepo.update(market.id, {
+        status: MarketStatus.CLOSED,
+        metadata: updatedMetadata as any,
+        evidenceNote,
+      });
+
+      // TER markets skip the dispute window entirely.
+      // Combine propose + backdate into a single DB write to cut ~100ms of latency.
+      await this.marketRepo.update(market.id, {
+        status: MarketStatus.RESOLVING,
+        proposedOutcomeId: winningOutcome.id,
+        windowMinutes: 10,
+        disputeDeadlineAt: new Date(Date.now() - 1000), // already expired → no window
+      });
+
       this.logger.log(
-        `TER market ${market.id} settlement price equals reference price - cancelling`,
+        `Resolving TER market ${market.id} with winner: ${winnerLabel}`,
       );
-      await this.engine.cancelMarket(market.id);
-      // Still spawn next market
-      await this.spawnNextMarket();
-      return;
-    }
-
-    // Find winning outcome
-    const winningOutcome = market.outcomes.find((o) => o.label === winnerLabel);
-
-    if (!winningOutcome) {
-      this.logger.error(
-        `Could not find ${winnerLabel} outcome in TER market ${market.id}`,
+      await this.engine.resolveMarket(
+        market.id,
+        winningOutcome.id,
+        "system:auto-resolve",
+        undefined,
+        evidenceNote,
       );
-      await this.engine.cancelMarket(market.id);
-      await this.spawnNextMarket();
-      return;
-    }
 
-    // Update market metadata with settlement data
-    const updatedMetadata = {
-      ...(market.metadata || {}),
-      settlementTerPrice: settlementPrice.midPrice,
-      settlementBuyPrice: settlementPrice.buyPrice,
-      settlementSellPrice: settlementPrice.sellPrice,
-      closeXauUsd: settlementPrice.xauUsd,
-    };
-
-    const evidenceNote = `TER buy price at close: Nu ${settlementPrice.buyPrice.toFixed(4)} vs open: Nu ${referenceBuyPrice.toFixed(4)} → ${winnerLabel}`;
-
-    await this.marketRepo.update(market.id, {
-      status: MarketStatus.CLOSED,
-      metadata: updatedMetadata as any,
-      evidenceNote,
-    });
-
-    // TER markets skip the dispute window entirely.
-    // Combine propose + backdate into a single DB write to cut ~100ms of latency.
-    await this.marketRepo.update(market.id, {
-      status: MarketStatus.RESOLVING,
-      proposedOutcomeId: winningOutcome.id,
-      windowMinutes: 10,
-      disputeDeadlineAt: new Date(Date.now() - 1000), // already expired → no window
-    });
-
-    this.logger.log(
-      `Resolving TER market ${market.id} with winner: ${winnerLabel}`,
-    );
-    await this.engine.resolveMarket(
-      market.id,
-      winningOutcome.id,
-      "system:auto-resolve",
-      undefined,
-      evidenceNote,
-    );
-
-    // Immediately spawn the next market — reuse settlement price to avoid a second API call
-    await this.spawnNextMarketWithPrice(settlementPrice);
+      // Safety net — the lock step normally spawned the next round already
+      await this.ensureBettableMarket();
     } finally {
       this.processingMarkets.delete(market.id);
     }
   }
 
   /**
-   * Spawn the next TER market immediately after the previous one closes.
-   * Accepts an optional pre-fetched price to avoid a redundant API call.
+   * Spawn a new round unless one is still accepting bets.
+   * No price fetch happens here — the reference is locked at betting close.
    */
-  private async spawnNextMarketWithPrice(price?: TerPrice): Promise<void> {
+  private async ensureBettableMarket(): Promise<void> {
     if (this.spawning) return;
     this.spawning = true;
     try {
-      // Check if there's already an active TER market
-      const existing = await this.marketRepo.findOne({
-        where: { externalSource: "ter", status: MarketStatus.OPEN },
-      });
-      if (existing) {
-        this.logger.log("Next TER market already exists, skipping spawn.");
+      const now = new Date();
+      const bettable = await this.marketRepo
+        .createQueryBuilder("market")
+        .where("market.externalSource = :source", { source: "ter" })
+        .andWhere("market.status = :status", { status: MarketStatus.OPEN })
+        .andWhere("market.bettingClosesAt > :now", { now })
+        .getOne();
+
+      if (bettable) {
         return;
       }
 
-      // Reuse provided price or fetch fresh
-      const p = price ?? (await this.terPriceService.fetchPrice());
-      const now = new Date();
-      const closesAt = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-      const bettingClosesAt = new Date(closesAt.getTime() - 4 * 60 * 60 * 1000);
+      const bettingClosesAt = new Date(
+        now.getTime() + TerMarketService.PHASE_MS,
+      );
+      const closesAt = new Date(
+        bettingClosesAt.getTime() + TerMarketService.PHASE_MS,
+      );
 
       await this.dataSource.transaction(async (manager) => {
         const market = manager.create(Market, {
           title: "TER — UP or DOWN in 24 hours?",
-          category: MarketCategory.OTHER,
+          category: MarketCategory.ECONOMY,
           status: MarketStatus.OPEN,
           opensAt: now,
           closesAt,
@@ -336,10 +292,9 @@ export class TerMarketService {
           liquidityParam: 1000,
           metadata: {
             isTer: true,
-            referenceTerPrice: p.midPrice,
-            referenceBuyPrice: p.buyPrice,
-            referenceSellPrice: p.sellPrice,
-            openXauUsd: p.xauUsd,
+            openedAt: now.toISOString(),
+            // reference prices are intentionally absent: they are locked
+            // when betting closes, so bettors can't watch the answer form.
           },
         });
 
@@ -362,21 +317,16 @@ export class TerMarketService {
         await manager.save(Outcome, [upOutcome, downOutcome]);
 
         this.logger.log(
-          `[Back-to-back] Spawned next TER market ${savedMarket.id} with reference price Nu ${p.buyPrice.toFixed(4)}`,
+          `Spawned TER round ${savedMarket.id}: betting until ${bettingClosesAt.toISOString()}, settles ${closesAt.toISOString()}`,
         );
       });
     } catch (error) {
       this.logger.error(
-        `Failed to spawn next TER market: ${error.message}`,
+        `Failed to spawn TER market: ${error.message}`,
         error.stack,
       );
     } finally {
       this.spawning = false;
     }
-  }
-
-  /** Convenience wrapper for cancel paths that don't have a cached price */
-  private async spawnNextMarket(): Promise<void> {
-    return this.spawnNextMarketWithPrice();
   }
 }

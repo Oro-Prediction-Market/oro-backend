@@ -22,17 +22,20 @@ const mockLowerPrice: BtcPrice = {
   fetchedAt: new Date(),
 };
 
+const createQb = (overrides: Partial<Record<string, any>> = {}) => ({
+  leftJoinAndSelect: jest.fn().mockReturnThis(),
+  where: jest.fn().mockReturnThis(),
+  andWhere: jest.fn().mockReturnThis(),
+  getMany: jest.fn().mockResolvedValue([]),
+  getOne: jest.fn().mockResolvedValue(null),
+  ...overrides,
+});
+
 const createMockRepo = () => ({
   findOne: jest.fn(),
   find: jest.fn(),
   update: jest.fn().mockResolvedValue({}),
-  createQueryBuilder: jest.fn(() => ({
-    leftJoinAndSelect: jest.fn().mockReturnThis(),
-    where: jest.fn().mockReturnThis(),
-    andWhere: jest.fn().mockReturnThis(),
-    getMany: jest.fn().mockResolvedValue([]),
-    getOne: jest.fn().mockResolvedValue(null),
-  })) as jest.Mock,
+  createQueryBuilder: jest.fn(() => createQb()) as jest.Mock,
 });
 
 const createMockDataSource = () => ({
@@ -62,6 +65,24 @@ const createMockPriceService = () => ({
   fetchPrice: jest.fn().mockResolvedValue(mockPrice),
 });
 
+// Captures the market entity created inside dataSource.transaction
+const captureCreatedMarket = (dataSource: any) => {
+  const captured: { market: any } = { market: null };
+  dataSource.transaction.mockImplementation(async (cb: any) => {
+    const manager = {
+      create: jest.fn((_entity: any, data: any) => {
+        if (!captured.market) captured.market = data;
+        return { id: "market-1", ...data };
+      }),
+      save: jest.fn(async (_e: any, d: any) =>
+        Array.isArray(d) ? d : { id: "market-1", ...d },
+      ),
+    };
+    return cb(manager);
+  });
+  return captured;
+};
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe("BtcMarketService", () => {
@@ -86,20 +107,26 @@ describe("BtcMarketService", () => {
   });
 
   describe("spawnMarket", () => {
-    it("spawns a new BTC market when no active market exists", async () => {
-      marketRepo.findOne.mockResolvedValue(null);
-
+    it("spawns a new BTC market when no bettable market exists", async () => {
       await service.spawnMarket();
 
-      expect(priceService.fetchPrice).toHaveBeenCalled();
       expect(dataSource.transaction).toHaveBeenCalled();
     });
 
-    it("does NOT spawn if an active BTC market already exists", async () => {
-      marketRepo.findOne.mockResolvedValue({
-        id: "existing-market",
-        status: "open",
-      });
+    it("does NOT fetch a price at spawn — reference is locked at betting close", async () => {
+      await service.spawnMarket();
+
+      expect(priceService.fetchPrice).not.toHaveBeenCalled();
+    });
+
+    it("does NOT spawn if a bettable BTC market already exists", async () => {
+      marketRepo.createQueryBuilder.mockReturnValue(
+        createQb({
+          getOne: jest
+            .fn()
+            .mockResolvedValue({ id: "existing-market", status: "open" }),
+        }),
+      );
 
       await service.spawnMarket();
 
@@ -107,7 +134,6 @@ describe("BtcMarketService", () => {
     });
 
     it("prevents double-spawn via spawning mutex", async () => {
-      marketRepo.findOne.mockResolvedValue(null);
       dataSource.transaction.mockImplementation(
         () => new Promise((resolve) => setTimeout(resolve, 100)),
       );
@@ -119,94 +145,44 @@ describe("BtcMarketService", () => {
       expect(dataSource.transaction).toHaveBeenCalledTimes(1);
     });
 
-    it("creates market with correct properties", async () => {
-      marketRepo.findOne.mockResolvedValue(null);
-
-      let createdMarket: any = null;
-      dataSource.transaction.mockImplementation(async (cb: any) => {
-        const manager = {
-          create: jest.fn((_entity: any, data: any) => {
-            if (!createdMarket) createdMarket = data;
-            return { id: "market-1", ...data };
-          }),
-          save: jest.fn(async (_entity: any, data: any) => {
-            if (Array.isArray(data)) return data;
-            return { id: "market-1", ...data };
-          }),
-        };
-        return cb(manager);
-      });
+    it("creates market with correct properties and no reference price", async () => {
+      const captured = captureCreatedMarket(dataSource);
 
       await service.spawnMarket();
 
+      const createdMarket = captured.market;
       expect(createdMarket).toBeTruthy();
-      expect(createdMarket.title).toBe("BTC — UP or DOWN in 15 minutes?");
+      expect(createdMarket.title).toBe("BTC — UP or DOWN?");
       expect(createdMarket.category).toBe(MarketCategory.ECONOMY);
       expect(createdMarket.status).toBe(MarketStatus.OPEN);
       expect(createdMarket.externalSource).toBe("btc");
       expect(createdMarket.houseEdgePct).toBe(5);
       expect(createdMarket.metadata.isBtc).toBe(true);
-      expect(createdMarket.metadata.referencePrice).toBe(67000.0);
-      expect(createdMarket.metadata.referenceSource).toBe("binance");
+      // Bet-first-then-measure: no reference exists during the betting phase
+      expect(createdMarket.metadata.referencePrice).toBeUndefined();
+      expect(createdMarket.metadata.referenceSource).toBeUndefined();
     });
 
-    it("sets bettingClosesAt to 2 minutes before closesAt", async () => {
-      marketRepo.findOne.mockResolvedValue(null);
-
-      let createdMarket: any = null;
-      dataSource.transaction.mockImplementation(async (cb: any) => {
-        const manager = {
-          create: jest.fn((_entity: any, data: any) => {
-            if (!createdMarket) createdMarket = data;
-            return { id: "market-1", ...data };
-          }),
-          save: jest.fn(async (_e: any, d: any) =>
-            Array.isArray(d) ? d : { id: "m-1", ...d },
-          ),
-        };
-        return cb(manager);
-      });
-
-      await service.spawnMarket();
-
-      const closesAt = new Date(createdMarket.closesAt).getTime();
-      const bettingClosesAt = new Date(createdMarket.bettingClosesAt).getTime();
-
-      expect(closesAt - bettingClosesAt).toBe(2 * 60 * 1000);
-    });
-
-    it("sets closesAt to 15 minutes from now", async () => {
-      marketRepo.findOne.mockResolvedValue(null);
-
-      let createdMarket: any = null;
-      dataSource.transaction.mockImplementation(async (cb: any) => {
-        const manager = {
-          create: jest.fn((_entity: any, data: any) => {
-            if (!createdMarket) createdMarket = data;
-            return { id: "market-1", ...data };
-          }),
-          save: jest.fn(async (_e: any, d: any) =>
-            Array.isArray(d) ? d : { id: "m-1", ...d },
-          ),
-        };
-        return cb(manager);
-      });
+    it("sets a 7.5-minute betting phase followed by a 7.5-minute measuring phase (15-minute round)", async () => {
+      const captured = captureCreatedMarket(dataSource);
 
       const before = Date.now();
       await service.spawnMarket();
       const after = Date.now();
 
-      const closesAt = new Date(createdMarket.closesAt).getTime();
+      const createdMarket = captured.market;
       const opensAt = new Date(createdMarket.opensAt).getTime();
+      const bettingClosesAt = new Date(createdMarket.bettingClosesAt).getTime();
+      const closesAt = new Date(createdMarket.closesAt).getTime();
 
+      expect(bettingClosesAt - opensAt).toBe(7.5 * 60 * 1000);
+      expect(closesAt - bettingClosesAt).toBe(7.5 * 60 * 1000);
       expect(closesAt - opensAt).toBe(15 * 60 * 1000);
       expect(opensAt).toBeGreaterThanOrEqual(before);
       expect(opensAt).toBeLessThanOrEqual(after);
     });
 
     it("creates UP and DOWN outcomes", async () => {
-      marketRepo.findOne.mockResolvedValue(null);
-
       const savedOutcomes: any[] = [];
       dataSource.transaction.mockImplementation(async (cb: any) => {
         const manager = {
@@ -230,16 +206,105 @@ describe("BtcMarketService", () => {
     });
   });
 
+  describe("lockReferencePrices", () => {
+    const lockableMarket = () => ({
+      id: "market-1",
+      externalSource: "btc",
+      status: MarketStatus.OPEN,
+      bettingClosesAt: new Date(Date.now() - 1000),
+      closesAt: new Date(Date.now() + 14 * 60 * 1000),
+      metadata: { isBtc: true },
+    });
+
+    it("locks the current price as reference on markets past betting close", async () => {
+      marketRepo.createQueryBuilder.mockReturnValue(
+        createQb({ getMany: jest.fn().mockResolvedValue([lockableMarket()]) }),
+      );
+
+      await service.lockReferencePrices();
+
+      expect(priceService.fetchPrice).toHaveBeenCalled();
+      expect(marketRepo.update).toHaveBeenCalledWith(
+        "market-1",
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            referencePrice: 67000.0,
+            referenceSource: "binance",
+            referenceLockedAt: expect.any(String),
+          }),
+        }),
+      );
+    });
+
+    it("spawns the next round after locking", async () => {
+      marketRepo.createQueryBuilder.mockReturnValue(
+        createQb({ getMany: jest.fn().mockResolvedValue([lockableMarket()]) }),
+      );
+
+      await service.lockReferencePrices();
+
+      expect(dataSource.transaction).toHaveBeenCalled();
+    });
+
+    it("skips markets that already have a reference price (legacy rounds)", async () => {
+      const legacy = {
+        ...lockableMarket(),
+        metadata: { isBtc: true, referencePrice: 66000.0 },
+      };
+      marketRepo.createQueryBuilder.mockReturnValue(
+        createQb({ getMany: jest.fn().mockResolvedValue([legacy]) }),
+      );
+
+      await service.lockReferencePrices();
+
+      expect(priceService.fetchPrice).not.toHaveBeenCalled();
+      expect(marketRepo.update).not.toHaveBeenCalled();
+    });
+
+    it("does not update anything when the price fetch fails, and retries next tick", async () => {
+      marketRepo.createQueryBuilder.mockReturnValue(
+        createQb({ getMany: jest.fn().mockResolvedValue([lockableMarket()]) }),
+      );
+      priceService.fetchPrice.mockRejectedValueOnce(new Error("API down"));
+
+      await service.lockReferencePrices();
+      expect(marketRepo.update).not.toHaveBeenCalled();
+
+      // Retry succeeds — the lock guard was released by the failed attempt
+      priceService.fetchPrice.mockResolvedValueOnce(mockPrice);
+      await service.lockReferencePrices();
+      expect(marketRepo.update).toHaveBeenCalled();
+    });
+
+    it("[CONCURRENCY] overlapping ticks do not double-lock the same market", async () => {
+      marketRepo.createQueryBuilder.mockReturnValue(
+        createQb({ getMany: jest.fn().mockResolvedValue([lockableMarket()]) }),
+      );
+
+      let releaseFetch: (p: BtcPrice) => void = () => {};
+      const slowFetch = new Promise<BtcPrice>((res) => {
+        releaseFetch = res;
+      });
+      priceService.fetchPrice.mockReturnValue(slowFetch);
+
+      const tick1 = service.lockReferencePrices();
+      await new Promise((res) => setImmediate(res));
+      const tick2 = service.lockReferencePrices();
+      await new Promise((res) => setImmediate(res));
+
+      releaseFetch(mockPrice);
+      await Promise.all([tick1, tick2]);
+
+      const referenceUpdates = marketRepo.update.mock.calls.filter(
+        (call: any[]) => call[1]?.metadata?.referencePrice,
+      );
+      expect(referenceUpdates).toHaveLength(1);
+    });
+  });
+
   describe("closeAndResolveMarkets", () => {
     it("does nothing when no markets need closing", async () => {
-      const qb = {
-        leftJoinAndSelect: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        getMany: jest.fn().mockResolvedValue([]),
-        getOne: jest.fn().mockResolvedValue(null),
-      };
-      marketRepo.createQueryBuilder.mockReturnValue(qb);
+      marketRepo.createQueryBuilder.mockReturnValue(createQb());
 
       await service.closeAndResolveMarkets();
 
@@ -258,15 +323,9 @@ describe("BtcMarketService", () => {
         metadata: { referencePrice: 67000.0, referenceSource: "binance" },
       };
 
-      const qb = {
-        leftJoinAndSelect: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        getMany: jest.fn().mockResolvedValue([market]),
-        getOne: jest.fn().mockResolvedValue(null),
-      };
-      marketRepo.createQueryBuilder.mockReturnValue(qb);
-      marketRepo.findOne.mockResolvedValue(null);
+      marketRepo.createQueryBuilder.mockReturnValue(
+        createQb({ getMany: jest.fn().mockResolvedValue([market]) }),
+      );
       priceService.fetchPrice.mockResolvedValue(mockHigherPrice);
 
       await service.closeAndResolveMarkets();
@@ -300,15 +359,9 @@ describe("BtcMarketService", () => {
         metadata: { referencePrice: 67000.0, referenceSource: "binance" },
       };
 
-      const qb = {
-        leftJoinAndSelect: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        getMany: jest.fn().mockResolvedValue([market]),
-        getOne: jest.fn().mockResolvedValue(null),
-      };
-      marketRepo.createQueryBuilder.mockReturnValue(qb);
-      marketRepo.findOne.mockResolvedValue(null);
+      marketRepo.createQueryBuilder.mockReturnValue(
+        createQb({ getMany: jest.fn().mockResolvedValue([market]) }),
+      );
       priceService.fetchPrice.mockResolvedValue(mockLowerPrice);
 
       await service.closeAndResolveMarkets();
@@ -343,15 +396,9 @@ describe("BtcMarketService", () => {
         metadata: { referencePrice: 67000.0 },
       };
 
-      const qb = {
-        leftJoinAndSelect: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        getMany: jest.fn().mockResolvedValue([market]),
-        getOne: jest.fn().mockResolvedValue(null),
-      };
-      marketRepo.createQueryBuilder.mockReturnValue(qb);
-      marketRepo.findOne.mockResolvedValue(null);
+      marketRepo.createQueryBuilder.mockReturnValue(
+        createQb({ getMany: jest.fn().mockResolvedValue([market]) }),
+      );
       priceService.fetchPrice.mockResolvedValue({ ...mockPrice, price: 67000.0 });
 
       await service.closeAndResolveMarkets();
@@ -360,7 +407,7 @@ describe("BtcMarketService", () => {
       expect(engine.resolveMarket).not.toHaveBeenCalled();
     });
 
-    it("cancels market when no reference price in metadata", async () => {
+    it("cancels (refunds) market when reference price was never locked", async () => {
       const market = {
         id: "market-1",
         externalSource: "btc",
@@ -370,22 +417,18 @@ describe("BtcMarketService", () => {
         metadata: {},
       };
 
-      const qb = {
-        leftJoinAndSelect: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        getMany: jest.fn().mockResolvedValue([market]),
-        getOne: jest.fn().mockResolvedValue(null),
-      };
-      marketRepo.createQueryBuilder.mockReturnValue(qb);
-      marketRepo.findOne.mockResolvedValue(null);
+      marketRepo.createQueryBuilder.mockReturnValue(
+        createQb({ getMany: jest.fn().mockResolvedValue([market]) }),
+      );
 
       await service.closeAndResolveMarkets();
 
       expect(engine.cancelMarket).toHaveBeenCalledWith("market-1");
+      // No settlement fetch needed when there is nothing to compare against
+      expect(priceService.fetchPrice).not.toHaveBeenCalled();
     });
 
-    it("spawns next market after resolution", async () => {
+    it("ensures a bettable market exists after resolution", async () => {
       const market = {
         id: "market-1",
         externalSource: "btc",
@@ -398,15 +441,9 @@ describe("BtcMarketService", () => {
         metadata: { referencePrice: 67000.0 },
       };
 
-      const qb = {
-        leftJoinAndSelect: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        getMany: jest.fn().mockResolvedValue([market]),
-        getOne: jest.fn().mockResolvedValue(null),
-      };
-      marketRepo.createQueryBuilder.mockReturnValue(qb);
-      marketRepo.findOne.mockResolvedValue(null);
+      marketRepo.createQueryBuilder.mockReturnValue(
+        createQb({ getMany: jest.fn().mockResolvedValue([market]) }),
+      );
       priceService.fetchPrice.mockResolvedValue(mockHigherPrice);
 
       await service.closeAndResolveMarkets();
@@ -426,15 +463,9 @@ describe("BtcMarketService", () => {
         ],
         metadata: { referencePrice: 67000.0 },
       };
-      const qb = {
-        leftJoinAndSelect: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        getMany: jest.fn().mockResolvedValue([market]),
-        getOne: jest.fn().mockResolvedValue(null),
-      };
-      marketRepo.createQueryBuilder.mockReturnValue(qb);
-      marketRepo.findOne.mockResolvedValue(null);
+      marketRepo.createQueryBuilder.mockReturnValue(
+        createQb({ getMany: jest.fn().mockResolvedValue([market]) }),
+      );
 
       let releaseFetch: (p: BtcPrice) => void = () => {};
       const slowFetch = new Promise<BtcPrice>((res) => {
@@ -465,15 +496,9 @@ describe("BtcMarketService", () => {
         ],
         metadata: { referencePrice: 67000.0 },
       };
-      const qb = {
-        leftJoinAndSelect: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        getMany: jest.fn().mockResolvedValue([market]),
-        getOne: jest.fn().mockResolvedValue(null),
-      };
-      marketRepo.createQueryBuilder.mockReturnValue(qb);
-      marketRepo.findOne.mockResolvedValue(null);
+      marketRepo.createQueryBuilder.mockReturnValue(
+        createQb({ getMany: jest.fn().mockResolvedValue([market]) }),
+      );
       priceService.fetchPrice.mockResolvedValue(mockHigherPrice);
 
       engine.resolveMarket.mockRejectedValueOnce(new Error("transient db error"));
@@ -498,15 +523,9 @@ describe("BtcMarketService", () => {
         metadata: { referencePrice: 67000.0 },
       };
 
-      const qb = {
-        leftJoinAndSelect: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        getMany: jest.fn().mockResolvedValue([market]),
-        getOne: jest.fn().mockResolvedValue(null),
-      };
-      marketRepo.createQueryBuilder.mockReturnValue(qb);
-      marketRepo.findOne.mockResolvedValue(null);
+      marketRepo.createQueryBuilder.mockReturnValue(
+        createQb({ getMany: jest.fn().mockResolvedValue([market]) }),
+      );
       priceService.fetchPrice.mockResolvedValue(mockHigherPrice);
 
       await service.closeAndResolveMarkets();
@@ -521,91 +540,27 @@ describe("BtcMarketService", () => {
 
   describe("BTC market configuration", () => {
     it("uses 5% house edge", async () => {
-      marketRepo.findOne.mockResolvedValue(null);
-
-      let createdMarket: any = null;
-      dataSource.transaction.mockImplementation(async (cb: any) => {
-        const manager = {
-          create: jest.fn((_e: any, data: any) => {
-            if (!createdMarket) createdMarket = data;
-            return { id: "m-1", ...data };
-          }),
-          save: jest.fn(async (_e: any, d: any) =>
-            Array.isArray(d) ? d : { id: "m-1", ...d },
-          ),
-        };
-        return cb(manager);
-      });
+      const captured = captureCreatedMarket(dataSource);
 
       await service.spawnMarket();
 
-      expect(createdMarket.houseEdgePct).toBe(5);
+      expect(captured.market.houseEdgePct).toBe(5);
     });
 
     it("marks market as Economy category", async () => {
-      marketRepo.findOne.mockResolvedValue(null);
-
-      let createdMarket: any = null;
-      dataSource.transaction.mockImplementation(async (cb: any) => {
-        const manager = {
-          create: jest.fn((_e: any, data: any) => {
-            if (!createdMarket) createdMarket = data;
-            return { id: "m-1", ...data };
-          }),
-          save: jest.fn(async (_e: any, d: any) =>
-            Array.isArray(d) ? d : { id: "m-1", ...d },
-          ),
-        };
-        return cb(manager);
-      });
+      const captured = captureCreatedMarket(dataSource);
 
       await service.spawnMarket();
 
-      expect(createdMarket.category).toBe(MarketCategory.ECONOMY);
+      expect(captured.market.category).toBe(MarketCategory.ECONOMY);
     });
 
     it("sets externalSource to 'btc'", async () => {
-      marketRepo.findOne.mockResolvedValue(null);
-
-      let createdMarket: any = null;
-      dataSource.transaction.mockImplementation(async (cb: any) => {
-        const manager = {
-          create: jest.fn((_e: any, data: any) => {
-            if (!createdMarket) createdMarket = data;
-            return { id: "m-1", ...data };
-          }),
-          save: jest.fn(async (_e: any, d: any) =>
-            Array.isArray(d) ? d : { id: "m-1", ...d },
-          ),
-        };
-        return cb(manager);
-      });
+      const captured = captureCreatedMarket(dataSource);
 
       await service.spawnMarket();
 
-      expect(createdMarket.externalSource).toBe("btc");
-    });
-
-    it("stores price source in metadata", async () => {
-      marketRepo.findOne.mockResolvedValue(null);
-
-      let createdMarket: any = null;
-      dataSource.transaction.mockImplementation(async (cb: any) => {
-        const manager = {
-          create: jest.fn((_e: any, data: any) => {
-            if (!createdMarket) createdMarket = data;
-            return { id: "m-1", ...data };
-          }),
-          save: jest.fn(async (_e: any, d: any) =>
-            Array.isArray(d) ? d : { id: "m-1", ...d },
-          ),
-        };
-        return cb(manager);
-      });
-
-      await service.spawnMarket();
-
-      expect(createdMarket.metadata.referenceSource).toBe("binance");
+      expect(captured.market.externalSource).toBe("btc");
     });
   });
 });
@@ -619,12 +574,11 @@ describe("BtcPriceService", () => {
     priceService = new BtcPriceService();
   });
 
-  it("fetchPrice returns a BtcPrice object from Binance", async () => {
+  it("fetchPrice returns a BtcPrice object from Coinbase (primary source)", async () => {
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
       json: jest.fn().mockResolvedValue({
-        symbol: "BTCUSDT",
-        price: "67234.56",
+        data: { amount: "67234.56", currency: "USD" },
       }),
     }) as any;
 
@@ -634,23 +588,24 @@ describe("BtcPriceService", () => {
     expect(price).toHaveProperty("source");
     expect(price).toHaveProperty("fetchedAt");
     expect(price.price).toBeCloseTo(67234.56, 2);
-    expect(price.source).toBe("binance");
+    expect(price.source).toBe("coinbase");
   });
 
-  it("falls back to Coinbase when Binance fails", async () => {
+  it("falls back to Binance when Coinbase fails", async () => {
     global.fetch = jest
       .fn()
       .mockResolvedValueOnce({ ok: false, status: 503 })
       .mockResolvedValueOnce({
         ok: true,
         json: jest.fn().mockResolvedValue({
-          data: { amount: "67100.00", currency: "USD" },
+          symbol: "BTCUSDT",
+          price: "67100.00",
         }),
       }) as any;
 
     const price = await priceService.fetchPrice();
 
-    expect(price.source).toBe("coinbase");
+    expect(price.source).toBe("binance");
     expect(price.price).toBeCloseTo(67100.0, 2);
   });
 });
@@ -658,14 +613,16 @@ describe("BtcPriceService", () => {
 // ─── bettingClosesAt enforcement tests ───────────────────────────────────────
 
 describe("bettingClosesAt enforcement for BTC markets", () => {
-  it("BTC markets always have bettingClosesAt set (non-null)", () => {
+  it("BTC rounds have equal betting and measuring phases", () => {
     const now = new Date();
-    const closesAt = new Date(now.getTime() + 15 * 60 * 1000);
-    const bettingClosesAt = new Date(closesAt.getTime() - 2 * 60 * 1000);
+    const bettingClosesAt = new Date(now.getTime() + 7.5 * 60 * 1000);
+    const closesAt = new Date(bettingClosesAt.getTime() + 7.5 * 60 * 1000);
 
     expect(bettingClosesAt).not.toBeNull();
     expect(bettingClosesAt.getTime()).toBeLessThan(closesAt.getTime());
-    expect(closesAt.getTime() - bettingClosesAt.getTime()).toBe(2 * 60 * 1000);
+    expect(closesAt.getTime() - bettingClosesAt.getTime()).toBe(
+      7.5 * 60 * 1000,
+    );
   });
 
   it("blocks bet when current time >= bettingClosesAt", () => {

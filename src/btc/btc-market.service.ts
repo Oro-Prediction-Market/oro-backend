@@ -17,6 +17,10 @@ export class BtcMarketService {
   private spawning = false;
   private readonly processingMarkets = new Set<string>();
 
+  // 7.5 min betting + 7.5 min measuring = 15-minute round total; phases must
+  // be equal so back-to-back rounds chain with no gap and no double-betting.
+  private static readonly PHASE_MS = 7.5 * 60 * 1000;
+
   constructor(
     @InjectRepository(Market)
     private readonly marketRepo: Repository<Market>,
@@ -26,95 +30,85 @@ export class BtcMarketService {
   ) {}
 
   /**
-   * Spawn a new BTC market every 15 minutes.
-   * Only spawns if no active BTC market exists.
+   * Safety-net spawn check every 5 minutes (also used by the admin
+   * POST /btc/spawn endpoint). The primary spawn path is the reference
+   * lock step, which opens the next round the moment betting closes on
+   * the current one.
    */
-  @Cron("*/15 * * * *")
+  @Cron("*/5 * * * *")
   async spawnMarket(): Promise<void> {
-    if (this.spawning) return;
-    this.spawning = true;
-    this.logger.log("Checking if we should spawn a new BTC market...");
+    await this.ensureBettableMarket();
+  }
 
+  /**
+   * Main lifecycle tick, every 3 seconds:
+   *   1. lock reference prices on rounds whose betting phase just ended
+   *   2. settle rounds whose measuring phase just ended
+   */
+  @Interval(3_000)
+  async tick(): Promise<void> {
+    await this.lockReferencePrices();
+    await this.closeAndResolveMarkets();
+  }
+
+  /**
+   * Find OPEN markets past bettingClosesAt that have no reference price yet,
+   * lock the current price as their reference, then open the next round.
+   */
+  async lockReferencePrices(): Promise<void> {
+    const now = new Date();
+
+    const markets = await this.marketRepo
+      .createQueryBuilder("market")
+      .where("market.externalSource = :source", { source: "btc" })
+      .andWhere("market.status = :status", { status: MarketStatus.OPEN })
+      .andWhere("market.bettingClosesAt <= :now", { now })
+      .andWhere("market.closesAt > :now", { now })
+      .getMany();
+
+    const toLock = markets.filter(
+      (m) =>
+        m.metadata?.referencePrice == null &&
+        !this.processingMarkets.has(m.id),
+    );
+
+    if (toLock.length === 0) return;
+
+    // Claim before the (slow) price fetch so an overlapping tick skips these
+    toLock.forEach((m) => this.processingMarkets.add(m.id));
     try {
-      const existingMarket = await this.marketRepo.findOne({
-        where: {
-          externalSource: "btc",
-          status: MarketStatus.OPEN,
-        },
-      });
-
-      if (existingMarket) {
-        this.logger.log(
-          `BTC market ${existingMarket.id} is still open. Skipping spawn.`,
-        );
-        return;
-      }
-
-      this.logger.log("No active BTC market found. Spawning new one...");
-
       const price = await this.btcPriceService.fetchPrice();
 
-      const now = new Date();
-      const closesAt = new Date(now.getTime() + 15 * 60 * 1000);
-      const bettingClosesAt = new Date(closesAt.getTime() - 2 * 60 * 1000);
-
-      await this.dataSource.transaction(async (manager) => {
-        const market = manager.create(Market, {
-          title: "BTC — UP or DOWN in 15 minutes?",
-          category: MarketCategory.OTHER,
-          status: MarketStatus.OPEN,
-          opensAt: now,
-          closesAt,
-          bettingClosesAt,
-          externalSource: "btc",
-          externalMarketType: "price-prediction",
-          houseEdgePct: 5,
-          liquidityParam: 1000,
+      for (const market of toLock) {
+        await this.marketRepo.update(market.id, {
           metadata: {
-            isBtc: true,
+            ...(market.metadata || {}),
             referencePrice: price.price,
             referenceSource: price.source,
-            openedAt: now.toISOString(),
-          },
+            referenceLockedAt: new Date().toISOString(),
+          } as any,
         });
-
-        const savedMarket = await manager.save(Market, market);
-
-        const upOutcome = manager.create(Outcome, {
-          marketId: savedMarket.id,
-          label: "UP",
-          description: "BTC price will increase",
-          totalPool: 0,
-        });
-
-        const downOutcome = manager.create(Outcome, {
-          marketId: savedMarket.id,
-          label: "DOWN",
-          description: "BTC price will decrease",
-          totalPool: 0,
-        });
-
-        await manager.save(Outcome, [upOutcome, downOutcome]);
-
         this.logger.log(
-          `Created BTC market ${savedMarket.id} with reference price $${price.price.toFixed(2)} (${price.source})`,
+          `[Lock] BTC market ${market.id} reference locked at $${price.price.toFixed(2)} (${price.source})`,
         );
-      });
+      }
     } catch (error) {
       this.logger.error(
-        `Failed to spawn BTC market: ${error.message}`,
+        `Failed to lock BTC reference price: ${error.message}`,
         error.stack,
       );
+      return; // retried on the next tick
     } finally {
-      this.spawning = false;
+      toLock.forEach((m) => this.processingMarkets.delete(m.id));
     }
+
+    // Betting just closed on a round — open the next one immediately
+    await this.ensureBettableMarket();
   }
 
   /**
    * Close and resolve BTC markets that have reached their close time.
-   * Runs every 3 seconds.
    */
-  @Interval(3_000)
   async closeAndResolveMarkets(): Promise<void> {
     const now = new Date();
 
@@ -146,33 +140,6 @@ export class BtcMarketService {
     }
   }
 
-  /**
-   * Close betting on BTC markets 2 minutes before close.
-   * Runs every minute.
-   */
-  @Cron("* * * * *")
-  async closeBetting(): Promise<void> {
-    const now = new Date();
-
-    const markets = await this.marketRepo
-      .createQueryBuilder("market")
-      .where("market.externalSource = :source", { source: "btc" })
-      .andWhere("market.status = :status", { status: MarketStatus.OPEN })
-      .andWhere("market.bettingClosesAt <= :now", { now })
-      .andWhere("market.closesAt > :now", { now })
-      .getMany();
-
-    if (markets.length === 0) {
-      return;
-    }
-
-    for (const market of markets) {
-      this.logger.log(
-        `Betting closed on BTC market ${market.id} at ${now.toISOString()}`,
-      );
-    }
-  }
-
   private async closeAndResolve(market: Market): Promise<void> {
     if (this.processingMarkets.has(market.id)) {
       this.logger.warn(
@@ -185,17 +152,20 @@ export class BtcMarketService {
     try {
       this.logger.log(`Closing and resolving BTC market ${market.id}`);
 
-      const settlementPrice = await this.btcPriceService.fetchPrice();
       const referencePrice = market.metadata?.referencePrice;
 
       if (!referencePrice) {
+        // Reference lock never succeeded (price API down for the whole
+        // measuring phase) — refund everyone rather than settle blind.
         this.logger.error(
-          `BTC market ${market.id} has no reference price in metadata`,
+          `BTC market ${market.id} has no reference price in metadata — cancelling and refunding`,
         );
         await this.engine.cancelMarket(market.id);
-        await this.spawnNextMarket();
+        await this.ensureBettableMarket();
         return;
       }
+
+      const settlementPrice = await this.btcPriceService.fetchPrice();
 
       let winnerLabel: "UP" | "DOWN" | null = null;
 
@@ -210,7 +180,7 @@ export class BtcMarketService {
           `BTC market ${market.id} settlement price equals reference price — cancelling`,
         );
         await this.engine.cancelMarket(market.id);
-        await this.spawnNextMarketWithPrice(settlementPrice);
+        await this.ensureBettableMarket();
         return;
       }
 
@@ -223,7 +193,7 @@ export class BtcMarketService {
           `Could not find ${winnerLabel} outcome in BTC market ${market.id}`,
         );
         await this.engine.cancelMarket(market.id);
-        await this.spawnNextMarket();
+        await this.ensureBettableMarket();
         return;
       }
 
@@ -234,7 +204,7 @@ export class BtcMarketService {
         settledAt: new Date().toISOString(),
       };
 
-      const evidenceNote = `BTC/USD at close: $${settlementPrice.price.toFixed(2)} (${settlementPrice.source}) vs open: $${referencePrice.toFixed(2)}`;
+      const evidenceNote = `BTC/USD at close: $${settlementPrice.price.toFixed(2)} (${settlementPrice.source}) vs reference: $${referencePrice.toFixed(2)}`;
 
       await this.marketRepo.update(market.id, {
         status: MarketStatus.CLOSED,
@@ -261,33 +231,44 @@ export class BtcMarketService {
         evidenceNote,
       );
 
-      await this.spawnNextMarketWithPrice(settlementPrice);
+      // Safety net — the lock step normally spawned the next round already
+      await this.ensureBettableMarket();
     } finally {
       this.processingMarkets.delete(market.id);
     }
   }
 
-  private async spawnNextMarketWithPrice(price?: BtcPrice): Promise<void> {
+  /**
+   * Spawn a new round unless one is still accepting bets.
+   * No price fetch happens here — the reference is locked at betting close.
+   */
+  private async ensureBettableMarket(): Promise<void> {
     if (this.spawning) return;
     this.spawning = true;
     try {
-      const existing = await this.marketRepo.findOne({
-        where: { externalSource: "btc", status: MarketStatus.OPEN },
-      });
-      if (existing) {
-        this.logger.log("Next BTC market already exists, skipping spawn.");
+      const now = new Date();
+      const bettable = await this.marketRepo
+        .createQueryBuilder("market")
+        .where("market.externalSource = :source", { source: "btc" })
+        .andWhere("market.status = :status", { status: MarketStatus.OPEN })
+        .andWhere("market.bettingClosesAt > :now", { now })
+        .getOne();
+
+      if (bettable) {
         return;
       }
 
-      const p = price ?? (await this.btcPriceService.fetchPrice());
-      const now = new Date();
-      const closesAt = new Date(now.getTime() + 15 * 60 * 1000);
-      const bettingClosesAt = new Date(closesAt.getTime() - 2 * 60 * 1000);
+      const bettingClosesAt = new Date(
+        now.getTime() + BtcMarketService.PHASE_MS,
+      );
+      const closesAt = new Date(
+        bettingClosesAt.getTime() + BtcMarketService.PHASE_MS,
+      );
 
       await this.dataSource.transaction(async (manager) => {
         const market = manager.create(Market, {
-          title: "BTC — UP or DOWN in 15 minutes?",
-          category: MarketCategory.OTHER,
+          title: "BTC — UP or DOWN?",
+          category: MarketCategory.ECONOMY,
           status: MarketStatus.OPEN,
           opensAt: now,
           closesAt,
@@ -298,9 +279,9 @@ export class BtcMarketService {
           liquidityParam: 1000,
           metadata: {
             isBtc: true,
-            referencePrice: p.price,
-            referenceSource: p.source,
             openedAt: now.toISOString(),
+            // referencePrice is intentionally absent: it is locked when
+            // betting closes, so bettors can't watch the answer form.
           },
         });
 
@@ -323,20 +304,16 @@ export class BtcMarketService {
         await manager.save(Outcome, [upOutcome, downOutcome]);
 
         this.logger.log(
-          `[Back-to-back] Spawned next BTC market ${savedMarket.id} with reference price $${p.price.toFixed(2)} (${p.source})`,
+          `Spawned BTC round ${savedMarket.id}: betting until ${bettingClosesAt.toISOString()}, settles ${closesAt.toISOString()}`,
         );
       });
     } catch (error) {
       this.logger.error(
-        `Failed to spawn next BTC market: ${error.message}`,
+        `Failed to spawn BTC market: ${error.message}`,
         error.stack,
       );
     } finally {
       this.spawning = false;
     }
-  }
-
-  private async spawnNextMarket(): Promise<void> {
-    return this.spawnNextMarketWithPrice();
   }
 }
