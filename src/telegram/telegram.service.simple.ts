@@ -221,9 +221,12 @@ export class TelegramSimpleService {
     let text: string;
     if (reason === "market_cancelled") {
       text =
-        `↩️ <b>Market Cancelled</b>\n\n` +
+        `↩️ <b>Market Cancelled — Full Refund</b>\n\n` +
         `📊 <b>${marketTitle}</b>\n\n` +
-        `Your prediction of <b>Nu ${amount.toLocaleString()}</b> has been fully refunded to your wallet.`;
+        `We're sorry — this market had to be cancelled due to an unforeseen inconvenience. ` +
+        `Your prediction of <b>Nu ${amount.toLocaleString()}</b> has been fully refunded to your wallet.\n\n` +
+        `We sincerely apologize for any trouble this may have caused. 🙏\n\n` +
+        `Other markets are still open — we'd love to see you there!`;
     } else if (reason === "thin_pool") {
       text =
         `⚠️ <b>Market Refunded</b>\n\n` +
