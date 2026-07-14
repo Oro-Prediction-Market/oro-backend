@@ -270,6 +270,23 @@ export class BtcMarketService {
       );
 
       await this.dataSource.transaction(async (manager) => {
+        await manager.query(
+          "SELECT pg_advisory_xact_lock(hashtext('btc-market-spawn'))",
+        );
+        const existing = await manager
+          .getRepository(Market)
+          .createQueryBuilder("market")
+          .where("market.externalSource = :source", { source: "btc" })
+          .andWhere("market.status = :status", { status: MarketStatus.OPEN })
+          .andWhere("market.bettingClosesAt > :now", { now })
+          .getOne();
+        if (existing) {
+          this.logger.warn(
+            `BTC round ${existing.id} was spawned concurrently — skipping duplicate spawn`,
+          );
+          return;
+        }
+
         const market = manager.create(Market, {
           title: "BTC — UP or DOWN in 9 minutes?",
           category: MarketCategory.ECONOMY,

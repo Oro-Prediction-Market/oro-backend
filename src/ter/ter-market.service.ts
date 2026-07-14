@@ -284,6 +284,23 @@ export class TerMarketService {
       );
 
       await this.dataSource.transaction(async (manager) => {
+        await manager.query(
+          "SELECT pg_advisory_xact_lock(hashtext('ter-market-spawn'))",
+        );
+        const existing = await manager
+          .getRepository(Market)
+          .createQueryBuilder("market")
+          .where("market.externalSource = :source", { source: "ter" })
+          .andWhere("market.status = :status", { status: MarketStatus.OPEN })
+          .andWhere("market.bettingClosesAt > :now", { now })
+          .getOne();
+        if (existing) {
+          this.logger.warn(
+            `TER round ${existing.id} was spawned concurrently — skipping duplicate spawn`,
+          );
+          return;
+        }
+
         const market = manager.create(Market, {
           title: "TER — UP or DOWN in 3 hours?",
           category: MarketCategory.ECONOMY,

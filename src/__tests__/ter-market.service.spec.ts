@@ -50,6 +50,10 @@ const createMockRepo = () => ({
 const createMockDataSource = () => ({
   transaction: jest.fn(async (cb: any) => {
     const manager = {
+      query: jest.fn().mockResolvedValue(undefined),
+      getRepository: jest.fn(() => ({
+        createQueryBuilder: jest.fn(() => createQb()),
+      })),
       create: jest.fn((_entity: any, data: any) => ({
         id: "market-1",
         ...data,
@@ -79,6 +83,10 @@ const captureCreatedMarket = (dataSource: any) => {
   const captured: { market: any } = { market: null };
   dataSource.transaction.mockImplementation(async (cb: any) => {
     const manager = {
+      query: jest.fn().mockResolvedValue(undefined),
+      getRepository: jest.fn(() => ({
+        createQueryBuilder: jest.fn(() => createQb()),
+      })),
       create: jest.fn((_entity: any, data: any) => {
         if (!captured.market) captured.market = data;
         return { id: "market-1", ...data };
@@ -150,6 +158,31 @@ describe("TerMarketService", () => {
       expect(dataSource.transaction).not.toHaveBeenCalled();
     });
 
+    it("does NOT insert when another instance spawned a round concurrently (advisory-lock re-check)", async () => {
+      const managerCreate = jest.fn();
+      dataSource.transaction.mockImplementation(async (cb: any) => {
+        const manager = {
+          query: jest.fn().mockResolvedValue(undefined),
+          getRepository: jest.fn(() => ({
+            createQueryBuilder: jest.fn(() =>
+              createQb({
+                getOne: jest
+                  .fn()
+                  .mockResolvedValue({ id: "concurrent-market" }),
+              }),
+            ),
+          })),
+          create: managerCreate,
+          save: jest.fn(),
+        };
+        return cb(manager);
+      });
+
+      await service.spawnMarket();
+
+      expect(managerCreate).not.toHaveBeenCalled();
+    });
+
     it("prevents double-spawn via spawning mutex", async () => {
       // Simulate slow transaction
       dataSource.transaction.mockImplementation(
@@ -208,6 +241,10 @@ describe("TerMarketService", () => {
       const savedOutcomes: any[] = [];
       dataSource.transaction.mockImplementation(async (cb: any) => {
         const manager = {
+          query: jest.fn().mockResolvedValue(undefined),
+          getRepository: jest.fn(() => ({
+            createQueryBuilder: jest.fn(() => createQb()),
+          })),
           create: jest.fn((_entity: any, data: any) => data),
           save: jest.fn(async (_entity: any, data: any) => {
             if (Array.isArray(data)) {
