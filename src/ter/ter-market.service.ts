@@ -42,18 +42,22 @@ export class TerMarketService {
 
   /**
    * Main lifecycle tick, every 3 seconds:
-   *   1. lock reference prices on rounds whose betting phase just ended
+   *   1. safety-net: lock a reference on rounds that reached betting close without one
    *   2. settle rounds whose measuring phase just ended
+   *   3. spawn the next round the moment betting closes on the current one
    */
   @Interval(3_000)
   async tick(): Promise<void> {
     await this.lockReferencePrices();
     await this.closeAndResolveMarkets();
+    await this.ensureBettableMarket();
   }
 
   /**
-   * Find OPEN markets past bettingClosesAt that have no reference price yet,
-   * lock the current price as their reference, then open the next round.
+   * Safety net: the reference ("price to beat") is normally snapshotted when
+   * the round is spawned. Rounds that reach betting close without one (price
+   * API was down at spawn, or legacy rounds from the lock-at-betting-close
+   * era) get the current price locked here so they can still settle.
    */
   async lockReferencePrices(): Promise<void> {
     const now = new Date();
@@ -104,9 +108,6 @@ export class TerMarketService {
     } finally {
       toLock.forEach((m) => this.processingMarkets.delete(m.id));
     }
-
-    // Betting just closed on a round — open the next one immediately
-    await this.ensureBettableMarket();
   }
 
   /**
@@ -255,7 +256,8 @@ export class TerMarketService {
 
   /**
    * Spawn a new round unless one is still accepting bets.
-   * No price fetch happens here — the reference is locked at betting close.
+   * The current price is snapshotted as the reference ("price to beat"),
+   * fixed for the whole round.
    */
   private async ensureBettableMarket(): Promise<void> {
     if (this.spawning) return;
@@ -272,6 +274,9 @@ export class TerMarketService {
       if (bettable) {
         return;
       }
+
+      // Price fetch failure aborts the spawn — retried on the next tick
+      const price = await this.terPriceService.fetchPrice();
 
       const closesAt = new Date(now.getTime() + TerMarketService.ROUND_MS);
       const bettingClosesAt = new Date(
@@ -293,8 +298,11 @@ export class TerMarketService {
           metadata: {
             isTer: true,
             openedAt: now.toISOString(),
-            // reference prices are intentionally absent: they are locked
-            // when betting closes, so bettors can't watch the answer form.
+            referenceTerPrice: price.midPrice,
+            referenceBuyPrice: price.buyPrice,
+            referenceSellPrice: price.sellPrice,
+            openXauUsd: price.xauUsd,
+            referenceLockedAt: now.toISOString(),
           },
         });
 

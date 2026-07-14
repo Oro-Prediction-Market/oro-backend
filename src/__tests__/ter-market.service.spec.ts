@@ -122,10 +122,18 @@ describe("TerMarketService", () => {
       expect(dataSource.transaction).toHaveBeenCalled();
     });
 
-    it("does NOT fetch a price at spawn — reference is locked at betting close", async () => {
+    it("fetches the price at spawn — reference is fixed for the whole round", async () => {
       await service.spawnMarket();
 
-      expect(priceService.fetchPrice).not.toHaveBeenCalled();
+      expect(priceService.fetchPrice).toHaveBeenCalled();
+    });
+
+    it("does NOT spawn when the price fetch fails — retried on the next tick", async () => {
+      priceService.fetchPrice.mockRejectedValueOnce(new Error("API down"));
+
+      await service.spawnMarket();
+
+      expect(dataSource.transaction).not.toHaveBeenCalled();
     });
 
     it("does NOT spawn if a bettable TER market already exists", async () => {
@@ -170,9 +178,12 @@ describe("TerMarketService", () => {
       expect(createdMarket.externalSource).toBe("ter");
       expect(createdMarket.houseEdgePct).toBe(5);
       expect(createdMarket.metadata.isTer).toBe(true);
-      // Bet-first-then-measure: no reference exists during the betting phase
-      expect(createdMarket.metadata.referenceTerPrice).toBeUndefined();
-      expect(createdMarket.metadata.referenceBuyPrice).toBeUndefined();
+      // The "price to beat" is fixed at open, not at betting close
+      expect(createdMarket.metadata.referenceTerPrice).toBe(7500.0);
+      expect(createdMarket.metadata.referenceBuyPrice).toBe(7505.0);
+      expect(createdMarket.metadata.referenceSellPrice).toBe(7495.0);
+      expect(createdMarket.metadata.openXauUsd).toBe(2350.0);
+      expect(createdMarket.metadata.referenceLockedAt).toEqual(expect.any(String));
     });
 
     it("sets a 3-hour round with betting closing 3 minutes before settlement", async () => {
@@ -248,14 +259,14 @@ describe("TerMarketService", () => {
       );
     });
 
-    it("spawns the next round after locking", async () => {
+    it("does not spawn from the lock step — tick() spawns the next round", async () => {
       marketRepo.createQueryBuilder.mockReturnValue(
         createQb({ getMany: jest.fn().mockResolvedValue([lockableMarket()]) }),
       );
 
       await service.lockReferencePrices();
 
-      expect(dataSource.transaction).toHaveBeenCalled();
+      expect(dataSource.transaction).not.toHaveBeenCalled();
     });
 
     it("skips markets that already have a reference price (legacy rounds)", async () => {
@@ -451,8 +462,10 @@ describe("TerMarketService", () => {
       await service.closeAndResolveMarkets();
 
       expect(engine.cancelMarket).toHaveBeenCalledWith("market-1");
-      // No settlement fetch needed when there is nothing to compare against
-      expect(priceService.fetchPrice).not.toHaveBeenCalled();
+      expect(engine.resolveMarket).not.toHaveBeenCalled();
+      // The only price fetch is the next-round spawn — no settlement fetch
+      // happens for a market with nothing to compare against.
+      expect(priceService.fetchPrice).toHaveBeenCalledTimes(1);
     });
 
     it("ensures a bettable market exists after resolution", async () => {

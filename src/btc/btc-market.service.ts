@@ -43,18 +43,22 @@ export class BtcMarketService {
 
   /**
    * Main lifecycle tick, every 3 seconds:
-   *   1. lock reference prices on rounds whose betting phase just ended
+   *   1. safety-net: lock a reference on rounds that reached betting close without one
    *   2. settle rounds whose measuring phase just ended
+   *   3. spawn the next round the moment betting closes on the current one
    */
   @Interval(3_000)
   async tick(): Promise<void> {
     await this.lockReferencePrices();
     await this.closeAndResolveMarkets();
+    await this.ensureBettableMarket();
   }
 
   /**
-   * Find OPEN markets past bettingClosesAt that have no reference price yet,
-   * lock the current price as their reference, then open the next round.
+   * Safety net: the reference ("price to beat") is normally snapshotted when
+   * the round is spawned. Rounds that reach betting close without one (price
+   * API was down at spawn, or legacy rounds from the lock-at-betting-close
+   * era) get the current price locked here so they can still settle.
    */
   async lockReferencePrices(): Promise<void> {
     const now = new Date();
@@ -102,9 +106,6 @@ export class BtcMarketService {
     } finally {
       toLock.forEach((m) => this.processingMarkets.delete(m.id));
     }
-
-    // Betting just closed on a round — open the next one immediately
-    await this.ensureBettableMarket();
   }
 
   /**
@@ -241,7 +242,8 @@ export class BtcMarketService {
 
   /**
    * Spawn a new round unless one is still accepting bets.
-   * No price fetch happens here — the reference is locked at betting close.
+   * The current price is snapshotted as the reference ("price to beat"),
+   * fixed for the whole round.
    */
   private async ensureBettableMarket(): Promise<void> {
     if (this.spawning) return;
@@ -258,6 +260,9 @@ export class BtcMarketService {
       if (bettable) {
         return;
       }
+
+      // Price fetch failure aborts the spawn — retried on the next tick
+      const price = await this.btcPriceService.fetchPrice();
 
       const closesAt = new Date(now.getTime() + BtcMarketService.ROUND_MS);
       const bettingClosesAt = new Date(
@@ -279,8 +284,9 @@ export class BtcMarketService {
           metadata: {
             isBtc: true,
             openedAt: now.toISOString(),
-            // referencePrice is intentionally absent: it is locked when
-            // betting closes, so bettors can't watch the answer form.
+            referencePrice: price.price,
+            referenceSource: price.source,
+            referenceLockedAt: now.toISOString(),
           },
         });
 
