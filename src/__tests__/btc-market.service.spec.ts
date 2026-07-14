@@ -152,7 +152,7 @@ describe("BtcMarketService", () => {
 
       const createdMarket = captured.market;
       expect(createdMarket).toBeTruthy();
-      expect(createdMarket.title).toBe("BTC — UP or DOWN?");
+      expect(createdMarket.title).toBe("BTC — UP or DOWN in 9 minutes?");
       expect(createdMarket.category).toBe(MarketCategory.ECONOMY);
       expect(createdMarket.status).toBe(MarketStatus.OPEN);
       expect(createdMarket.externalSource).toBe("btc");
@@ -163,7 +163,7 @@ describe("BtcMarketService", () => {
       expect(createdMarket.metadata.referenceSource).toBeUndefined();
     });
 
-    it("sets a 7.5-minute betting phase followed by a 7.5-minute measuring phase (15-minute round)", async () => {
+    it("sets a 9-minute round with betting closing 3 minutes before settlement", async () => {
       const captured = captureCreatedMarket(dataSource);
 
       const before = Date.now();
@@ -175,9 +175,9 @@ describe("BtcMarketService", () => {
       const bettingClosesAt = new Date(createdMarket.bettingClosesAt).getTime();
       const closesAt = new Date(createdMarket.closesAt).getTime();
 
-      expect(bettingClosesAt - opensAt).toBe(7.5 * 60 * 1000);
-      expect(closesAt - bettingClosesAt).toBe(7.5 * 60 * 1000);
-      expect(closesAt - opensAt).toBe(15 * 60 * 1000);
+      expect(bettingClosesAt - opensAt).toBe(6 * 60 * 1000);
+      expect(closesAt - bettingClosesAt).toBe(3 * 60 * 1000);
+      expect(closesAt - opensAt).toBe(9 * 60 * 1000);
       expect(opensAt).toBeGreaterThanOrEqual(before);
       expect(opensAt).toBeLessThanOrEqual(after);
     });
@@ -613,16 +613,14 @@ describe("BtcPriceService", () => {
 // ─── bettingClosesAt enforcement tests ───────────────────────────────────────
 
 describe("bettingClosesAt enforcement for BTC markets", () => {
-  it("BTC rounds have equal betting and measuring phases", () => {
+  it("BTC rounds close betting 3 minutes before settlement", () => {
     const now = new Date();
-    const bettingClosesAt = new Date(now.getTime() + 7.5 * 60 * 1000);
-    const closesAt = new Date(bettingClosesAt.getTime() + 7.5 * 60 * 1000);
+    const closesAt = new Date(now.getTime() + 9 * 60 * 1000);
+    const bettingClosesAt = new Date(closesAt.getTime() - 3 * 60 * 1000);
 
     expect(bettingClosesAt).not.toBeNull();
     expect(bettingClosesAt.getTime()).toBeLessThan(closesAt.getTime());
-    expect(closesAt.getTime() - bettingClosesAt.getTime()).toBe(
-      7.5 * 60 * 1000,
-    );
+    expect(closesAt.getTime() - bettingClosesAt.getTime()).toBe(3 * 60 * 1000);
   });
 
   it("blocks bet when current time >= bettingClosesAt", () => {

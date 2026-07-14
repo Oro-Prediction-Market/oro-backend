@@ -17,9 +17,10 @@ export class BtcMarketService {
   private spawning = false;
   private readonly processingMarkets = new Set<string>();
 
-  // 7.5 min betting + 7.5 min measuring = 15-minute round total; phases must
-  // be equal so back-to-back rounds chain with no gap and no double-betting.
-  private static readonly PHASE_MS = 7.5 * 60 * 1000;
+  /** Total round length: betting + measuring */
+  private static readonly ROUND_MS = 9 * 60 * 1000;
+  /** Betting closes this long before the round settles */
+  private static readonly BETTING_BUFFER_MS = 3 * 60 * 1000;
 
   constructor(
     @InjectRepository(Market)
@@ -258,16 +259,14 @@ export class BtcMarketService {
         return;
       }
 
+      const closesAt = new Date(now.getTime() + BtcMarketService.ROUND_MS);
       const bettingClosesAt = new Date(
-        now.getTime() + BtcMarketService.PHASE_MS,
-      );
-      const closesAt = new Date(
-        bettingClosesAt.getTime() + BtcMarketService.PHASE_MS,
+        closesAt.getTime() - BtcMarketService.BETTING_BUFFER_MS,
       );
 
       await this.dataSource.transaction(async (manager) => {
         const market = manager.create(Market, {
-          title: "BTC — UP or DOWN?",
+          title: "BTC — UP or DOWN in 9 minutes?",
           category: MarketCategory.ECONOMY,
           status: MarketStatus.OPEN,
           opensAt: now,

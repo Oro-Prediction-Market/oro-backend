@@ -164,7 +164,7 @@ describe("TerMarketService", () => {
 
       const createdMarket = captured.market;
       expect(createdMarket).toBeTruthy();
-      expect(createdMarket.title).toBe("TER — UP or DOWN in 24 hours?");
+      expect(createdMarket.title).toBe("TER — UP or DOWN in 3 hours?");
       expect(createdMarket.category).toBe(MarketCategory.ECONOMY);
       expect(createdMarket.status).toBe(MarketStatus.OPEN);
       expect(createdMarket.externalSource).toBe("ter");
@@ -175,7 +175,7 @@ describe("TerMarketService", () => {
       expect(createdMarket.metadata.referenceBuyPrice).toBeUndefined();
     });
 
-    it("sets a 24-hour betting phase followed by a 24-hour measuring phase", async () => {
+    it("sets a 3-hour round with betting closing 3 minutes before settlement", async () => {
       const captured = captureCreatedMarket(dataSource);
 
       const before = Date.now();
@@ -187,8 +187,8 @@ describe("TerMarketService", () => {
       const bettingClosesAt = new Date(createdMarket.bettingClosesAt).getTime();
       const closesAt = new Date(createdMarket.closesAt).getTime();
 
-      expect(bettingClosesAt - opensAt).toBe(24 * 60 * 60 * 1000);
-      expect(closesAt - bettingClosesAt).toBe(24 * 60 * 60 * 1000);
+      expect(closesAt - opensAt).toBe(3 * 60 * 60 * 1000);
+      expect(closesAt - bettingClosesAt).toBe(3 * 60 * 1000);
       expect(opensAt).toBeGreaterThanOrEqual(before);
       expect(opensAt).toBeLessThanOrEqual(after);
     });
@@ -223,7 +223,7 @@ describe("TerMarketService", () => {
       externalSource: "ter",
       status: MarketStatus.OPEN,
       bettingClosesAt: new Date(Date.now() - 1000),
-      closesAt: new Date(Date.now() + 23 * 60 * 60 * 1000),
+      closesAt: new Date(Date.now() + 3 * 60 * 1000),
       metadata: { isTer: true },
     });
 
@@ -655,16 +655,14 @@ describe("TerPriceService", () => {
 // ─── bettingClosesAt enforcement tests ───────────────────────────────────────
 
 describe("bettingClosesAt server-side enforcement", () => {
-  it("TER rounds have equal betting and measuring phases", () => {
+  it("TER rounds close betting 3 minutes before settlement", () => {
     const now = new Date();
-    const bettingClosesAt = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-    const closesAt = new Date(bettingClosesAt.getTime() + 24 * 60 * 60 * 1000);
+    const closesAt = new Date(now.getTime() + 3 * 60 * 60 * 1000);
+    const bettingClosesAt = new Date(closesAt.getTime() - 3 * 60 * 1000);
 
     expect(bettingClosesAt).not.toBeNull();
     expect(bettingClosesAt.getTime()).toBeLessThan(closesAt.getTime());
-    expect(closesAt.getTime() - bettingClosesAt.getTime()).toBe(
-      24 * 60 * 60 * 1000,
-    );
+    expect(closesAt.getTime() - bettingClosesAt.getTime()).toBe(3 * 60 * 1000);
   });
 
   it("normal markets have bettingClosesAt = null (guard skips them)", () => {

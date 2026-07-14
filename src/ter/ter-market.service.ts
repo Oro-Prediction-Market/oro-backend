@@ -17,8 +17,10 @@ export class TerMarketService {
   private spawning = false;
   private readonly processingMarkets = new Set<string>();
 
-  /** Length of each phase (betting and measuring) in ms */
-  private static readonly PHASE_MS = 24 * 60 * 60 * 1000;
+  /** Total round length: betting + measuring */
+  private static readonly ROUND_MS = 3 * 60 * 60 * 1000;
+  /** Betting closes this long before the round settles */
+  private static readonly BETTING_BUFFER_MS = 3 * 60 * 1000;
 
   constructor(
     @InjectRepository(Market)
@@ -29,11 +31,11 @@ export class TerMarketService {
   ) {}
 
   /**
-   * Safety-net spawn check at midnight (also used by the admin spawn
+   * Safety-net spawn check every 5 minutes (also used by the admin spawn
    * endpoint). The primary spawn path is the reference lock step, which
    * opens the next round the moment betting closes on the current one.
    */
-  @Cron("0 0 * * *")
+  @Cron("*/5 * * * *")
   async spawnMarket(): Promise<void> {
     await this.ensureBettableMarket();
   }
@@ -271,16 +273,14 @@ export class TerMarketService {
         return;
       }
 
+      const closesAt = new Date(now.getTime() + TerMarketService.ROUND_MS);
       const bettingClosesAt = new Date(
-        now.getTime() + TerMarketService.PHASE_MS,
-      );
-      const closesAt = new Date(
-        bettingClosesAt.getTime() + TerMarketService.PHASE_MS,
+        closesAt.getTime() - TerMarketService.BETTING_BUFFER_MS,
       );
 
       await this.dataSource.transaction(async (manager) => {
         const market = manager.create(Market, {
-          title: "TER — UP or DOWN in 24 hours?",
+          title: "TER — UP or DOWN in 3 hours?",
           category: MarketCategory.ECONOMY,
           status: MarketStatus.OPEN,
           opensAt: now,
