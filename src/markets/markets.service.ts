@@ -162,6 +162,7 @@ export class MarketsService implements OnModuleInit {
       const metadata: Record<string, any> = {};
       if (dto.bracketSlot) metadata.bracketSlot = dto.bracketSlot;
       if (dto.candidate) metadata.candidate = dto.candidate;
+      if (dto.matchLabel) metadata.matchLabel = dto.matchLabel;
 
       // 3. Create market and link outcomes (cascade will handle saving them)
       const market = this.marketRepo.create({
@@ -355,6 +356,11 @@ export class MarketsService implements OnModuleInit {
       market.metadata = {
         ...(market.metadata ?? {}),
         bracketSlot: dto.bracketSlot || undefined,
+      };
+    if (dto.matchLabel !== undefined)
+      market.metadata = {
+        ...(market.metadata ?? {}),
+        matchLabel: dto.matchLabel || undefined,
       };
 
     // Rename outcome labels matched by ID — order-independent, safe

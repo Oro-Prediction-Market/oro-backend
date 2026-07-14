@@ -55,4 +55,9 @@ export class UpdateMarketDto {
   @IsOptional()
   @IsString()
   bracketSlot?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  matchLabel?: string;
 }

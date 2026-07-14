@@ -94,6 +94,11 @@ export class CreateMarketDto {
   @IsString()
   bracketSlot?: string;
 
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  matchLabel?: string;
+
   /** Shared id linking child markets of one grouped event (set internally by createGroup) */
   @ApiPropertyOptional()
   @IsOptional()
