@@ -15,6 +15,7 @@ import { ParimutuelEngine } from "../markets/parimutuel.engine";
 export class BtcMarketService {
   private readonly logger = new Logger(BtcMarketService.name);
   private spawning = false;
+  private ticking = false;
   private readonly processingMarkets = new Set<string>();
 
   /** Total round length: betting + measuring */
@@ -49,17 +50,20 @@ export class BtcMarketService {
    */
   @Interval(3_000)
   async tick(): Promise<void> {
-    await this.lockReferencePrices();
-    await this.closeAndResolveMarkets();
-    await this.ensureBettableMarket();
+    // A slow settle (price fetch + payout) can outlive the 3s interval — the
+    // next tick would re-query and re-fire the whole settle check. Skip
+    // overlapping ticks; the market is picked up on the next free one.
+    if (this.ticking) return;
+    this.ticking = true;
+    try {
+      await this.lockReferencePrices();
+      await this.closeAndResolveMarkets();
+      await this.ensureBettableMarket();
+    } finally {
+      this.ticking = false;
+    }
   }
 
-  /**
-   * Safety net: the reference ("price to beat") is normally snapshotted when
-   * the round is spawned. Rounds that reach betting close without one (price
-   * API was down at spawn, or legacy rounds from the lock-at-betting-close
-   * era) get the current price locked here so they can still settle.
-   */
   async lockReferencePrices(): Promise<void> {
     const now = new Date();
 
@@ -152,6 +156,29 @@ export class BtcMarketService {
     this.processingMarkets.add(market.id);
 
     try {
+      // ── Atomic claim: OPEN → CLOSED ─────────────────────────────────────────
+      // Only one resolver (overlapping tick, second app instance, admin retry)
+      // can win this conditional UPDATE; everyone else sees affected === 0 and
+      // bails. Without this, a second pass would unconditionally re-transition
+      // an already-RESOLVED market back through CLOSED → RESOLVING, letting it
+      // pass the engine's RESOLVING → RESOLVED claim a second time and re-fire
+      // the whole settlement flow (notifications, revenue record, logs).
+      const claim = await this.marketRepo
+        .createQueryBuilder()
+        .update(Market)
+        .set({ status: MarketStatus.CLOSED })
+        .where("id = :id AND status = :status", {
+          id: market.id,
+          status: MarketStatus.OPEN,
+        })
+        .execute();
+      if (!claim.affected) {
+        this.logger.warn(
+          `BTC market ${market.id} already claimed by another resolver — skipping duplicate settle`,
+        );
+        return;
+      }
+
       this.logger.log(`Closing and resolving BTC market ${market.id}`);
 
       const referencePrice = market.metadata?.referencePrice;
@@ -167,7 +194,17 @@ export class BtcMarketService {
         return;
       }
 
-      const settlementPrice = await this.btcPriceService.fetchPrice();
+      let settlementPrice: BtcPrice;
+      try {
+        settlementPrice = await this.btcPriceService.fetchPrice();
+      } catch (error) {
+        // Release the claim so the next tick retries the settle
+        await this.marketRepo.update(
+          { id: market.id, status: MarketStatus.CLOSED },
+          { status: MarketStatus.OPEN },
+        );
+        throw error;
+      }
 
       let winnerLabel: "UP" | "DOWN" | null = null;
 
@@ -209,18 +246,33 @@ export class BtcMarketService {
       const evidenceNote = `BTC/USD at close: $${settlementPrice.price.toFixed(2)} (${settlementPrice.source}) vs reference: $${referencePrice.toFixed(2)}`;
 
       await this.marketRepo.update(market.id, {
-        status: MarketStatus.CLOSED,
         metadata: updatedMetadata as any,
         evidenceNote,
       });
 
-      // Bypass dispute window: backdate disputeDeadlineAt to the past
-      await this.marketRepo.update(market.id, {
-        status: MarketStatus.RESOLVING,
-        proposedOutcomeId: winningOutcome.id,
-        windowMinutes: 10,
-        disputeDeadlineAt: new Date(Date.now() - 1000),
-      });
+      // Bypass dispute window: backdate disputeDeadlineAt to the past.
+      // Conditional on CLOSED (set by our claim above) so a stale caller can
+      // never drag a RESOLVED market back into RESOLVING.
+      const toResolving = await this.marketRepo
+        .createQueryBuilder()
+        .update(Market)
+        .set({
+          status: MarketStatus.RESOLVING,
+          proposedOutcomeId: winningOutcome.id,
+          windowMinutes: 10,
+          disputeDeadlineAt: new Date(Date.now() - 1000),
+        })
+        .where("id = :id AND status = :status", {
+          id: market.id,
+          status: MarketStatus.CLOSED,
+        })
+        .execute();
+      if (!toResolving.affected) {
+        this.logger.warn(
+          `BTC market ${market.id} left CLOSED state mid-settle — skipping resolve`,
+        );
+        return;
+      }
 
       this.logger.log(
         `Resolving BTC market ${market.id} with winner: ${winnerLabel}`,

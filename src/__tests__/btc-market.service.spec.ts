@@ -26,6 +26,9 @@ const createQb = (overrides: Partial<Record<string, any>> = {}) => ({
   leftJoinAndSelect: jest.fn().mockReturnThis(),
   where: jest.fn().mockReturnThis(),
   andWhere: jest.fn().mockReturnThis(),
+  update: jest.fn().mockReturnThis(),
+  set: jest.fn().mockReturnThis(),
+  execute: jest.fn().mockResolvedValue({ affected: 1 }),
   getMany: jest.fn().mockResolvedValue([]),
   getOne: jest.fn().mockResolvedValue(null),
   ...overrides,
@@ -369,15 +372,13 @@ describe("BtcMarketService", () => {
         metadata: { referencePrice: 67000.0, referenceSource: "binance" },
       };
 
-      marketRepo.createQueryBuilder.mockReturnValue(
-        createQb({ getMany: jest.fn().mockResolvedValue([market]) }),
-      );
+      const qb = createQb({ getMany: jest.fn().mockResolvedValue([market]) });
+      marketRepo.createQueryBuilder.mockReturnValue(qb);
       priceService.fetchPrice.mockResolvedValue(mockHigherPrice);
 
       await service.closeAndResolveMarkets();
 
-      expect(marketRepo.update).toHaveBeenCalledWith(
-        "market-1",
+      expect(qb.set).toHaveBeenCalledWith(
         expect.objectContaining({
           status: MarketStatus.RESOLVING,
           proposedOutcomeId: "up-1",
@@ -405,15 +406,13 @@ describe("BtcMarketService", () => {
         metadata: { referencePrice: 67000.0, referenceSource: "binance" },
       };
 
-      marketRepo.createQueryBuilder.mockReturnValue(
-        createQb({ getMany: jest.fn().mockResolvedValue([market]) }),
-      );
+      const qb = createQb({ getMany: jest.fn().mockResolvedValue([market]) });
+      marketRepo.createQueryBuilder.mockReturnValue(qb);
       priceService.fetchPrice.mockResolvedValue(mockLowerPrice);
 
       await service.closeAndResolveMarkets();
 
-      expect(marketRepo.update).toHaveBeenCalledWith(
-        "market-1",
+      expect(qb.set).toHaveBeenCalledWith(
         expect.objectContaining({
           status: MarketStatus.RESOLVING,
           proposedOutcomeId: "down-1",
@@ -571,18 +570,70 @@ describe("BtcMarketService", () => {
         metadata: { referencePrice: 67000.0 },
       };
 
-      marketRepo.createQueryBuilder.mockReturnValue(
-        createQb({ getMany: jest.fn().mockResolvedValue([market]) }),
-      );
+      const qb = createQb({ getMany: jest.fn().mockResolvedValue([market]) });
+      marketRepo.createQueryBuilder.mockReturnValue(qb);
       priceService.fetchPrice.mockResolvedValue(mockHigherPrice);
 
       await service.closeAndResolveMarkets();
 
-      const updateCall = marketRepo.update.mock.calls.find(
-        (call: any[]) => call[1]?.disputeDeadlineAt,
+      const setCall = qb.set.mock.calls.find(
+        (call: any[]) => call[0]?.disputeDeadlineAt,
       );
-      expect(updateCall).toBeTruthy();
-      expect(updateCall[1].disputeDeadlineAt.getTime()).toBeLessThan(Date.now());
+      expect(setCall).toBeTruthy();
+      expect(setCall[0].disputeDeadlineAt.getTime()).toBeLessThan(Date.now());
+    });
+
+    it("[CONCURRENCY] skips the settle when the atomic OPEN→CLOSED claim is lost", async () => {
+      const market = {
+        id: "market-claimed",
+        externalSource: "btc",
+        status: MarketStatus.OPEN,
+        closesAt: new Date(Date.now() - 1000),
+        outcomes: [
+          { id: "up-1", label: "UP" },
+          { id: "down-1", label: "DOWN" },
+        ],
+        metadata: { referencePrice: 67000.0 },
+      };
+      // Another instance already flipped the market out of OPEN → claim loses
+      const qb = createQb({
+        getMany: jest.fn().mockResolvedValue([market]),
+        execute: jest.fn().mockResolvedValue({ affected: 0 }),
+      });
+      marketRepo.createQueryBuilder.mockReturnValue(qb);
+
+      await service.closeAndResolveMarkets();
+
+      expect(engine.resolveMarket).not.toHaveBeenCalled();
+      expect(engine.cancelMarket).not.toHaveBeenCalled();
+      // No settlement price fetch either — the whole settle path is skipped
+      expect(priceService.fetchPrice).not.toHaveBeenCalled();
+    });
+
+    it("releases the CLOSED claim back to OPEN when the settlement price fetch fails", async () => {
+      const market = {
+        id: "market-fetchfail",
+        externalSource: "btc",
+        status: MarketStatus.OPEN,
+        closesAt: new Date(Date.now() - 1000),
+        outcomes: [
+          { id: "up-1", label: "UP" },
+          { id: "down-1", label: "DOWN" },
+        ],
+        metadata: { referencePrice: 67000.0 },
+      };
+      marketRepo.createQueryBuilder.mockReturnValue(
+        createQb({ getMany: jest.fn().mockResolvedValue([market]) }),
+      );
+      priceService.fetchPrice.mockRejectedValueOnce(new Error("API down"));
+
+      await service.closeAndResolveMarkets();
+
+      expect(engine.resolveMarket).not.toHaveBeenCalled();
+      expect(marketRepo.update).toHaveBeenCalledWith(
+        { id: "market-fetchfail", status: MarketStatus.CLOSED },
+        { status: MarketStatus.OPEN },
+      );
     });
   });
 
