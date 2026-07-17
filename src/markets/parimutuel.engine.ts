@@ -544,6 +544,47 @@ export class ParimutuelEngine implements OnModuleInit {
     return this.marketRepo.save(market);
   }
 
+  async reopenMarket(marketId: string, newClosesAt: Date): Promise<Market> {
+    const market = await this.marketRepo.findOneBy({ id: marketId });
+    if (!market) throw new BadRequestException("Market not found");
+
+    if (!market.subcategory?.startsWith("wc-")) {
+      throw new BadRequestException(
+        "Only World Cup hub markets can be reopened",
+      );
+    }
+    if (market.status !== MarketStatus.CLOSED) {
+      throw new BadRequestException(
+        `Only a Closed market can be reopened (current status: ${market.status})`,
+      );
+    }
+    if (market.proposedOutcomeId) {
+      throw new BadRequestException(
+        "Cannot reopen a market that already has a proposed resolution",
+      );
+    }
+    if (!(newClosesAt instanceof Date) || isNaN(newClosesAt.getTime())) {
+      throw new BadRequestException("closesAt must be a valid date");
+    }
+    if (newClosesAt.getTime() <= Date.now()) {
+      throw new BadRequestException(
+        "closesAt must be in the future, otherwise the keeper will immediately re-close the market",
+      );
+    }
+
+    market.status = MarketStatus.OPEN;
+    market.closesAt = newClosesAt;
+    // Clear any stale proposal/dispute-window state
+    market.proposedOutcomeId = null as unknown as string;
+    market.disputeDeadlineAt = null as unknown as Date;
+
+    const saved = await this.marketRepo.save(market);
+    this.logger.log(
+      `Market ${marketId} ("${market.title}") reopened until ${newClosesAt.toISOString()}`,
+    );
+    return saved;
+  }
+
   // Propose resolution: open short objection window (default 1h, max 2h)
   async proposeResolution(
     marketId: string,

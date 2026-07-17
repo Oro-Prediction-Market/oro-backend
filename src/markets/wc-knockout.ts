@@ -29,9 +29,9 @@ export const WC_KICKOFFS: Record<string, string | null> = {
   "qf-2": "2026-07-11T01:00:00+06:00",
   "qf-3": "2026-07-12T03:00:00+06:00",
   "qf-4": "2026-07-12T07:00:00+06:00",
-  "sf-1": null,
-  "sf-2": null,
-  "final-1": null,
+  "sf-1": "2026-07-15T01:00:00+06:00",
+  "sf-2": "2026-07-16T01:00:00+06:00",
+  "final-1": "2026-07-20T01:00:00+06:00",
 };
 
 export interface BracketAdvance {
