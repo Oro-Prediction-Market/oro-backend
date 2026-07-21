@@ -76,6 +76,7 @@ function makeService(overrides: {
   config?: any;
   redis?: any;
   marketRepo?: any;
+  epl?: any;
 } = {}) {
   const marketsService = overrides.marketsService ?? makeMarketsService();
   const telegram = overrides.telegram ?? makeTelegram();
@@ -87,6 +88,19 @@ function makeService(overrides: {
       releaseLock: jest.fn().mockResolvedValue(undefined),
     };
   const marketRepo = overrides.marketRepo ?? makeMarketRepo();
+  const epl =
+    overrides.epl ?? {
+      getSeasonInfo: jest
+        .fn()
+        .mockResolvedValue({ started: false, seasonStart: null, maxPlayed: 0 }),
+      getStats: jest.fn().mockResolvedValue({
+        goals: [],
+        assists: [],
+        yellow: [],
+        red: [],
+      }),
+      getUpcomingFixtures: jest.fn().mockResolvedValue([]),
+    };
 
   const svc = new KeeperService(
     marketsService,
@@ -94,8 +108,9 @@ function makeService(overrides: {
     config,
     redis as any,
     marketRepo as any,
+    epl as any,
   );
-  return { svc, marketsService, telegram, config, redis, marketRepo };
+  return { svc, marketsService, telegram, config, redis, marketRepo, epl };
 }
 
 // ── setActive / getStatus ─────────────────────────────────────────────────────
@@ -829,5 +844,212 @@ describe("KeeperService concurrency guards", () => {
 
     // transition should only have been called once (second run was skipped)
     expect(marketsService.transition).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── EPL auto stat-market creation ──────────────────────────────────────────────
+describe("KeeperService — EPL auto stat markets", () => {
+  const board = () => [
+    { player: "Player A", club: "C", clubBadge: "", face: "faceA", faceBackup: "", value: 5 },
+    { player: "Player B", club: "C", clubBadge: "", face: "faceB", faceBackup: "", value: 4 },
+  ];
+  const liveEpl = (over: any = {}) => ({
+    getSeasonInfo: jest
+      .fn()
+      .mockResolvedValue({ started: true, seasonStart: "2026-08-15", maxPlayed: 5 }),
+    getStats: jest.fn().mockResolvedValue({
+      updatedAt: "x",
+      goals: board(),
+      assists: board(),
+      yellow: board(),
+      red: board(),
+    }),
+    ...over,
+  });
+  const redisWith = (flag: any = null) => ({
+    acquireLock: jest.fn().mockResolvedValue("tok"),
+    releaseLock: jest.fn().mockResolvedValue(undefined),
+    getJson: jest.fn().mockResolvedValue(flag),
+    setJsonEx: jest.fn().mockResolvedValue(undefined),
+  });
+  const marketsWith = () => ({
+    ...makeMarketsService(),
+    create: jest
+      .fn()
+      .mockImplementation((dto: any) => Promise.resolve({ id: `m-${dto.subcategory}`, title: dto.title })),
+  });
+  const repoWith = (existing: any = null) => ({
+    find: jest.fn().mockResolvedValue([]),
+    findOne: jest.fn().mockResolvedValue(existing),
+    createQueryBuilder: jest.fn(),
+  });
+
+  it("creates all 4 markets, sets the once-per-season flag, and notifies admin when the season is live", async () => {
+    const marketsService = marketsWith();
+    const redis = redisWith(null);
+    const marketRepo = repoWith(null);
+    const telegram = makeTelegram();
+    const config = makeConfig({ ADMIN_TELEGRAM_ID: "999" });
+    const { svc } = makeService({
+      marketsService,
+      redis,
+      marketRepo,
+      telegram,
+      config,
+      epl: liveEpl(),
+    });
+
+    await svc.handleEplSeasonAutoMarkets();
+
+    expect(marketsService.create).toHaveBeenCalledTimes(4);
+    const subs = marketsService.create.mock.calls.map((c: any[]) => c[0].subcategory).sort();
+    expect(subs).toEqual([
+      "epl-assists",
+      "epl-redcards",
+      "epl-topscorer",
+      "epl-yellowcards",
+    ]);
+    // flag keyed by season year so it re-arms next season
+    expect(redis.setJsonEx).toHaveBeenCalledWith(
+      "oro:epl:auto-markets:2026",
+      expect.any(Number),
+      expect.objectContaining({ done: true }),
+    );
+    expect(telegram.sendMessage).toHaveBeenCalledWith(999, expect.stringContaining("season is underway"));
+  });
+
+  it("does nothing during the off-season", async () => {
+    const marketsService = marketsWith();
+    const { svc } = makeService({
+      marketsService,
+      redis: redisWith(null),
+      marketRepo: repoWith(null),
+      epl: liveEpl({
+        getSeasonInfo: jest.fn().mockResolvedValue({ started: false, seasonStart: null, maxPlayed: 0 }),
+      }),
+    });
+    await svc.handleEplSeasonAutoMarkets();
+    expect(marketsService.create).not.toHaveBeenCalled();
+  });
+
+  it("waits until the maturity gate (min gameweeks) is met", async () => {
+    const marketsService = marketsWith();
+    const redis = redisWith(null);
+    const { svc } = makeService({
+      marketsService,
+      redis,
+      marketRepo: repoWith(null),
+      epl: liveEpl({
+        getSeasonInfo: jest.fn().mockResolvedValue({ started: true, seasonStart: "2026-08-15", maxPlayed: 1 }),
+      }),
+    });
+    await svc.handleEplSeasonAutoMarkets();
+    expect(marketsService.create).not.toHaveBeenCalled();
+    // did NOT set the flag → will retry on a later day
+    expect(redis.setJsonEx).not.toHaveBeenCalled();
+  });
+
+  it("runs only once per season (flag already set)", async () => {
+    const marketsService = marketsWith();
+    const { svc } = makeService({
+      marketsService,
+      redis: redisWith({ done: true }),
+      marketRepo: repoWith(null),
+      epl: liveEpl(),
+    });
+    await svc.handleEplSeasonAutoMarkets();
+    expect(marketsService.create).not.toHaveBeenCalled();
+  });
+
+  it("skips a stat that already has an active market", async () => {
+    const marketsService = marketsWith();
+    const marketRepo = repoWith(null);
+    // First stat (goals) already has a market; the rest do not.
+    marketRepo.findOne
+      .mockResolvedValueOnce({ id: "existing" })
+      .mockResolvedValue(null);
+    const { svc } = makeService({
+      marketsService,
+      redis: redisWith(null),
+      marketRepo,
+      telegram: makeTelegram(),
+      config: makeConfig({ ADMIN_TELEGRAM_ID: "1" }),
+      epl: liveEpl(),
+    });
+    await svc.handleEplSeasonAutoMarkets();
+    expect(marketsService.create).toHaveBeenCalledTimes(3);
+  });
+});
+
+// ── EPL auto fixture (match) markets ───────────────────────────────────────────
+describe("KeeperService — EPL auto fixture markets", () => {
+  const fixtures = () => [
+    { id: 111, homeTeam: "Arsenal", awayTeam: "Chelsea", homeCrest: "aC", awayCrest: "cC", utcDate: "2026-08-15T14:00:00Z" },
+    { id: 222, homeTeam: "Man City", awayTeam: "Liverpool", homeCrest: "mC", awayCrest: "lC", utcDate: "2026-08-16T15:30:00Z" },
+  ];
+  const marketsWith = () => ({
+    ...makeMarketsService(),
+    create: jest
+      .fn()
+      .mockImplementation((dto: any) => Promise.resolve({ id: `m-${dto.externalMatchId}`, title: dto.title })),
+  });
+  const repoWith = (existing: any = null) => ({
+    find: jest.fn().mockResolvedValue([]),
+    findOne: jest.fn().mockResolvedValue(existing),
+    createQueryBuilder: jest.fn(),
+  });
+  const eplWith = (fx: any[]) => ({
+    getSeasonInfo: jest.fn().mockResolvedValue({ started: true, seasonStart: "2026-08-15", maxPlayed: 0 }),
+    getStats: jest.fn().mockResolvedValue({ goals: [], assists: [], yellow: [], red: [] }),
+    getUpcomingFixtures: jest.fn().mockResolvedValue(fx),
+  });
+
+  it("creates one match-winner market per upcoming fixture, linked to the fixture id", async () => {
+    const marketsService = marketsWith();
+    const marketRepo = repoWith(null);
+    const redis = {
+      acquireLock: jest.fn().mockResolvedValue("tok"),
+      releaseLock: jest.fn().mockResolvedValue(undefined),
+    };
+    const { svc } = makeService({ marketsService, marketRepo, redis, epl: eplWith(fixtures()) });
+
+    await svc.handleEplFixtureMarkets();
+
+    expect(marketsService.create).toHaveBeenCalledTimes(2);
+    const first = marketsService.create.mock.calls[0][0];
+    expect(first.title).toBe("Arsenal vs Chelsea");
+    expect(first.externalMatchId).toBe(111);
+    expect(first.externalMarketType).toBe("match-winner");
+    expect(first.subcategory).toBe("epl-match");
+    expect(first.outcomes.map((o: any) => o.label)).toEqual(["Arsenal", "Draw", "Chelsea"]);
+    expect(first.closesAt).toBe("2026-08-15T14:00:00Z");
+  });
+
+  it("skips a fixture that already has a market (dedup by fixture id)", async () => {
+    const marketsService = marketsWith();
+    const marketRepo = repoWith(null);
+    // First fixture already has a market; second does not.
+    marketRepo.findOne.mockResolvedValueOnce({ id: "existing" }).mockResolvedValue(null);
+    const redis = {
+      acquireLock: jest.fn().mockResolvedValue("tok"),
+      releaseLock: jest.fn().mockResolvedValue(undefined),
+    };
+    const { svc } = makeService({ marketsService, marketRepo, redis, epl: eplWith(fixtures()) });
+
+    await svc.handleEplFixtureMarkets();
+    expect(marketsService.create).toHaveBeenCalledTimes(1);
+    expect(marketsService.create.mock.calls[0][0].externalMatchId).toBe(222);
+  });
+
+  it("creates nothing when there are no upcoming fixtures (off-season)", async () => {
+    const marketsService = marketsWith();
+    const redis = {
+      acquireLock: jest.fn().mockResolvedValue("tok"),
+      releaseLock: jest.fn().mockResolvedValue(undefined),
+    };
+    const { svc } = makeService({ marketsService, marketRepo: repoWith(null), redis, epl: eplWith([]) });
+
+    await svc.handleEplFixtureMarkets();
+    expect(marketsService.create).not.toHaveBeenCalled();
   });
 });

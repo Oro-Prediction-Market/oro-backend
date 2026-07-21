@@ -1,12 +1,19 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { Cron, CronExpression } from "@nestjs/schedule";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { In, Repository } from "typeorm";
 import { ConfigService } from "@nestjs/config";
 import { MarketsService } from "./markets.service";
 import { Market, MarketStatus } from "../entities/market.entity";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import { RedisService } from "../redis/redis.service";
+import { EplService } from "../epl/epl.service";
+import {
+  EPL_STAT_MARKET_META,
+  EplStatKey,
+  buildEplStatMarketDto,
+} from "../epl/epl-stat-markets";
+import { CreateMarketDto } from "./dto/create-market.dto";
 
 export interface KeeperLogEntry {
   id: number;
@@ -49,6 +56,7 @@ export class KeeperService {
     private readonly config: ConfigService,
     private readonly redis: RedisService,
     @InjectRepository(Market) private readonly marketRepo: Repository<Market>,
+    private readonly epl: EplService,
   ) {}
 
   /**
@@ -342,6 +350,152 @@ export class KeeperService {
     this.disputeWindowsOpened = 0;
     this.marketsAutoSettled = 0;
     this.addLog("info", "Daily counters reset at midnight.");
+  }
+
+  // ── Cron: auto-create the EPL stat markets once the season is underway ──────
+  // Runs daily. Waits until the current PL season has played a few gameweeks
+  // (so the leaderboard is a meaningful field, not 3 players), then creates the
+  // four season stat markets from the live board. Fires ONCE per season (Redis
+  // flag keyed by season year) so it never spams or re-creates a market an admin
+  // deliberately cancelled. Notifies the admin on Telegram when it does.
+  @Cron("0 7 * * *")
+  async handleEplSeasonAutoMarkets() {
+    if (!this.isActive) return;
+    await this.withClusterLock("keeper:epl-automarkets", 280, () =>
+      this.runEplSeasonAutoMarkets(),
+    );
+  }
+
+  private async runEplSeasonAutoMarkets(): Promise<void> {
+    let info: { started: boolean; seasonStart: string | null; maxPlayed: number };
+    try {
+      info = await this.epl.getSeasonInfo();
+    } catch (e) {
+      this.logger.warn(`[Keeper] EPL season check failed: ${(e as Error).message}`);
+      return;
+    }
+    if (!info.started) return; // off-season — boards show last season, do nothing
+
+    const seasonKey = (info.seasonStart ?? "").slice(0, 4) || "current";
+    const flagKey = `oro:epl:auto-markets:${seasonKey}`;
+    if (await this.redis.getJson(flagKey)) return; // already handled this season
+
+    // Maturity gate: don't bake a gameweek-1 field into a season-long market.
+    const minGw = Number(this.config.get<string>("EPL_AUTO_MARKET_MIN_GW") ?? 3);
+    if (info.maxPlayed < minGw) return;
+
+    const stats = await this.epl.getStats();
+    const created: string[] = [];
+    for (const stat of Object.keys(EPL_STAT_MARKET_META) as EplStatKey[]) {
+      const meta = EPL_STAT_MARKET_META[stat];
+      // Skip if an active market for this stat already exists.
+      const existing = await this.marketRepo.findOne({
+        where: {
+          subcategory: meta.subcategory,
+          status: In([
+            MarketStatus.UPCOMING,
+            MarketStatus.OPEN,
+            MarketStatus.CLOSED,
+            MarketStatus.RESOLVING,
+          ]),
+        },
+      });
+      if (existing) continue;
+
+      const players = stats[meta.board];
+      if (players.length < 2) continue; // board not populated enough yet
+      try {
+        const dto = buildEplStatMarketDto(stat, players);
+        const market = await this.marketsService.create(dto);
+        created.push(meta.title);
+        this.addLog("success", `Auto-created EPL market: ${meta.title} (${market.id}).`);
+      } catch (e) {
+        this.logger.error(`[Keeper] auto-create ${meta.subcategory} failed: ${(e as Error).message}`);
+      }
+    }
+
+    // Mark this season handled so we never re-create (respects admin cancels).
+    await this.redis.setJsonEx(flagKey, 400 * 24 * 3600, {
+      done: true,
+      at: new Date().toISOString(),
+      created,
+    });
+
+    if (created.length) {
+      const adminId = Number(this.config.get<string>("ADMIN_TELEGRAM_ID"));
+      if (adminId) {
+        await this.telegram
+          .sendMessage(
+            adminId,
+            `🏆 Premier League season is underway — I auto-created ${created.length} stat market(s):\n• ${created.join("\n• ")}\n\nReview close dates in Admin → Markets. Betting is live on the app's Stats tab.`,
+          )
+          .catch(() => undefined);
+      }
+    }
+  }
+
+  // ── Cron: auto-create EPL match markets for upcoming fixtures (daily) ────────
+  // Reads the next ~7 days of PL fixtures and creates a match-winner market per
+  // fixture, linked to the football-data fixture id so the auto-proposal cron
+  // resolves it automatically after the match. Deduped by fixture id, so it
+  // rolls forward each day without duplicating. Self-gating: off-season there
+  // are no fixtures in the window, so nothing is created.
+  @Cron("0 8 * * *")
+  async handleEplFixtureMarkets() {
+    if (!this.isActive) return;
+    await this.withClusterLock("keeper:epl-fixtures", 280, () =>
+      this.runEplFixtureMarkets(),
+    );
+  }
+
+  private async runEplFixtureMarkets(): Promise<void> {
+    const days = Number(this.config.get<string>("EPL_FIXTURE_LOOKAHEAD_DAYS") ?? 7);
+    let fixtures: Awaited<ReturnType<EplService["getUpcomingFixtures"]>>;
+    try {
+      fixtures = await this.epl.getUpcomingFixtures(days);
+    } catch (e) {
+      this.logger.warn(`[Keeper] EPL fixtures fetch failed: ${(e as Error).message}`);
+      return;
+    }
+    if (!fixtures.length) return;
+
+    let created = 0;
+    for (const f of fixtures) {
+      // Dedup: one market per fixture, any status (respects admin cancels too).
+      const existing = await this.marketRepo.findOne({
+        where: { externalMatchId: f.id },
+      });
+      if (existing) continue;
+      try {
+        const dto: CreateMarketDto = {
+          title: `${f.homeTeam} vs ${f.awayTeam}`,
+          description: "Premier League — who wins the match?",
+          category: "sports",
+          subcategory: "epl-match",
+          externalMatchId: f.id,
+          externalMarketType: "match-winner",
+          externalSource: "football-data.org",
+          settlementSource: "football-data.org",
+          opensAt: new Date().toISOString(),
+          closesAt: f.utcDate, // betting closes at kickoff
+          resolutionCriteria:
+            "Resolved to the full-time result (Home win / Draw / Away win) per the official Premier League match result.",
+          outcomes: [
+            { label: f.homeTeam, imageUrl: f.homeCrest || null },
+            { label: "Draw", imageUrl: null },
+            { label: f.awayTeam, imageUrl: f.awayCrest || null },
+          ],
+        };
+        const market = await this.marketsService.create(dto);
+        created++;
+        this.addLog("success", `Auto-created EPL fixture market: ${dto.title} (${market.id}).`);
+      } catch (e) {
+        this.logger.error(`[Keeper] auto-create fixture ${f.id} failed: ${(e as Error).message}`);
+      }
+    }
+    if (created) {
+      this.addLog("info", `EPL fixtures: created ${created} match market(s) for the next ${days} days.`);
+    }
   }
 
   // ── Cron: auto-propose results for fixture-linked markets (every 5 minutes) ──

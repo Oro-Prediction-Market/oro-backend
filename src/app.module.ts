@@ -43,6 +43,7 @@ import { RevenueDistribution } from "./entities/revenue-distribution.entity";
 import { TerModule } from "./ter/ter.module";
 import { BtcModule } from "./btc/btc.module";
 import { AmlModule } from "./aml/aml.module";
+import { EplModule } from "./epl/epl.module";
 import { AmlAlert } from "./aml/entities/aml-alert.entity";
 import { AmlReport } from "./aml/entities/aml-report.entity";
 
@@ -143,6 +144,7 @@ import { AmlReport } from "./aml/entities/aml-report.entity";
     TerModule,
     BtcModule,
     AmlModule,
+    EplModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

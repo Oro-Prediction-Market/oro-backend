@@ -59,8 +59,8 @@ export class Market {
   @Column({ type: "decimal", precision: 18, scale: 2, default: 0 })
   totalPool: number;
 
-  @Column({ type: "decimal", precision: 5, scale: 2, default: 5 })
-  houseEdgePct: number; // e.g. 5 = 5%
+  @Column({ type: "decimal", precision: 5, scale: 2, default: 10 })
+  houseEdgePct: number; // e.g. 10 = 10%
 
   @Column({
     type: "enum",
@@ -165,6 +165,16 @@ export class Market {
   /** Timestamp when betting closes (for markets where betting closes before the market closes) */
   @Column({ type: "timestamptz", nullable: true })
   bettingClosesAt: Date | null;
+
+  /**
+   * Admin-pinned "featured" flag. When true, hub feature slots (e.g. the EPL
+   * hub's Featured Match card) prefer this market over the automatic
+   * biggest-pool pick. Default false — off-season and normal markets are
+   * unaffected.
+   */
+  @Index()
+  @Column({ type: "boolean", default: false })
+  isFeatured: boolean;
 
   @CreateDateColumn()
   createdAt: Date;

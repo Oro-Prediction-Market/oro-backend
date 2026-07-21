@@ -26,7 +26,7 @@ import {
 } from "@nestjs/swagger";
 import { InjectRepository, InjectDataSource } from "@nestjs/typeorm";
 import { IsNumber, IsOptional, IsString, Min } from "class-validator";
-import { Repository, DataSource } from "typeorm";
+import { Repository, DataSource, In } from "typeorm";
 import { JwtAuthGuard, AdminGuard } from "../auth/guards";
 import {
   MarketsService,
@@ -36,6 +36,13 @@ import {
 import { CreateMarketGroupDto } from "../markets/dto/create-market-group.dto";
 import { KeeperService } from "../markets/keeper.service";
 import { RevenueDistributionService } from "../markets/revenue-distribution.service";
+import { EplService } from "../epl/epl.service";
+import {
+  EPL_STAT_MARKET_META,
+  EPL_STAT_SUBCATEGORIES,
+  buildEplStatMarketDto,
+  EplStatKey,
+} from "../epl/epl-stat-markets";
 import { DistributionStatus } from "../entities/revenue-distribution.entity";
 import { FixturesService } from "./fixtures.service";
 import { AuditService } from "./audit.service";
@@ -94,6 +101,7 @@ export class AdminController {
     @InjectRepository(Transaction)
     private transactionRepo: Repository<Transaction>,
     private revenueDistributionService: RevenueDistributionService,
+    private eplService: EplService,
   ) {}
 
   // ── Health Check ──────────────────────────────────────────────────────────
@@ -2017,5 +2025,95 @@ export class AdminController {
     }
 
     return { backfilled: created, total: missing.length };
+  }
+
+  // ── EPL stat markets ──────────────────────────────────────────────────────
+  // Manual one-click creation of a season-long "stat" market (Top Scorer / Most
+  // Assists / Yellows / Reds) with outcomes pre-filled from the live leaderboard
+  // so names match and each outcome carries the player's photo. The keeper also
+  // auto-creates these once the season is underway; both share the same builder
+  // (epl-stat-markets.ts). The Stats tab overlays betting via the subcategory.
+  @Get("epl/stat-market/preview")
+  @ApiOperation({ summary: "Live EPL leaderboards + which stat markets already exist" })
+  async previewEplStatMarkets() {
+    const [stats, season] = await Promise.all([
+      this.eplService.getStats(),
+      this.eplService.getSeasonInfo(),
+    ]);
+    const existing = await this.dataSource.getRepository(Market).find({
+      where: {
+        subcategory: In(EPL_STAT_SUBCATEGORIES),
+        status: In([
+          MarketStatus.UPCOMING,
+          MarketStatus.OPEN,
+          MarketStatus.CLOSED,
+          MarketStatus.RESOLVING,
+        ]),
+      },
+      select: ["id", "title", "subcategory", "status"],
+    });
+    return { stats, existing, season };
+  }
+
+  @Post("epl/stat-market")
+  @ApiOperation({ summary: "Create a season stat market from the live leaderboard" })
+  async createEplStatMarket(
+    @Body() body: { stat?: string; closesAt?: string; topN?: number },
+    @Request() req: any,
+  ) {
+    const stat = body?.stat as EplStatKey;
+    const meta = EPL_STAT_MARKET_META[stat];
+    if (!meta) {
+      throw new BadRequestException("stat must be one of: goals, assists, yellow, red");
+    }
+
+    // Safety: during the summer gap the boards show LAST season's data via the
+    // fallback. Refuse to bake a stale-season leaderboard into a new market —
+    // wait until the current season has actually kicked off.
+    if (!(await this.eplService.seasonHasStarted())) {
+      throw new BadRequestException(
+        "The Premier League season hasn't started yet — the leaderboard is still showing last season's data. Wait until the new season is live before creating this market.",
+      );
+    }
+
+    // Block a duplicate active market for the same stat.
+    const dup = await this.dataSource.getRepository(Market).findOne({
+      where: {
+        subcategory: meta.subcategory,
+        status: In([
+          MarketStatus.UPCOMING,
+          MarketStatus.OPEN,
+          MarketStatus.CLOSED,
+          MarketStatus.RESOLVING,
+        ]),
+      },
+    });
+    if (dup) {
+      throw new BadRequestException(
+        `An active "${meta.title}" market already exists (id ${dup.id}). Resolve or cancel it first.`,
+      );
+    }
+
+    const stats = await this.eplService.getStats();
+    const topN = Math.min(Math.max(Number(body?.topN ?? 15), 2), 25);
+    const players = stats[meta.board].slice(0, topN);
+    if (players.length < 2) {
+      throw new BadRequestException(
+        "The live leaderboard doesn't have enough players yet to open this market.",
+      );
+    }
+
+    const dto = buildEplStatMarketDto(stat, players, body?.closesAt);
+    const market = await this.marketsService.create(dto);
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action: AuditAction.MARKET_CREATE,
+      entityType: "market",
+      entityId: market.id,
+      after: { title: market.title, subcategory: meta.subcategory, outcomes: players.length, closesAt: dto.closesAt },
+      ipAddress: req.ip,
+    });
+    return market;
   }
 }

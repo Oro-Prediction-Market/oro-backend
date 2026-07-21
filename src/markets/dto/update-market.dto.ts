@@ -3,6 +3,7 @@ import {
   IsString,
   IsOptional,
   IsNumber,
+  IsBoolean,
   IsDateString,
   IsArray,
   Min,
@@ -60,4 +61,10 @@ export class UpdateMarketDto {
   @IsOptional()
   @IsString()
   matchLabel?: string;
+
+  /** Pin/unpin this market as the "featured" one in its hub feature slot. */
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  isFeatured?: boolean;
 }

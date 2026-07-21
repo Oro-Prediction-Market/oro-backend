@@ -25,6 +25,7 @@ import { UsersModule } from "../users/users.module";
 import { ChallengesModule } from "../challenges/challenges.module";
 import { RedisModule } from "../redis/redis.module";
 import { NOTIFICATION_QUEUE } from "../jobs/notification.queue";
+import { EplModule } from "../epl/epl.module";
 
 @Module({
   imports: [
@@ -45,6 +46,7 @@ import { NOTIFICATION_QUEUE } from "../jobs/notification.queue";
     PaymentModule,
     UsersModule,
     RedisModule,
+    EplModule,
     forwardRef(() => ChallengesModule),
   ],
   providers: [

@@ -173,7 +173,7 @@ export class MarketsService implements OnModuleInit {
         resolutionCriteria: dto.resolutionCriteria ?? undefined,
         opensAt: dto.opensAt ? new Date(dto.opensAt) : undefined,
         closesAt: dto.closesAt ? new Date(dto.closesAt) : undefined,
-        houseEdgePct: dto.houseEdgePct ?? 8,
+        houseEdgePct: dto.houseEdgePct ?? 10,
         mechanism: MarketMechanism.PARIMUTUEL,
         liquidityParam: liquidityParam,
         outcomes: outcomes,
@@ -352,6 +352,7 @@ export class MarketsService implements OnModuleInit {
     if (dto.houseEdgePct !== undefined) market.houseEdgePct = dto.houseEdgePct;
     if (dto.liquidityParam !== undefined)
       market.liquidityParam = dto.liquidityParam;
+    if (dto.isFeatured !== undefined) market.isFeatured = dto.isFeatured;
     if (dto.bracketSlot !== undefined)
       market.metadata = {
         ...(market.metadata ?? {}),
