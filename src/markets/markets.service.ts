@@ -14,6 +14,7 @@ import { CreateMarketGroupDto } from "./dto/create-market-group.dto";
 import { UpdateMarketDto } from "./dto/update-market.dto";
 import { OpenPositionDto } from "./dto/open-position.dto";
 import { SubmitDisputeDto } from "./dto/submit-dispute.dto";
+import { ReopenMarketDto } from "./dto/reopen-market.dto";
 import {
   Market,
   MarketStatus,
@@ -36,6 +37,7 @@ export { CreateMarketDto } from "./dto/create-market.dto";
 export { UpdateMarketDto } from "./dto/update-market.dto";
 export { OpenPositionDto } from "./dto/open-position.dto";
 export { SubmitDisputeDto } from "./dto/submit-dispute.dto";
+export { ReopenMarketDto } from "./dto/reopen-market.dto";
 
 @Injectable()
 export class MarketsService implements OnModuleInit {
@@ -521,6 +523,14 @@ export class MarketsService implements OnModuleInit {
     await this.invalidateMarketCache(marketId);
     return result;
   }
+  async reopen(marketId: string, dto: ReopenMarketDto): Promise<Market> {
+    const result = await this.engine.reopenMarket(
+      marketId,
+      new Date(dto.closesAt),
+    );
+    await this.invalidateMarketCache(marketId);
+    return result;
+  }
 
   async proposeResolution(
     marketId: string,
@@ -568,14 +578,6 @@ export class MarketsService implements OnModuleInit {
     return result;
   }
 
-  /**
-   * When a wc-match market resolves, check whether its sibling feeder match is
-   * also resolved. If both winners are known and the next-round market doesn't
-   * exist yet, create it (two winners as outcomes) and open it immediately.
-   *
-   * Idempotent and best-effort: any failure is logged, never thrown, so it can
-   * never break market resolution.
-   */
   private async maybeAdvanceBracket(resolvedMarketId: string): Promise<void> {
     try {
       const market = await this.findOne(resolvedMarketId);

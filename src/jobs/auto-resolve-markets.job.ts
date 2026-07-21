@@ -5,8 +5,9 @@ import { LessThan, Repository } from "typeorm";
 import { Market, MarketStatus } from "../entities/market.entity";
 import { Dispute } from "../entities/dispute.entity";
 import { AuditLog, AuditAction, RoleType } from "../entities/audit-log.entity";
-import { ParimutuelEngine } from "../markets/parimutuel.engine";
+import { MarketsService } from "../markets/markets.service";
 import { DataSource } from "typeorm";
+import { Inject, forwardRef } from "@nestjs/common";
 
 /**
  * Auto-resolution cron job.
@@ -29,7 +30,8 @@ export class AutoResolveMarketsJob {
     @InjectRepository(Market) private marketRepo: Repository<Market>,
     @InjectRepository(Dispute) private disputeRepo: Repository<Dispute>,
     @InjectRepository(AuditLog) private auditRepo: Repository<AuditLog>,
-    private engine: ParimutuelEngine,
+    @Inject(forwardRef(() => MarketsService))
+    private marketsService: MarketsService,
     @InjectDataSource() private dataSource: DataSource,
   ) {}
 
@@ -90,8 +92,9 @@ export class AutoResolveMarketsJob {
             `→ outcome ${market.proposedOutcomeId} (0 objections, window expired)`,
         );
 
-        // resolveMarket with special system adminId
-        await this.engine.resolveMarket(
+        // Route through MarketsService.resolve (not the engine directly) so
+        // cache invalidation and knockout bracket advancement also run.
+        await this.marketsService.resolve(
           market.id,
           market.proposedOutcomeId,
           "system:auto-resolve",

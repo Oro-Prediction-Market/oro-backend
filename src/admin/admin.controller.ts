@@ -32,6 +32,7 @@ import {
   MarketsService,
   CreateMarketDto,
   UpdateMarketDto,
+  ReopenMarketDto,
 } from "../markets/markets.service";
 import { CreateMarketGroupDto } from "../markets/dto/create-market-group.dto";
 import { KeeperService } from "../markets/keeper.service";
@@ -572,6 +573,35 @@ export class AdminController {
       before: { status: before.status },
       after: { status: dto.status },
       meta: { title: before.title },
+      ipAddress: req.ip,
+    });
+    return result;
+  }
+
+  @Post("markets/:id/reopen")
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      "Reopen a closed World Cup hub market (subcategory wc-*) with a new future closesAt. " +
+      "Only allowed from Closed, before any resolution is proposed.",
+  })
+  @ApiResponse({ status: 200, type: Market })
+  async reopenMarket(
+    @Param("id") id: string,
+    @Body() dto: ReopenMarketDto,
+    @Request() req: any,
+  ) {
+    const before = await this.marketsService.findOne(id);
+    const result = await this.marketsService.reopen(id, dto);
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action: AuditAction.MARKET_TRANSITION,
+      entityType: "market",
+      entityId: id,
+      before: { status: before.status, closesAt: before.closesAt },
+      after: { status: "open", closesAt: dto.closesAt },
+      meta: { title: before.title, reopened: true },
       ipAddress: req.ip,
     });
     return result;
