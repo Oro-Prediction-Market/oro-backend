@@ -216,10 +216,18 @@ export class EplService {
     }
     const table = data.standings?.find((x: any) => x.type === "TOTAL")?.table ?? [];
     const maxPlayed = table.reduce((m: number, r: any) => Math.max(m, num(r.playedGames)), 0);
+    // Summer gap: during the off-season football-data.org keeps serving the
+    // just-COMPLETED season as "current" (38 games played), which makes the
+    // naive `maxPlayed > 0` test wrongly report the season as live and unlocks
+    // market creation on last season's data. A finished season's endDate is in
+    // the past, so treat that as not-started. A live season's endDate is future.
+    const endDate = data.season?.endDate ? new Date(data.season.endDate) : null;
+    const seasonOver = endDate ? endDate.getTime() < Date.now() : false;
     return {
-      started: override ? true : maxPlayed > 0,
+      started: override ? true : maxPlayed > 0 && !seasonOver,
       seasonStart: data.season?.startDate ?? null,
-      maxPlayed,
+      // Report 0 during the gap so the gameweek-maturity gate can't fire either.
+      maxPlayed: seasonOver ? 0 : maxPlayed,
     };
   }
 
