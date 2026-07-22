@@ -216,18 +216,29 @@ export class EplService {
     }
     const table = data.standings?.find((x: any) => x.type === "TOTAL")?.table ?? [];
     const maxPlayed = table.reduce((m: number, r: any) => Math.max(m, num(r.playedGames)), 0);
-    // Summer gap: during the off-season football-data.org keeps serving the
-    // just-COMPLETED season as "current" (38 games played), which makes the
-    // naive `maxPlayed > 0` test wrongly report the season as live and unlocks
-    // market creation on last season's data. A finished season's endDate is in
-    // the past, so treat that as not-started. A live season's endDate is future.
-    const endDate = data.season?.endDate ? new Date(data.season.endDate) : null;
-    const seasonOver = endDate ? endDate.getTime() < Date.now() : false;
+    // Summer gap: football-data.org rolls the "current" season label forward to
+    // the UPCOMING campaign (future start/end dates) while the standings TABLE
+    // still holds LAST season's final numbers (38 games played) until the new
+    // season actually kicks off. So games-played alone can't distinguish a live
+    // season from the off-season — the stale 38 wrongly reads as "started" and
+    // unlocks market creation on old data. A season is only genuinely live when
+    // TODAY falls inside its [startDate, endDate] window.
+    const now = Date.now();
+    const start = data.season?.startDate
+      ? new Date(data.season.startDate).getTime()
+      : null;
+    const end = data.season?.endDate
+      ? new Date(data.season.endDate).getTime()
+      : null;
+    const inWindow =
+      (start === null || start <= now) && (end === null || now <= end);
+    const live = maxPlayed > 0 && inWindow;
     return {
-      started: override ? true : maxPlayed > 0 && !seasonOver,
+      started: override ? true : live,
       seasonStart: data.season?.startDate ?? null,
-      // Report 0 during the gap so the gameweek-maturity gate can't fire either.
-      maxPlayed: seasonOver ? 0 : maxPlayed,
+      // Report 0 outside the season window so the gameweek-maturity gate can't
+      // fire on stale carry-over standings either.
+      maxPlayed: live ? maxPlayed : 0,
     };
   }
 
