@@ -819,8 +819,11 @@ export class DKBankPaymentService {
     const firstName = user.firstName?.trim() || "there";
 
     // ── Route OTP delivery based on user's linked channels ────────────────
-    // Priority: BhutanApp notification first (PWA users), then Telegram fallback
+    // Priority: BhutanApp push (PWA) → Telegram (TMA). We must confirm delivery
+    // actually succeeded before telling the frontend to prompt for the OTP —
+    // otherwise a failed push strands the user on an OTP screen with no code.
     let otpChannel: "telegram" | "sms" = "telegram";
+    let otpDelivered = false;
 
     const bhutanAppAuth = await this.authMethodRepo.findOne({
       where: { user: { id: userId }, provider: AuthProvider.BHUTANAPP },
@@ -828,39 +831,47 @@ export class DKBankPaymentService {
     const bhutanAppUserId = (bhutanAppAuth?.metadata as any)?.externalUserId;
 
     if (bhutanAppAuth && bhutanAppUserId) {
-      // PWA/BhutanApp user — send via BhutanApp push notification
-      await this.bhutanAppNotification
-        .sendNotification(
-          bhutanAppUserId,
-          "Oro Withdrawal OTP",
-          `Your one-time code to withdraw Nu ${amount.toLocaleString()}: ${generatedOtp}. Expires in 5 minutes. Never share this code.`,
-        )
-        .catch((err: any) =>
-          this.logger.warn(
-            `Failed to send withdrawal OTP via BhutanApp: ${err.message}`,
-          ),
+      // PWA/BhutanApp user — try BhutanApp push first. sendNotification never
+      // throws; it returns false on any failure (401, validation, network).
+      const sent = await this.bhutanAppNotification.sendNotification(
+        bhutanAppUserId,
+        "Oro Withdrawal OTP",
+        `Your one-time code to withdraw Nu ${amount.toLocaleString()}: ${generatedOtp}. Expires in 5 minutes. Never share this code.`,
+      );
+      if (sent) {
+        otpChannel = "sms"; // frontend treats as "sms" (non-telegram)
+        otpDelivered = true;
+      } else {
+        this.logger.warn(
+          `BhutanApp OTP delivery failed for user ${userId}; attempting fallback`,
         );
-      otpChannel = "sms"; // frontend treats as "sms" (non-telegram)
-    } else if (user.telegramId) {
-      // TMA user — send via Telegram bot
-      await this.telegramService
-        .sendMessage(
+      }
+    }
+
+    // Fall back to Telegram if BhutanApp didn't deliver, or for TMA users.
+    if (!otpDelivered && user.telegramId) {
+      try {
+        await this.telegramService.sendMessage(
           Number(user.telegramId),
           `🏦 <b>Oro Withdrawal OTP</b>\n\nHi ${firstName}, your one-time code to withdraw <b>Nu ${amount.toLocaleString()}</b> to your DK Bank account:\n\n<code>${generatedOtp}</code>\n\n⏳ Expires in 5 minutes\n\n⚠️ <b>Oro will never ask for this code.</b> Do not share it with anyone.`,
-        )
-        .catch((err) =>
-          this.logger.warn(
-            `Failed to send withdrawal OTP via Telegram: ${err.message}`,
-          ),
         );
-      otpChannel = "telegram";
-    } else {
-      // No delivery channel available — abort
+        otpChannel = "telegram";
+        otpDelivered = true;
+      } catch (err: any) {
+        this.logger.warn(
+          `Failed to send withdrawal OTP via Telegram: ${err.message}`,
+        );
+      }
+    }
+
+    if (!otpDelivered) {
+      // No channel succeeded — fail loudly instead of returning a fake success
+      // that leaves the user waiting for an OTP that never arrives.
       await this.paymentRepo.update(payment.id, {
         status: PaymentStatus.FAILED,
       });
       throw new BadRequestException(
-        "No notification channel available. Please verify your identity before withdrawing.",
+        "Could not deliver your withdrawal OTP. Please try again or contact support.",
       );
     }
 
