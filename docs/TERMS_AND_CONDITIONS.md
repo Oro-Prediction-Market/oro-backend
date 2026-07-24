@@ -1,407 +1,192 @@
-# Oro Prediction Market — Terms and Conditions
-
-**Effective Date:** 1 May 2026
-**Last Updated:** 20 May 2026
-**Platform:** Oro Prediction Market (Telegram Mini App & Progressive Web App)
-**Operator:** Oro Prediction Market
-**Contact:** Available through the Oro Telegram channel at https://t.me/OroPredictionMarket
-
----
-
-## 1. Acceptance of Terms
-
-By accessing or using the Oro Prediction Market platform ("Oro", "the Platform", "we", "us"), whether through the Telegram Mini App ("TMA"), the Progressive Web App ("PWA"), or the Telegram bot (@OroPredictBot), you ("User", "you") agree to be bound by these Terms and Conditions ("Terms") in their entirety.
-
-If you do not agree with any part of these Terms, you must immediately discontinue use of the Platform.
-
-These Terms constitute a legally binding agreement predict between you and Oro. We reserve the right to update or modify these Terms at any time. Continued use of the Platform after any changes constitutes your acceptance of the revised Terms. We will notify users of material changes through the official Telegram channel.
-
----
-
-## 2. Eligibility
-
-### 2.1 Requirement
-
-You must have **Dk Bank** to use Oro. By registering, you confirm that you are using your own DK Bank account. Oro reserves the right to request proof and to suspend or terminate any account where this requirement is not met.
-
-### 2.2 Jurisdiction
-
-Oro is operated for users based in **Bhutan**. Use of the Platform outside Bhutan is subject to your local laws and regulations. You are solely responsible for ensuring that your participation in prediction markets is lawful in your jurisdiction. Oro makes no representations that the Platform is appropriate or permitted in any jurisdiction outside Bhutan.
-
-### 2.3 DK Bank Requirement
-
-To deposit or withdraw real money, you must hold a valid **DK Bank** account and possess an 11-digit Bhutanese **Citizenship Identity Number (CID)**. Browsing markets and using welcome bonus credits does not require a DK Bank account.
-
-### 2.4 Telegram Account
-
-A valid **Telegram** account is required to access the Telegram Mini App version of Oro. Users may alternatively access the Web App version using a password set through Settings > Website Access, provided they have previously registered via Telegram.
-
-### 2.5 Single Account Policy
-
-Each user is permitted to maintain only **one account**. Creating multiple accounts to exploit bonuses, referrals, or other promotional features is prohibited and will result in permanent suspension of all associated accounts.
-
----
-
-## 3. Account Registration and Security
-
-### 3.1 Automatic Registration
-
-Your Oro account is created automatically the first time you open the Oro Mini App within Telegram. Your Telegram display name and username are used as your identity — no separate sign-up form is required.
-
-### 3.2 Identity Verification
-
-When linking a DK Bank account, you are required to provide your **11-digit CID**. Oro verifies this against your DK Bank account via the DK Bank payment gateway. The CID you link must belong to you — using another person's CID is prohibited and constitutes fraud.
-
-### 3.3 Phone Verification
-
-Linking a DK Bank account requires that your **Telegram-registered phone number** matches the phone number registered with DK Bank. This verification is performed using a secure HMAC hash and is required before any deposit or withdrawal. Your actual phone number is never stored in plain text.
-
-### 3.4 PWA Password
-
-Users may set a **PWA password** (minimum 6 characters) via Settings > Website Access in the TMA. This password allows access to the web version of Oro without opening Telegram each time. It is stored as a secure one-way hash. You are responsible for keeping this password confidential.
-
-### 3.5 Account Security
-
-You are responsible for maintaining the security of your Telegram account and any PWA password. Oro will not be liable for any losses resulting from unauthorised access to your account. If you suspect unauthorised access, contact us immediately through the official Telegram channel.
-
----
-
-## 4. Prediction Markets
-
-### 4.1 How Markets Work
-
-Oro uses a **parimutuel pool model**. All stakes placed on a market are pooled together. When the market resolves, the total pool (minus the platform fee) is distributed proportionally among users who predict on the winning outcome, based on their share of the total stake on that outcome.
-
-### 4.2 Market Categories
-
-Oro hosts prediction markets across the following categories:
-
-- **Sports** (including football and other sporting events)
-- **Weather**
-- **Entertainment**
-- **Economy**
-- **Other**
-
-### 4.3 Platform Fee (House Edge)
-
-A **platform fee** is deducted from the total pool before distributing payouts to winners. The applicable fee is displayed on each market before you place a prediction. The default platform fee is **10% of the total pool**. Individual markets may carry a different fee, which will always be disclosed.
-
-### 4.4 Dynamic Odds
-
-Odds in a parimutuel market are **not fixed**. They change in real time as more predictions are placed. The payout multiplier you see when placing a prediction is indicative only — your final payout depends on the total pool composition at the time the market closes. Oro does not guarantee any specific return.
-
-### 4.5 Minimum Prediction Cost
-
-The minimum prediction per position is **Nu 50**. prediction below this amount will be rejected.
-
-### 4.6 Market Closing
-
-Markets close at the deadline set by the administrator. No prediction can be placed after a market closes. The closing time is displayed on each market.
-
-### 4.7 Market Resolution
-
-Markets are resolved by the Oro administration team based on verified outcomes. The administration team **proposes** a resolution outcome — this proposal is not automatically final and may be disputed by users with an active position in the market during the objection window (see Section 7). Resolution typically occurs shortly after the real-world event concludes. Oro reserves the right to delay resolution pending verification of results.
-
-### 4.8 Source Verification and Consensus Model
-
-Oro does not rely on a single data source, news outlet, or sensor when determining market outcomes. Before any resolution is proposed, the administration team cross-references **multiple independent and trusted sources** — such as official governing bodies, reputable news agencies, and publicly verifiable records — to arrive at a consensus. This multi-source approach is applied consistently regardless of who proposes the outcome, including Oro's own administration team. No single report, feed, or authority is treated as conclusive on its own.
-
-Because no source verification process is infallible, users retain the right to challenge any proposed resolution through the dispute mechanism described in Section 7.
-
-### 4.9 Market Cancellation
-
-Oro reserves the right to cancel a market if the underlying event is cancelled, postponed indefinitely, or if a fair resolution is not possible. In the event of cancellation, all stakes are refunded to participants in full.
-
----
-
-## 5. Wallet, Deposits, and Withdrawals
-
-### 5.1 In-App Wallet
-
-Each Oro account has an in-app wallet balance, denominated in **Bhutanese Ngultrum (Nu / BTN)**. This balance is used exclusively within the Oro platform to place prediction and receive payouts.
-
-### 5.2 Deposits
-
-Deposits are processed through **DK Bank** via a secure OTP-verified pull-payment flow.
-
-| Parameter       | Value                                       |
-| --------------- | ------------------------------------------- |
-| Minimum deposit | **Nu 50** per transaction                   |
-| Maximum deposit | **Nu 15,000** per transaction               |
-| Processing      | Near-instant during DK Bank operating hours |
-| Verification    | DK Bank OTP sent to your registered phone   |
-
-To deposit, you must have a linked DK Bank account. The OTP sent by DK Bank to your registered phone must be entered in the app to authorise the transaction. Oro does not store or have access to this OTP.
-
-### 5.3 Withdrawals
-
-Withdrawals are processed from the Oro merchant vault to your linked DK Bank account.
-
-| Parameter          | Value                                           |
-| ------------------ | ----------------------------------------------- |
-| Minimum withdrawal | **Nu 50** per transaction                       |
-| Processing         | Near-instant during DK Bank operating hours     |
-| Verification       | One-time password sent to your Telegram account |
-
-Withdrawals are authorised via an OTP sent to your Telegram account. Once confirmed, funds are pushed directly to your linked DK Bank account.
-
-### 5.4 Bonus Balance
-
-A portion of your wallet balance may consist of **bonus credits** (marked separately). Bonus credits are **not real money** — they are promotional play credits provided by Oro to enhance your experience. Bonus credits are subject to the following rules:
-
-- Bonus credits **cannot be withdrawn** to your DK Bank account under any circumstances.
-- Bonus credits allow you to participate in prediction markets and experience the platform without risking real funds.
-- **If you win** a market position that was funded with bonus credits, you **do not receive a real money payout**. Winnings from bonus-funded positions are returned as bonus credits only and remain non-withdrawable.
-- **If you lose** a market position that was funded with bonus credits, the opposing winners (who predict with real money) **still receive their full real money payout**. The platform absorbs the cost of covering these payouts on behalf of losing bonus positions.
-- Bonus credits cannot be transferred predictween users.
-- Oro reserves the right to expire, revoke, or modify bonus credit grants at any time.
-
-**In summary:** Bonus credits let you play for free, but winnings from bonus predicts are not redeemable as real money. However, real-money participants who win against bonus-funded positions are paid out normally by the platform.
-
-### 5.5 Rate Limits
-
-To protect the integrity of the platform, the following transaction rate limits apply:
-
-- Deposit initiation: **5 requests per minute** per user
-- Deposit OTP confirmation: **5 attempts per 15 minutes** per user
-- Withdrawal initiation: **3 requests per minute** per user
-- Withdrawal OTP confirmation: **5 attempts per 15 minutes** per user
-
-Exceeding these limits will temporarily block further attempts. Repeated abuse may result in account suspension.
-
-### 5.6 Failed Transactions
-
-If a DK Bank transaction fails after OTP submission, no funds will be debited from your DK Bank account and no balance will be credited to your Oro wallet. You may retry by initiating a new deposit.
-
-### 5.7 Transaction Records
-
-All transactions are logged in your in-app transaction history. You are responsible for reviewing your transaction history and reporting any discrepancies promptly.
-
----
-
-## 6. Welcome Bonus and Referral Programme
-
-### 6.1 Welcome Bonus
-
-All new users receive a **Nu 20 welcome bonus** upon first registration. This credit is:
-
-- Immediately available to use for placing prediction
-- Marked as bonus credit (subject to the bonus credit rules in Section 5.4 — not redeemable as real money)
-- Non-transferable and non-refundable
-- Granted once per user — duplicate accounts will not receive additional bonuses
-
-### 6.2 Referral Programme
-
-Users may refer new users to Oro using their unique referral link. The referral programme is structured as follows:
-
-| Event                                     | Reward                                                     |
-| ----------------------------------------- | ---------------------------------------------------------- |
-| Referred user makes their first predictions       | **Nu 25 flat bonus** + **5% of referred user's first predict** |
-| Maximum reward per referral               | **Nu 75**                                                  |
-| Milestone reward (10 converted referrals) | **Nu 500 prize**                                           |
-
-**Conditions:**
-
-- A referral is only counted once the referred user successfully places their first prediction.
-- Self-referrals (using your own referral link) are automatically rejected.
-- Referral bonuses are credited to the referring user's wallet.
-- Oro reserves the right to modify, suspend, or terminate the referral programme at any time.
-- Any attempt to abuse the referral programme (e.g. creating fake accounts, incentivised sign-ups) will result in forfeiture of all referral rewards and account suspension.
-
----
-
-## 7. Dispute and Objection Process
-
-### 7.1 Objection Window
-
-After a market is submitted for resolution, there is a configurable **objection window** (between 10 and 120 minutes, as set per market) during which users with an active position may raise an objection if they believe the proposed resolution is incorrect.
-
-### 7.2 Objection Bond
-
-Filing an objection requires a **Nu 5,000 dispute bond** to be locked from your wallet balance. This bond is held while the objection is under review.
-
-### 7.3 Objection Outcomes
-
-| Outcome                     | Result                                     |
-| --------------------------- | ------------------------------------------ |
-| Objection upheld by admin   | Bond returned in full + resolution amended |
-| Objection rejected by admin | Bond forfeited to the market pool          |
-
-### 7.4 Objection Limits
-
-- Only users with an active position in the market may file an objection.
-- Only **one objection per user per market** is permitted.
-- Objections can only be filed during the market's objection window.
-
-### 7.5 Admin Decision
-
-The Oro administration team's decision on all disputes is **final**. Oro does not enter into further correspondence regarding resolved disputes.
-
----
-
-## 8. Prohibited Conduct
-
-You agree not to engage in any of the following:
-
-1. **Fraud and Manipulation** — Attempting to manipulate market outcomes, colluding with other users, or engaging in any form of market manipulation.
-2. **Multiple Accounts** — Creating more than one account to circumvent limits, exploit bonuses, or game the referral programme.
-3. **Identity Misrepresentation** — Using another person's CID, DK Bank account, or Telegram account.
-4. **Automated Bots** — Using automated scripts, bots, or any non-human means to place prediction or interact with the Platform (except through official Telegram bot commands as intended).
-5. **Exploitation of Bugs** — Deliberately exploiting any technical error, vulnerability, or bug in the Platform. You must report any discovered bugs to Oro immediately.
-6. **Money Laundering** — Using Oro in any way that constitutes or facilitates money laundering or financing of illegal activities.
-7. **Chargebacks** — Initiating chargebacks or payment reversals through DK Bank after funds have been credited to your Oro wallet.
-8. **Harassment** — Harassing, threatening, or abusing other users or Oro staff.
-9. **Circumvention** — Attempting to circumvent any rate limit, security measure, or access control implemented by Oro.
-
-Violations of these prohibitions may result in immediate account suspension, forfeiture of balance, and referral to relevant authorities where required by law.
-
----
-
-## 9. Responsible Prediction
-
-### 9.1 Nature of the Platform
-
-Oro is a prediction market platform. Participation involves real financial risk. You may lose the money you deposit. Oro does not guarantee any winnings or returns.
-
-### 9.2 Voluntary Limits
-
-We encourage users to set personal limits on their spending. If you believe you may have a problem with spending or compulsive predictting, please seek assistance from a qualified support service before using this platform.
-
-### 9.3 Self-Exclusion
-
-If you wish to restrict your access to Oro, please contact us via the official Telegram channel. We will make reasonable efforts to process exclusion requests promptly.
-
----
-
-## 10. Intellectual Property
-
-All content on the Oro platform — including the name "Oro", the platform design, market structure, branding, interface, and software — is the exclusive property of Oro. You are granted a limited, non-exclusive, non-transferable licence to use the Platform for personal, non-commercial purposes.
-
-You may not:
-
-- Copy, reproduce, or redistribute any part of the Platform
-- Reverse-engineer, decompile, or attempt to extract the source code
-- Use Oro's name, brand, or imagery for commercial purposes without express written consent
-
----
-
-## 11. Privacy and Data
-
-### 11.1 Data We Collect
-
-Oro collects and stores the following data to operate the Platform:
-
-- Telegram user ID, display name, and username
-- A hashed (one-way HMAC) representation of your phone number — your actual phone number is never stored in plain text
-- Your 11-digit CID and DK Bank account number (required for payment processing)
-- In-app transaction history
-- Predict history and market positions
-- Device and session data for security purposes
-
-### 11.2 How We Use Your Data
-
-Your data is used to:
-
-- Operate your account and process transactions
-- Verify your identity and prevent fraud
-- Communicate with you via Telegram (OTP notifications, payout confirmations, market updates)
-- Comply with applicable laws and regulations
-
-### 11.3 Data Sharing
-
-Oro shares data with **DK Bank** only to the extent necessary to process deposits and withdrawals. We do not sell your personal data to third parties.
-
-### 11.4 Data Retention
-
-Transaction records and account data are retained as required by applicable Bhutanese financial regulations. You may request deletion of non-transactional data by contacting us.
-
-### 11.5 Security
-
-All sensitive data is stored using industry-standard encryption. Phone numbers are stored as cryptographic hashes. Passwords are stored using bcrypt hashing. We use HMAC-SHA-256 for phone number verification.
-
----
-
-## 12. Disclaimers and Limitation of Liability
-
-### 12.1 No Guarantee of Service
-
-Oro is provided on an **"as is" and "as available"** basis. We do not guarantee uninterrupted, error-free, or timely availability of the Platform.
-
-### 12.2 Financial Risk
-
-**All participation in prediction markets involves financial risk.** Oro does not guarantee any return on prediction placed. You may lose some or all of the money you deposit. You acknowledge that you participate at your own risk.
-
-### 12.3 Third-Party Services
-
-Oro relies on third-party services including Telegram and DK Bank. We are not responsible for any downtime, errors, or failures caused by these third parties. DK Bank payment processing delays or failures are outside Oro's control.
-
-### 12.4 Market Data
-
-Market outcomes are determined based on publicly available information and the reasonable judgment of the Oro administration team. Oro is not responsible for inaccuracies in source data used to resolve markets.
-
-### 12.5 Limitation of Liability
-
-To the maximum extent permitted by applicable law, Oro's total liability to you for any claim arising out of or relating to your use of the Platform shall not exceed the **amount deposited by you in the 30 days preceding the claim**. Oro is not liable for any indirect, incidental, consequential, or punitive damages.
-
----
-
-## 13. Account Suspension and Termination
-
-### 13.1 Suspension by Oro
-
-Oro reserves the right to suspend or permanently terminate any account at its sole discretion, including but not limited to cases of:
-
-- Violation of these Terms
-- Suspected fraud or identity misrepresentation
-- Suspected money laundering or illegal activity
-- Abuse of bonuses, referrals, or promotions
-- Chargebacks or disputed DK Bank transactions
-
-### 13.2 Effect of Termination
-
-Upon termination, any **real money balance** (non-bonus funds) remaining in your wallet will be returned to your linked DK Bank account within a reasonable period, subject to verification. Bonus credits are forfeited upon termination.
-
-### 13.3 Termination by User
-
-You may request account closure at any time by contacting us via the official Telegram channel. Pending prediction will be settled before closure is processed.
-
----
-
-## 14. Modifications to the Platform
-
-Oro reserves the right to modify, suspend, or discontinue any feature of the Platform at any time without notice. This includes market types, fee structures, bonus programmes, and payment limits. We will endeavour to communicate significant changes through the official Telegram channel in advance where possible.
-
----
-
-## 15. Governing Law and Jurisdiction
-
-These Terms are governed by and construed in accordance with the laws of the **Kingdom of Bhutan**. Any dispute arising out of or in connection with these Terms shall be subject to the exclusive jurisdiction of the competent courts of Bhutan.
-
----
-
-## 16. Severability
-
-If any provision of these Terms is found to be unenforceable or invalid under applicable law, that provision will be limited or eliminated to the minimum extent necessary, and the remaining provisions will continue in full force and effect.
-
----
-
-## 17. Entire Agreement
-
-These Terms, together with any additional policies or rules posted on the Platform, constitute the entire agreement between you and Oro with respect to your use of the Platform, and supersede all prior agreements and understandings.
-
----
-
-## 18. Contact
-
-For questions, disputes, or support requests, please contact us through:
-
-- **Telegram Channel:** https://t.me/OroPredictionMarket
-- **Telegram Bot:** @OroPredictBot
-
----
-
-_By using Oro, you confirm that you have read, understood, and agreed to these Terms and Conditions in their entirety._
-
----
-
-**© 2026 Oro Prediction Market. All rights reserved.**
+ORO
+TERMS OF USE
+Collective Intelligence & Prediction Market Platform
+Operated by 21 Tech Gelephu Pte. Limited
+Jurisdiction: Gelephu Mindfulness City Authority (GMCA)
+Version 2.0 
+
+Table of Contents
+1. Introduction    
+2. Acceptance of Terms    
+3. Definitions    
+4. Eligibility    
+5. Account Registration & KYC    
+6. Platform Services    
+7. Prediction Markets — How They Work    
+8. Market Integrity & Prohibited Conduct    
+9. Market Resolution & Settlement    
+10. Fees & Wallets    
+11. Responsible Participation    
+12. Risk Disclosure    
+13. AI & Collective Intelligence    
+14. Intellectual Property    
+15. Privacy    
+16. Suspension & Termination    
+17. Disclaimers    
+18. Limitation of Liability & Indemnification    
+19. Governing Law & Dispute Resolution    
+20. Amendments    
+21. General Provisions   
+ 22. Contact
+
+1. Introduction
+ORO lets people trade on what they think will happen in the world. These Terms are the rulebook for using it.
+
+1.1  ORO is a collective intelligence and consensus forecasting platform operated by 21 Tech Gelephu Pte. Limited (“ORO,” “we,” “us,” or “the Company”), a company incorporated in Gelephu Mindfulness City Authority (GMCA) and operating under the regulatory framework of the GMCA.
+1.2  ORO enables users to express probabilistic views on future events through structured prediction markets, and aggregates those views into consensus forecasts intended to surface distributed human knowledge.
+1.3  These Terms of Use (the “Terms”), together with the Privacy Policy, Community Standards, Prediction Market Rules, Responsible Participation Policy, and any other policy referenced herein (collectively, the “Policies”), form a single binding agreement (the “Agreement”) between ORO and each person who accesses or uses ORO (a “User” or “you”).
+2. Acceptance of Terms
+Creating an account or using ORO means you have read, understood, and agreed to everything in this Agreement — not just this document.
+
+2.1  By creating an Account, clicking “I Agree,” or otherwise accessing or using ORO, you confirm that you have read, understood, and agree to be bound by the Agreement in its entirety.
+2.2  If you do not agree to the Agreement, you must not create an Account or otherwise use ORO.
+2.3  If you are using ORO on behalf of an organization, you represent that you have authority to bind that organization, and “you” refers to both you individually and the organization.
+3. Definitions
+A glossary so the rest of the document doesn't have to keep re-explaining itself.
+
+Account
+The registered ORO profile through which a User accesses the Platform.
+Market
+A structured question on ORO with defined possible Outcomes on which Users may take positions.
+Outcome
+A possible resolution value of a Market, as defined in the Market's published rules.
+Wallet
+The in-Platform ledger reflects a User's balance of BTN and/or supported Digital Assets.
+BTN
+The initial native unit of value supported for transactions on ORO, as further described in the Digital Asset Policy.
+Digital Assets
+BTN, stablecoins, or other blockchain-based assets ORO supports for deposits, withdrawals, or in-Platform use from time to time.
+Platform
+The ORO website, mobile applications, APIs, and related services.
+GMCA
+The Gelephu Mindfulness City Authority, the regulatory authority under which ORO operates.
+Collective Intelligence
+The aggregation of individual User predictions into consensus forecasts.
+Prediction Market
+A Market structured so that prices or aggregated positions reflect the collective probability Users assign to an Outcome.
+
+
+
+4. Eligibility
+You need to be an adult, legally allowed to use ORO where you live, and not on a sanctions list.
+
+4.1  You must be at least 18 years old, or the age of legal majority in your jurisdiction if higher, to create an Account.
+4.2  You must have the legal capacity to enter into a binding agreement, and your use of ORO must be lawful under the laws applicable to you, including any laws governing prediction markets, gambling, or derivatives trading in your jurisdiction.
+4.3  You must not be a resident of, or accessing ORO from, any jurisdiction where prediction markets of the type ORO offers are prohibited, nor be subject to sanctions administered by the United Nations, GMCA, or any other authority applicable to ORO.
+4.4  ORO may restrict, suspend, or deny access to any person or jurisdiction at its discretion, including to comply with legal or regulatory requirements, and may request evidence of eligibility at any time.
+5. Account Registration & Identity Verification (KYC)
+You give us accurate information, we may need to verify who you are, and you're responsible for keeping your account secure.
+
+5.1  You agree to provide accurate, current, and complete information during registration and to keep it up to date.
+5.2  ORO may require identity verification (“KYC”), source-of-funds information, and ongoing due diligence, consistent with our AML/CFT & KYC Policy, before permitting deposits, withdrawals, or participation in certain Markets.
+5.3  You are solely responsible for maintaining the confidentiality of your login credentials and for all activity that occurs under your Account. Notify ORO immediately of any unauthorized use.
+5.4  One natural person or legal entity may hold only one Account, except where ORO expressly authorizes otherwise (see Section 8 on Prohibited Conduct).
+6. Platform Services
+We provide prediction markets and forecasting tools, and we can change or discontinue features.
+
+6.1  ORO provides access to prediction markets, consensus forecasting tools, research insights, and related features (the “Services”).
+6.2  ORO may add, modify, suspend, or discontinue any Service, in whole or in part, at any time, with notice where reasonably practicable.
+6.3  Availability of specific Markets, assets, or features may vary by jurisdiction based on applicable law.
+
+7. Prediction Markets — How They Work
+Each market has its own rulebook. Read it before you trade — it controls how the market resolves.
+
+7.1  Each Market specifies its question, possible Outcomes, resolution source(s), and resolution timeline at the time the Market is created, in accordance with the Prediction Market Rules (Volume II).
+7.2  By taking a position in a Market, you accept that Market's specific rules as binding, in addition to this Agreement.
+7.3  Prices or odds within a Market reflect the aggregated positions of participating Users and are not guarantees, forecasts, or advice from ORO.
+7.4  ORO may set position limits, margin requirements, or other risk controls on any Market at its discretion.
+8. Market Integrity & Prohibited Conduct
+Don't cheat, collude, use bots to manipulate markets, run multiple accounts, or break the law on ORO.
+
+8.1  Users must not engage in, attempt, or facilitate: (a) market manipulation, including wash trading or coordinated positioning intended to distort a Market's price; (b) collusion between accounts; (c) use of material non-public information to gain an unfair advantage (“insider abuse”); (d) operation of undisclosed multiple accounts; (e) unauthorized automated trading, scraping, or bot activity; (f) fraud, identity misrepresentation, or circumvention of KYC controls; or (g) any activity unlawful in the applicable jurisdiction.
+8.2  ORO may investigate suspected violations, freeze affected positions or Wallet balances pending investigation, void or reprice affected Market positions, and suspend or terminate Accounts, in accordance with the Community Standards (Volume V).
+8.3  ORO's determination of a violation, made reasonably and in accordance with its published policies, is final for purposes of internal Platform enforcement, without prejudice to a User's rights under Section 19 (Dispute Resolution).
+9. Market Resolution & Settlement
+Markets resolve based on published rules and data sources. There's an appeals process if something looks wrong.
+
+9.1  Markets resolve according to the resolution source(s) and methodology disclosed at Market creation, as further detailed in the Prediction Market Rules.
+9.2  Where a Market's resolution source is ambiguous, unavailable, or disputed, ORO will apply the Invalid Market and Appeals procedures set out in Volume II.
+9.3  Settlement of Wallet balances following resolution will occur within the timeframe published for the relevant Market, subject to applicable KYC and withdrawal controls.
+
+10. Fees & Wallets
+We may charge fees, published on the platform, and we currently support BTN with other assets to follow.
+
+10.1  ORO may charge fees for Market creation, trading, withdrawals, or other Services. Current fees are published on the Platform and may change with reasonable prior notice.
+10.2  ORO initially supports BTN as its native transactional unit. Support for additional Digital Assets or stablecoins will be governed by the Digital Asset Policy (Volume VIII) and does not require amendment of these Terms to take effect.
+10.3  Users are responsible for any taxes arising from their use of ORO.
+11. Responsible Participation
+Prediction markets can be risky and habit-forming for some people. We offer tools to help you stay in control — use them.
+
+11.1  ORO provides voluntary tools including spending limits, cooling-off periods, and self-exclusion, as described in the Responsible Participation Policy (Volume IV).
+11.2  Users are encouraged to participate only with funds they can afford to risk and to treat Market participation as inherently uncertain.
+11.3  Users who believe they may be experiencing harm from their participation are encouraged to use self-exclusion tools and seek independent support; ORO's provision of these tools does not constitute medical or professional advice.
+12. Risk Disclosure
+You can lose the full amount you put into a market. ORO isn't giving you financial advice and doesn't guarantee any outcome.
+
+12.1  Participation in prediction markets involves risk of total loss of funds committed to a position. Past accuracy of consensus forecasts on ORO does not guarantee future accuracy.
+12.2  ORO does not provide investment, financial, legal, or tax advice. Nothing on the Platform, including aggregated forecasts or AI-generated insights, should be treated as a recommendation to take any action.
+12.3  Digital Assets are volatile and subject to risks including price fluctuation, regulatory change, and technical failure. ORO is not responsible for losses arising from these risks.
+
+13. AI & Collective Intelligence
+We use AI to help markets run fairly and to generate insights, but a human is always meant to be in the loop for anything that matters.
+
+13.1  ORO may use artificial intelligence and machine learning tools to support market integrity monitoring, research, analytics, and consensus-forecast generation, as described in the AI & Collective Intelligence Policy (Volume VI).
+13.2  AI-generated outputs are provided for informational purposes only and do not replace independent human judgment. ORO does not warrant the accuracy of AI-generated content.
+13.3  ORO applies bias-mitigation and human-oversight measures to AI systems materially affecting Users, consistent with Volume VI.
+14. Intellectual Property
+The platform, its branding, and its underlying tech belong to ORO. You get a license to use it, not ownership of it.
+
+14.1  All software, algorithms, interfaces, trademarks, and content comprising the Platform are owned by ORO or its licensors and protected by applicable intellectual property laws.
+14.2  ORO grants Users a limited, non-exclusive, non-transferable, revocable license to access and use the Platform for its intended purpose, subject to this Agreement.
+14.3  Users retain ownership of content they submit to the Platform (e.g., Market proposals, comments) but grant ORO a worldwide, royalty-free license to use, display, and process that content in connection with operating the Platform.
+15. Privacy
+What we collect and why is spelled out in the Privacy Policy — this section just points you there.
+
+15.1  ORO processes personal information in accordance with the Privacy Policy (Volume III), which forms part of this Agreement.
+15.2  Aggregated and anonymized platform data may be used for research, academic collaboration, and AI model improvement, in accordance with the Research & Data Governance Policy (Volume IX) and applicable data protection law.
+
+16. Suspension & Termination
+We can suspend or close accounts for breaking the rules or for legal reasons; you can close your account too, subject to settling open positions.
+
+16.1  ORO may suspend or terminate an Account, with or without notice, where a User breaches this Agreement, engages in Prohibited Conduct, or where required by law or GMCA directive.
+16.2  Users may close their Account at any time, subject to settlement of open Market positions and any outstanding obligations.
+16.3  Sections of this Agreement that by their nature should survive termination — including Intellectual Property, Disclaimers, Limitation of Liability, and Governing Law — will survive.
+17. Disclaimers
+ORO is provided “as is.” We don't guarantee it will be error-free, uninterrupted, or that any market outcome will go a particular way.
+
+17.1  THE PLATFORM AND SERVICES ARE PROVIDED “AS IS” AND “AS AVAILABLE,” WITHOUT WARRANTIES OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT, EXCEPT AS REQUIRED BY LAW.
+17.2  ORO does not guarantee that the Platform will be uninterrupted, secure, or error-free, or that any Market will resolve in a particular manner.
+17.3  ORO does not guarantee the accuracy, completeness, or timeliness of third-party data sources used for Market resolution.
+18. Limitation of Liability & Indemnification
+Our liability to you is capped, and we're not on the hook for indirect losses. You agree to cover us if your misuse of ORO gets us sued.
+
+18.1  TO THE MAXIMUM EXTENT PERMITTED BY LAW, ORO WILL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR FOR LOST PROFITS, DATA, OR GOODWILL, ARISING FROM YOUR USE OF THE PLATFORM.
+18.2  ORO's aggregate liability arising from this Agreement will not exceed the greater of (a) the fees you paid to ORO in the twelve (12) months preceding the claim, or (b) [US$100 / GMCA-equivalent amount], except where such limitation is unenforceable under mandatory law.
+18.3  You agree to indemnify and hold ORO harmless from claims, losses, or expenses (including reasonable legal fees) arising from your breach of this Agreement, your violation of law, or your Market participation.
+
+19. Governing Law & Dispute Resolution
+Disputes are handled under GMCA rules, with an escalation path before anyone goes to formal proceedings.
+
+19.1  This Agreement is governed by the laws and regulations applicable within the Gelephu Mindfulness City Authority, without regard to conflict-of-law principles, subject to any mandatory consumer-protection laws of your jurisdiction that cannot be contractually waived.
+19.2  Before initiating formal proceedings, the parties agree to attempt a good-faith resolution through ORO's internal support and appeals process for a period of [30] days.
+19.3  Unresolved disputes will be submitted to [ARBITRATION BODY / GMCA DISPUTE MECHANISM — TO BE CONFIRMED WITH GMCA COUNSEL], seated in [Gelephu, Bhutan], conducted in English.
+19.4  Nothing in this section limits either party's right to seek injunctive relief in a court of competent jurisdiction for misuse of intellectual property or unauthorized access to the Platform.
+20. Amendments
+We can update these Terms; if you keep using ORO after an update, that counts as accepting it.
+
+20.1  ORO may amend this Agreement from time to time. Material changes will be notified via the Platform or email at least [14] days before taking effect, except where a shorter period is required by law or regulatory directive.
+20.2  Continued use of the Platform after an amendment takes effect constitutes acceptance of the revised Agreement. If you do not agree, you must stop using the Platform and may close your Account.
+21. General Provisions
+Standard boilerplate: if one clause is unenforceable the rest still stands, you can't transfer your account, and this document is the whole agreement between us.
+
+21.1  Severability. If any provision of this Agreement is found unenforceable, the remaining provisions remain in full force.
+21.2  Assignment. Users may not assign or transfer their Account or rights under this Agreement without ORO's prior written consent. ORO may assign this Agreement in connection with a merger, acquisition, or sale of assets.
+21.3  Entire Agreement. This Agreement, together with the Policies it incorporates, constitutes the entire agreement between the parties regarding use of the Platform.
+21.4  No Waiver. ORO's failure to enforce any provision is not a waiver of its right to do so later.
+21.5  Force Majeure. ORO is not liable for delays or failures caused by events beyond its reasonable control.
+22. Contact
+How to reach us for legal notices or general support.
+
+22.1  Legal notices: oro@21.tech.bt
+22.2  Registered address: 21 Tech Gelephu Pte. Limited
+22.3  General support: oro@21.tech.bt
