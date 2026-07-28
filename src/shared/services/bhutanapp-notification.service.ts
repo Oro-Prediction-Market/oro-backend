@@ -62,8 +62,25 @@ export class BhutanAppNotificationService {
         return false;
       }
 
+      // A 2xx only means the request was ACCEPTED — the body reports how many
+      // users the push actually reached. The API can return 201 with
+      // { successful: 0 } (e.g. the user has no registered push device), so a
+      // "delivered to nobody" response must be treated as a failure and let the
+      // caller fall back to another channel (Telegram).
+      const result = (await response.json().catch(() => null)) as
+        | { totalUsers?: number; successful?: number; failed?: number }
+        | null;
+      const delivered = Number(result?.successful ?? 0);
+      if (delivered < 1) {
+        this.logger.warn(
+          `BhutanApp notification accepted but delivered to nobody for user ${externalUserId} ` +
+            `(successful=${result?.successful ?? "?"}, failed=${result?.failed ?? "?"})`,
+        );
+        return false;
+      }
+
       this.logger.log(
-        `BhutanApp notification sent to user ${externalUserId}: "${title}"`,
+        `BhutanApp notification sent to user ${externalUserId}: "${title}" (successful=${delivered})`,
       );
       return true;
     } catch (err: any) {
