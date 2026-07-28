@@ -77,6 +77,7 @@ jobs:
             --from-literal=DK_USERNAME='${{ secrets.DK_USERNAME }}' \
             --from-literal=BHUTANAPP_JWT_PUBLIC_KEY='${{ secrets.BHUTANAPP_JWT_PUBLIC_KEY }}' \
             --from-literal=BHUTANAPP_NOTIFICATION_AUTH_TOKEN='${{ secrets.BHUTANAPP_NOTIFICATION_AUTH_TOKEN }}' \
+            --from-literal=BHUTANAPP_NOTIFICATION_SERVICE_URL='${{ secrets.BHUTANAPP_NOTIFICATION_SERVICE_URL }}' \
             --from-literal=EMAIL_SMTP_PASSWORD='${{ secrets.EMAIL_SMTP_PASSWORD }}' \
             --from-literal=SMS_PASSWORD='${{ secrets.SMS_PASSWORD }}' \
             | kubectl apply -f -
