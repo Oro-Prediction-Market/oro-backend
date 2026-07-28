@@ -14,8 +14,14 @@ function loginOk(token = "tok-1", expiresIn = 3600) {
   };
 }
 
-function sendOk() {
-  return { ok: true, status: 200, text: async () => "" };
+/** Accepted AND delivered to at least one device. */
+function sendOk(successful = 1) {
+  return {
+    ok: true,
+    status: 200,
+    text: async () => "",
+    json: async () => ({ totalUsers: 1, successful, failed: 1 - successful }),
+  };
 }
 
 function unauthorized() {
