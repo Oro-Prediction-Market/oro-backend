@@ -13,6 +13,12 @@ import {
   EplStatKey,
   buildEplStatMarketDto,
 } from "../epl/epl-stat-markets";
+import { UclService } from "../ucl/ucl.service";
+import {
+  UCL_STAT_MARKET_META,
+  UclStatKey,
+  buildUclStatMarketDto,
+} from "../ucl/ucl-stat-markets";
 import { CreateMarketDto } from "./dto/create-market.dto";
 
 export interface KeeperLogEntry {
@@ -57,6 +63,7 @@ export class KeeperService {
     private readonly redis: RedisService,
     @InjectRepository(Market) private readonly marketRepo: Repository<Market>,
     private readonly epl: EplService,
+    private readonly ucl: UclService,
   ) {}
 
   /**
@@ -495,6 +502,293 @@ export class KeeperService {
     }
     if (created) {
       this.addLog("info", `EPL fixtures: created ${created} match market(s) for the next ${days} days.`);
+    }
+  }
+
+  // ── Cron: auto-create UCL stat markets once the season is underway ──────────
+  // Mirrors the EPL flow. Only goals & assists have a free-tier CL data source,
+  // so yellow/red boards come back empty and are skipped automatically (admin
+  // can still create those by hand). Fires ONCE per season (Redis flag).
+  @Cron("0 7 * * *")
+  async handleUclSeasonAutoMarkets() {
+    if (!this.isActive) return;
+    await this.withClusterLock("keeper:ucl-automarkets", 280, () =>
+      this.runUclSeasonAutoMarkets(),
+    );
+  }
+
+  private async runUclSeasonAutoMarkets(): Promise<void> {
+    let info: { started: boolean; seasonStart: string | null; maxPlayed: number };
+    try {
+      info = await this.ucl.getSeasonInfo();
+    } catch (e) {
+      this.logger.warn(`[Keeper] UCL season check failed: ${(e as Error).message}`);
+      return;
+    }
+    if (!info.started) return; // off-season — do nothing
+
+    const seasonKey = (info.seasonStart ?? "").slice(0, 4) || "current";
+    const flagKey = `oro:ucl:auto-markets:${seasonKey}`;
+    if (await this.redis.getJson(flagKey)) return; // already handled this season
+
+    // Maturity gate: don't bake a matchday-1 field into a season-long market.
+    const minGw = Number(this.config.get<string>("UCL_AUTO_MARKET_MIN_GW") ?? 2);
+    if (info.maxPlayed < minGw) return;
+
+    const stats = await this.ucl.getStats();
+    const created: string[] = [];
+    for (const stat of Object.keys(UCL_STAT_MARKET_META) as UclStatKey[]) {
+      const meta = UCL_STAT_MARKET_META[stat];
+      // Skip if an active market for this stat already exists.
+      const existing = await this.marketRepo.findOne({
+        where: {
+          subcategory: meta.subcategory,
+          status: In([
+            MarketStatus.UPCOMING,
+            MarketStatus.OPEN,
+            MarketStatus.CLOSED,
+            MarketStatus.RESOLVING,
+          ]),
+        },
+      });
+      if (existing) continue;
+
+      const players = stats[meta.board];
+      if (players.length < 2) continue; // board not populated (e.g. cards → empty)
+      try {
+        const dto = buildUclStatMarketDto(stat, players);
+        const market = await this.marketsService.create(dto);
+        created.push(meta.title);
+        this.addLog("success", `Auto-created UCL market: ${meta.title} (${market.id}).`);
+      } catch (e) {
+        this.logger.error(`[Keeper] auto-create ${meta.subcategory} failed: ${(e as Error).message}`);
+      }
+    }
+
+    // Mark this season handled so we never re-create (respects admin cancels).
+    await this.redis.setJsonEx(flagKey, 400 * 24 * 3600, {
+      done: true,
+      at: new Date().toISOString(),
+      created,
+    });
+
+    if (created.length) {
+      const adminId = Number(this.config.get<string>("ADMIN_TELEGRAM_ID"));
+      if (adminId) {
+        await this.telegram
+          .sendMessage(
+            adminId,
+            `🏆 Champions League is underway — I auto-created ${created.length} stat market(s):\n• ${created.join("\n• ")}\n\nReview close dates in Admin → Markets. Betting is live on the app's Stats tab.`,
+          )
+          .catch(() => undefined);
+      }
+    }
+  }
+
+  // ── Cron: auto-create UCL match markets for upcoming fixtures (daily) ────────
+  // All CL matches (league phase + knockouts) get a 3-way match-winner market,
+  // linked to the football-data fixture id so the generic auto-proposal cron
+  // settles it on the full-time result. Deduped by fixture id.
+  @Cron("0 8 * * *")
+  async handleUclFixtureMarkets() {
+    if (!this.isActive) return;
+    await this.withClusterLock("keeper:ucl-fixtures", 280, () =>
+      this.runUclFixtureMarkets(),
+    );
+  }
+
+  private async runUclFixtureMarkets(): Promise<void> {
+    const days = Number(this.config.get<string>("UCL_FIXTURE_LOOKAHEAD_DAYS") ?? 7);
+    let fixtures: Awaited<ReturnType<UclService["getUpcomingFixtures"]>>;
+    try {
+      fixtures = await this.ucl.getUpcomingFixtures(days);
+    } catch (e) {
+      this.logger.warn(`[Keeper] UCL fixtures fetch failed: ${(e as Error).message}`);
+      return;
+    }
+    if (!fixtures.length) return;
+
+    let created = 0;
+    for (const f of fixtures) {
+      // Dedup: one market per fixture, any status (respects admin cancels too).
+      const existing = await this.marketRepo.findOne({
+        where: { externalMatchId: f.id },
+      });
+      if (existing) continue;
+      try {
+        const dto: CreateMarketDto = {
+          title: `${f.homeTeam} vs ${f.awayTeam}`,
+          description: "Champions League — who wins the match?",
+          category: "sports",
+          subcategory: "ucl-match",
+          externalMatchId: f.id,
+          externalMarketType: "match-winner",
+          externalSource: "football-data.org",
+          settlementSource: "football-data.org",
+          opensAt: new Date().toISOString(),
+          closesAt: f.utcDate, // betting closes at kickoff
+          resolutionCriteria:
+            "Resolved to the full-time result (Home win / Draw / Away win) per the official UEFA match result.",
+          outcomes: [
+            { label: f.homeTeam, imageUrl: f.homeCrest || null },
+            { label: "Draw", imageUrl: null },
+            { label: f.awayTeam, imageUrl: f.awayCrest || null },
+          ],
+        };
+        const market = await this.marketsService.create(dto);
+        created++;
+        this.addLog("success", `Auto-created UCL fixture market: ${dto.title} (${market.id}).`);
+      } catch (e) {
+        this.logger.error(`[Keeper] auto-create UCL fixture ${f.id} failed: ${(e as Error).message}`);
+      }
+    }
+    if (created) {
+      this.addLog("info", `UCL fixtures: created ${created} match market(s) for the next ${days} days.`);
+    }
+  }
+
+  // ── Cron: auto-create UCL knockout "who advances" markets (daily) ───────────
+  // One 2-outcome market per upcoming knockout tie (R16 → Final), betting closes
+  // at the tie's first leg. Deduped by title. NOT linked via externalMatchId so
+  // the match-result auto-proposal ignores it — advancement is settled by the
+  // dedicated resolution cron below.
+  @Cron("0 9 * * *")
+  async handleUclBracketMarkets() {
+    if (!this.isActive) return;
+    await this.withClusterLock("keeper:ucl-bracket", 280, () =>
+      this.runUclBracketMarkets(),
+    );
+  }
+
+  private async runUclBracketMarkets(): Promise<void> {
+    const days = Number(this.config.get<string>("UCL_BRACKET_LOOKAHEAD_DAYS") ?? 12);
+    let ties: Awaited<ReturnType<UclService["getUpcomingKnockoutTies"]>>;
+    try {
+      ties = await this.ucl.getUpcomingKnockoutTies(days);
+    } catch (e) {
+      this.logger.warn(`[Keeper] UCL bracket ties fetch failed: ${(e as Error).message}`);
+      return;
+    }
+    if (!ties.length) return;
+
+    let created = 0;
+    for (const t of ties) {
+      const title = `${t.a.name} vs ${t.b.name} — Who advances?`;
+      const existing = await this.marketRepo.findOne({
+        where: { subcategory: "ucl-bracket", title },
+      });
+      if (existing) continue;
+      try {
+        const dto: CreateMarketDto = {
+          title,
+          description: "Champions League knockout — which club advances to the next round?",
+          category: "sports",
+          subcategory: "ucl-bracket",
+          externalSource: "ucl-bracket",
+          settlementSource: "ucl-bracket",
+          bracketSlot: t.stage,
+          opensAt: new Date().toISOString(),
+          closesAt: t.firstKickoff, // betting closes at the tie's first leg
+          resolutionCriteria:
+            "Resolved to the club that advances to the next round per official UEFA results.",
+          outcomes: [
+            { label: t.a.name, imageUrl: t.a.crest || null },
+            { label: t.b.name, imageUrl: t.b.crest || null },
+          ],
+        };
+        const market = await this.marketsService.create(dto);
+        created++;
+        this.addLog("success", `Auto-created UCL bracket market: ${title} (${market.id}).`);
+      } catch (e) {
+        this.logger.error(`[Keeper] auto-create UCL bracket tie failed: ${(e as Error).message}`);
+      }
+    }
+    if (created) this.addLog("info", `UCL bracket: created ${created} advance market(s).`);
+  }
+
+  // ── Cron: settle UCL "who advances" markets by advancement (every 30 min) ───
+  // Reads the live bracket and, once a tie's winner is known (the advancing team
+  // appears in the next round, or the final's score decides it), proposes that
+  // outcome and opens the standard dispute window.
+  @Cron("*/30 * * * *")
+  async handleUclBracketResolution() {
+    if (!this.isActive) return;
+    await this.withClusterLock("keeper:ucl-bracket-resolve", 280, () =>
+      this.runUclBracketResolution(),
+    );
+  }
+
+  private async runUclBracketResolution(): Promise<void> {
+    const pending = await this.marketRepo.find({
+      where: { status: MarketStatus.CLOSED, subcategory: "ucl-bracket" },
+      relations: ["outcomes"],
+    });
+    const todo = pending.filter((m) => !m.proposedOutcomeId);
+    if (!todo.length) return;
+
+    let bracket: Awaited<ReturnType<UclService["getBracket"]>>;
+    try {
+      bracket = await this.ucl.getBracket();
+    } catch (e) {
+      this.logger.warn(`[Keeper] UCL bracket fetch failed: ${(e as Error).message}`);
+      return;
+    }
+    if (!bracket?.hasData) return;
+
+    const norm = (s: string) =>
+      (s ?? "")
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[^a-z ]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    const like = (x: string, y: string) =>
+      x === y || (x.length > 2 && (x.includes(y) || y.includes(x)));
+
+    // Decided ties: the set of name/short tokens for the two clubs → winner name.
+    const decided: { names: string[]; winner: string }[] = [];
+    for (const round of bracket.rounds) {
+      for (const mt of round.matches) {
+        if (mt.a && mt.b && mt.winner) {
+          const winnerTeam = mt.winner === "a" ? mt.a : mt.b;
+          decided.push({
+            names: [norm(mt.a.name), norm(mt.a.short), norm(mt.b.name), norm(mt.b.short)],
+            winner: winnerTeam.name,
+          });
+        }
+      }
+    }
+
+    for (const market of todo) {
+      const outs = market.outcomes ?? [];
+      if (outs.length < 2) continue;
+      const labels = outs.map((o) => norm(o.label));
+      const tie = decided.find((t) =>
+        labels.every((l) => t.names.some((n) => like(n, l))),
+      );
+      if (!tie) continue;
+      const winNorm = norm(tie.winner);
+      const winningOutcome = outs.find((o) => like(norm(o.label), winNorm));
+      if (!winningOutcome) continue;
+      try {
+        await this.marketsService.proposeResolution(market.id, winningOutcome.id);
+        this.disputeWindowsOpened++;
+        this.addLog(
+          "success",
+          `UCL bracket: proposed "${winningOutcome.label}" advances for "${market.title}"`,
+        );
+        await this.notifyAdmin(
+          `🤖 <b>Keeper: UCL Bracket</b>\n\n` +
+            `📊 <b>${market.title}</b>\n` +
+            `🏆 Advances: <b>${winningOutcome.label}</b>\n` +
+            `⏳ 24h dispute window now open.`,
+        );
+      } catch (e) {
+        this.addLog(
+          "error",
+          `UCL bracket resolve failed for "${market.title}": ${(e as Error).message}`,
+        );
+      }
     }
   }
 

@@ -77,6 +77,7 @@ function makeService(overrides: {
   redis?: any;
   marketRepo?: any;
   epl?: any;
+  ucl?: any;
 } = {}) {
   const marketsService = overrides.marketsService ?? makeMarketsService();
   const telegram = overrides.telegram ?? makeTelegram();
@@ -101,6 +102,23 @@ function makeService(overrides: {
       }),
       getUpcomingFixtures: jest.fn().mockResolvedValue([]),
     };
+  // UCL service mock — off-season/no fixtures by default so its crons are no-ops
+  // in tests that don't exercise UCL.
+  const ucl =
+    overrides.ucl ?? {
+      getSeasonInfo: jest
+        .fn()
+        .mockResolvedValue({ started: false, seasonStart: null, maxPlayed: 0 }),
+      getStats: jest.fn().mockResolvedValue({
+        goals: [],
+        assists: [],
+        yellow: [],
+        red: [],
+      }),
+      getUpcomingFixtures: jest.fn().mockResolvedValue([]),
+      getUpcomingKnockoutTies: jest.fn().mockResolvedValue([]),
+      getBracket: jest.fn().mockResolvedValue({ hasData: false, decided: false, rounds: [] }),
+    };
 
   const svc = new KeeperService(
     marketsService,
@@ -109,8 +127,9 @@ function makeService(overrides: {
     redis as any,
     marketRepo as any,
     epl as any,
+    ucl as any,
   );
-  return { svc, marketsService, telegram, config, redis, marketRepo, epl };
+  return { svc, marketsService, telegram, config, redis, marketRepo, epl, ucl };
 }
 
 // ── setActive / getStatus ─────────────────────────────────────────────────────
