@@ -29,7 +29,14 @@ function makeService(apiKey?: string) {
 }
 
 beforeEach(() => {
-  global.fetch = jest.fn();
+  // getFixtures fetches once per competition (8 total). Default every call to an
+  // empty match list; tests that assert on transformed markets use
+  // mockResolvedValueOnce so only ONE competition contributes matches.
+  global.fetch = jest.fn().mockResolvedValue({
+    ok: true,
+    status: 200,
+    json: async () => ({ matches: [] }),
+  });
 });
 
 afterEach(() => {
@@ -66,7 +73,7 @@ describe("FixturesService.getFixtures", () => {
 
   it("transforms a single match into two markets (match-winner + over-under)", async () => {
     const match = makeApiMatch({ id: 200 });
-    (global.fetch as jest.Mock).mockResolvedValue({
+    (global.fetch as jest.Mock).mockResolvedValueOnce({
       ok: true,
       json: async () => ({ matches: [match] }),
     });
@@ -116,7 +123,7 @@ describe("FixturesService.getFixtures", () => {
   it("markets are sorted by closesAt (date) ascending", async () => {
     const earlierMatch = makeApiMatch({ id: 300, utcDate: "2024-06-01T10:00:00Z" });
     const laterMatch = makeApiMatch({ id: 301, utcDate: "2024-06-02T15:00:00Z" });
-    (global.fetch as jest.Mock).mockResolvedValue({
+    (global.fetch as jest.Mock).mockResolvedValueOnce({
       ok: true,
       json: async () => ({ matches: [laterMatch, earlierMatch] }), // reversed order
     });
@@ -154,7 +161,7 @@ describe("FixturesService.getFixtures", () => {
   it("filters out non-matching markets when query provided", async () => {
     const matchA = makeApiMatch({ id: 500, homeTeam: { name: "Brazil" }, awayTeam: { name: "Argentina" } });
     const matchB = makeApiMatch({ id: 501, homeTeam: { name: "Germany" }, awayTeam: { name: "France" } });
-    (global.fetch as jest.Mock).mockResolvedValue({
+    (global.fetch as jest.Mock).mockResolvedValueOnce({
       ok: true,
       json: async () => ({ matches: [matchA, matchB] }),
     });
@@ -168,7 +175,7 @@ describe("FixturesService.getFixtures", () => {
 
   it("returns all markets when no query (undefined)", async () => {
     const matches = [makeApiMatch({ id: 600 }), makeApiMatch({ id: 601 })];
-    (global.fetch as jest.Mock).mockResolvedValue({
+    (global.fetch as jest.Mock).mockResolvedValueOnce({
       ok: true,
       json: async () => ({ matches }),
     });

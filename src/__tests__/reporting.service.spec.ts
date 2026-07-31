@@ -20,6 +20,7 @@ function makeQb(rows: any[] = [], total = 0) {
     groupBy: jest.fn().mockReturnThis(),
     getManyAndCount: jest.fn().mockResolvedValue([rows, total || rows.length]),
     getRawMany: jest.fn().mockResolvedValue([]),
+    getRawOne: jest.fn().mockResolvedValue({ totalBond: "0" }),
     getCount: jest.fn().mockResolvedValue(rows.length),
   };
   return qb;
@@ -306,20 +307,23 @@ describe("ReportingService.findDisputeById", () => {
 // ── getDisputeStats ───────────────────────────────────────────────────────────
 
 describe("ReportingService.getDisputeStats", () => {
-  it("returns totalDisputes and byBondRefunded breakdown", async () => {
-    const byBondRefunded = [
-      { bondRefunded: false, count: "3" },
-      { bondRefunded: true, count: "1" },
-    ];
+  it("returns dispute counts (total/pending/resolved) and total bond", async () => {
     const disputeRepo = makeRepo();
-    disputeRepo.count.mockResolvedValue(4);
-    disputeRepo._qb.getRawMany.mockResolvedValue(byBondRefunded);
+    // count() → total (4); count({ bondStatus: LOCKED }) → pending (2)
+    disputeRepo.count = jest
+      .fn()
+      .mockResolvedValueOnce(4)
+      .mockResolvedValueOnce(2);
+    disputeRepo._qb.getCount.mockResolvedValue(2); // resolved (rewarded/forfeited)
+    disputeRepo._qb.getRawOne.mockResolvedValue({ totalBond: "350" });
     const svc = makeService({ disputeRepo });
 
     const result = await svc.getDisputeStats();
 
-    expect(result.totalDisputes).toBe(4);
-    expect(result.byBondRefunded).toEqual(byBondRefunded);
+    expect(result.total).toBe(4);
+    expect(result.pending).toBe(2);
+    expect(result.resolved).toBe(2);
+    expect(result.totalBond).toBe(350);
   });
 });
 
@@ -402,7 +406,7 @@ describe("ReportingService.getAllMarketsDisputeSummary", () => {
 // ── getPendingDisputes ────────────────────────────────────────────────────────
 
 describe("ReportingService.getPendingDisputes", () => {
-  it("returns pending disputes (bondRefunded=false) paginated", async () => {
+  it("returns pending disputes (bondStatus=locked) paginated", async () => {
     const disputes = [{ id: "d1", bondAmount: 100 }];
     const disputeRepo = makeRepo(disputes);
     const svc = makeService({ disputeRepo });
@@ -411,8 +415,8 @@ describe("ReportingService.getPendingDisputes", () => {
 
     expect(result.data).toHaveLength(1);
     expect(disputeRepo._qb.where).toHaveBeenCalledWith(
-      "d.bondRefunded = :refunded",
-      { refunded: false },
+      "d.bondStatus = :status",
+      { status: "locked" },
     );
   });
 

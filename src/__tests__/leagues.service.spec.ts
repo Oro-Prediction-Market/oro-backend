@@ -37,8 +37,19 @@ function makeMembershipRepo(existing: any = null, countResult = 0) {
 }
 
 function makeUserRepo(user: any = null) {
+  // getGroupLeaderboard queries userRepo.createQueryBuilder("u")...getRawMany()
+  const qb: any = {
+    select: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    orderBy: jest.fn().mockReturnThis(),
+    addOrderBy: jest.fn().mockReturnThis(),
+    limit: jest.fn().mockReturnThis(),
+    getRawMany: jest.fn().mockResolvedValue([]),
+  };
   return {
     findOne: jest.fn().mockResolvedValue(user),
+    createQueryBuilder: jest.fn().mockReturnValue(qb),
+    _qb: qb,
   };
 }
 
@@ -53,18 +64,26 @@ function makeService(overrides: {
   membershipRepo?: any;
   userRepo?: any;
   telegram?: any;
+  redis?: any;
 } = {}) {
   const groupRepo = overrides.groupRepo ?? makeGroupRepo();
   const membershipRepo = overrides.membershipRepo ?? makeMembershipRepo();
   const userRepo = overrides.userRepo ?? makeUserRepo();
   const telegram = overrides.telegram ?? makeTelegram();
+  // postStandingsToGroup takes a per-group Redis lock before posting.
+  const redis =
+    overrides.redis ?? {
+      acquireLock: jest.fn().mockResolvedValue("lock-token"),
+      releaseLock: jest.fn().mockResolvedValue(undefined),
+    };
 
   return {
-    svc: new LeaguesService(groupRepo as any, membershipRepo as any, userRepo as any, telegram as any, {} as any),
+    svc: new LeaguesService(groupRepo as any, membershipRepo as any, userRepo as any, telegram as any, redis as any),
     groupRepo,
     membershipRepo,
     userRepo,
     telegram,
+    redis,
   };
 }
 
@@ -243,9 +262,9 @@ describe("LeaguesService.getGroupLeaderboard", () => {
         u_correctPredictions: "2",
       },
     ];
-    const membershipRepo = makeMembershipRepo();
-    membershipRepo._qb.getRawMany.mockResolvedValue(rawRows);
-    const { svc } = makeService({ membershipRepo });
+    const userRepo = makeUserRepo();
+    userRepo._qb.getRawMany.mockResolvedValue(rawRows);
+    const { svc } = makeService({ userRepo });
 
     const result = await svc.getGroupLeaderboard("chat-1");
 
@@ -282,9 +301,9 @@ describe("LeaguesService.getGroupLeaderboard", () => {
       u_totalPredictions: "0",
       u_correctPredictions: "0",
     }];
-    const membershipRepo = makeMembershipRepo();
-    membershipRepo._qb.getRawMany.mockResolvedValue(rawRows);
-    const { svc } = makeService({ membershipRepo });
+    const userRepo = makeUserRepo();
+    userRepo._qb.getRawMany.mockResolvedValue(rawRows);
+    const { svc } = makeService({ userRepo });
 
     const result = await svc.getGroupLeaderboard("chat-1");
 
@@ -335,8 +354,8 @@ describe("LeaguesService.postStandingsToGroup", () => {
   it("sends standings message with member entries when predictions exist", async () => {
     const group = { chatId: "chat-1", isActive: true, title: "Test Group" };
     const groupRepo = makeGroupRepo(group);
-    const membershipRepo = makeMembershipRepo();
-    membershipRepo._qb.getRawMany.mockResolvedValue([{
+    const userRepo = makeUserRepo();
+    userRepo._qb.getRawMany.mockResolvedValue([{
       u_id: "u1",
       u_firstName: "Alice",
       u_username: "alice",
@@ -346,7 +365,7 @@ describe("LeaguesService.postStandingsToGroup", () => {
       u_correctPredictions: "15",
     }]);
     const telegram = makeTelegram();
-    const { svc } = makeService({ groupRepo, membershipRepo, telegram });
+    const { svc } = makeService({ groupRepo, userRepo, telegram });
 
     await svc.postStandingsToGroup("chat-1");
 
