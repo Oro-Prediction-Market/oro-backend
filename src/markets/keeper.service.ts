@@ -5,6 +5,7 @@ import { In, Repository } from "typeorm";
 import { ConfigService } from "@nestjs/config";
 import { MarketsService } from "./markets.service";
 import { Market, MarketStatus } from "../entities/market.entity";
+import { Dispute } from "../entities/dispute.entity";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import { RedisService } from "../redis/redis.service";
 import { EplService } from "../epl/epl.service";
@@ -62,6 +63,7 @@ export class KeeperService {
     private readonly config: ConfigService,
     private readonly redis: RedisService,
     @InjectRepository(Market) private readonly marketRepo: Repository<Market>,
+    @InjectRepository(Dispute) private readonly disputeRepo: Repository<Dispute>,
     private readonly epl: EplService,
     private readonly ucl: UclService,
   ) {}
@@ -298,6 +300,22 @@ export class KeeperService {
         if (!market.disputeDeadlineAt || !market.proposedOutcomeId) continue;
         if (new Date() < new Date(market.disputeDeadlineAt)) continue; // window still open
         if (["ter", "btc"].includes(market.externalSource ?? "")) continue; // auto-resolving markets manage themselves
+
+        // Never auto-settle a market that has objections — a disputed result
+        // must be reviewed by a human admin. This keeper runs every minute and
+        // would otherwise beat the 5-minute AutoResolveMarketsJob to disputed
+        // markets, upholding the proposal and forfeiting objector bonds with no
+        // human review. Leave it RESOLVING for the admin to resolve manually.
+        const objectionCount = await this.disputeRepo.count({
+          where: { marketId: market.id },
+        });
+        if (objectionCount > 0) {
+          this.addLog(
+            "info",
+            `Skipping auto-settle for "${market.title}" — ${objectionCount} objection(s) awaiting admin review.`,
+          );
+          continue;
+        }
 
         try {
           this.addLog(
