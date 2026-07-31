@@ -1001,6 +1001,8 @@ export class ParimutuelEngine implements OnModuleInit {
       }
 
       const totalPool = Number(market.totalPool);
+      // Configured edge; the amount actually booked can be lower when the payout
+      // floor has to be subsidised (see the funding guard and bookedHouseAmount).
       const houseAmount = totalPool * (Number(market.houseEdgePct) / 100);
       // 95% of any slashed dispute bonds flows to winning bettors; 5% is platform fee
       const disputeBonus = slashedBondPool * 0.95;
@@ -1131,6 +1133,31 @@ export class ParimutuelEngine implements OnModuleInit {
         }
       }
 
+      // ── Payout-floor funding guard ───────────────────────────────────────────
+      // Winners are guaranteed max(parimutuel share, 1.05× stake). That floor can
+      // total more than the parimutuel pool (`payoutPool`), which would create an
+      // unfunded payout if we still booked the full house edge. So:
+      //   1. Fund the overflow by giving up house edge, down to zero.
+      //   2. If even a 0% edge can't cover the floor (winning side > ~95% of the
+      //      pool), scale every winner's payout down pro-rata so the total never
+      //      exceeds the money actually in the pool.
+      // maxBudget is all the money available to winners if the edge is fully
+      // waived: the pool plus any dispute-bond bonus (= payoutPool + houseAmount).
+      const maxBudget = payoutPool + houseAmount;
+      let desiredWinnerTotal = 0;
+      for (const bet of bets) {
+        if (bet.outcomeId !== winner.id) continue;
+        const share = winnerPool > 0 ? Number(bet.amount) / winnerPool : 0;
+        const raw = parseFloat((payoutPool * share).toFixed(2));
+        const floor = parseFloat((Number(bet.amount) * 1.05).toFixed(2));
+        desiredWinnerTotal += Math.max(raw, floor);
+      }
+      const floorOverflow = Math.max(0, desiredWinnerTotal - payoutPool);
+      const houseSubsidy = Math.min(houseAmount, floorOverflow);
+      // Only scale down when the floor can't be funded even with a zero edge.
+      const payoutScale =
+        desiredWinnerTotal > maxBudget ? maxBudget / desiredWinnerTotal : 1;
+
       let totalPaidOut = 0;
       let winningPositions = 0;
 
@@ -1152,8 +1179,10 @@ export class ParimutuelEngine implements OnModuleInit {
           const share = winnerPool > 0 ? Number(bet.amount) / winnerPool : 0;
           const rawPayout = parseFloat((payoutPool * share).toFixed(2));
           const stake = Number(bet.amount);
+          // Guaranteed floor, scaled down only in the extreme case where even a
+          // waived house edge can't fund it (payoutScale < 1).
           const effectivePayout = parseFloat(
-            Math.max(rawPayout, stake * 1.05).toFixed(2),
+            (Math.max(rawPayout, stake * 1.05) * payoutScale).toFixed(2),
           );
 
           const user = userMap.get(bet.userId);
@@ -1343,13 +1372,16 @@ export class ParimutuelEngine implements OnModuleInit {
       market.status = MarketStatus.SETTLED;
       await em.save(Market, market);
 
+      // Book the house edge actually kept after subsidising the payout floor.
+      const bookedHouseAmount = parseFloat((houseAmount - houseSubsidy).toFixed(2));
+
       const settlement = em.create(Settlement, {
         marketId: market.id,
         winningOutcomeId: winner.id,
         totalPositions: bets.length,
         winningPositions,
         totalPool,
-        houseAmount,
+        houseAmount: bookedHouseAmount,
         payoutPool,
         totalPaidOut,
       });
