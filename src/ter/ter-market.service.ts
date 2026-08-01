@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { Cron, Interval } from "@nestjs/schedule";
 import { InjectRepository, InjectDataSource } from "@nestjs/typeorm";
+import { DEFAULT_HOUSE_EDGE_PCT } from "../markets/fee.constants";
 import { Repository, DataSource } from "typeorm";
 import {
   Market,
@@ -310,7 +311,7 @@ export class TerMarketService {
           bettingClosesAt,
           externalSource: "ter",
           externalMarketType: "price-prediction",
-          houseEdgePct: 5,
+          houseEdgePct: DEFAULT_HOUSE_EDGE_PCT,
           liquidityParam: 1000,
           metadata: {
             isTer: true,

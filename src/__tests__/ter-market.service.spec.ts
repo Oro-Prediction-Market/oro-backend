@@ -209,7 +209,7 @@ describe("TerMarketService", () => {
       expect(createdMarket.category).toBe(MarketCategory.ECONOMY);
       expect(createdMarket.status).toBe(MarketStatus.OPEN);
       expect(createdMarket.externalSource).toBe("ter");
-      expect(createdMarket.houseEdgePct).toBe(5);
+      expect(createdMarket.houseEdgePct).toBe(10);
       expect(createdMarket.metadata.isTer).toBe(true);
       // The "price to beat" is fixed at open, not at betting close
       expect(createdMarket.metadata.referenceTerPrice).toBe(7500.0);
@@ -636,12 +636,12 @@ describe("TerMarketService", () => {
   });
 
   describe("TER market configuration", () => {
-    it("uses 5% house edge (not 8% default)", async () => {
+    it("uses the standard 10% house edge", async () => {
       const captured = captureCreatedMarket(dataSource);
 
       await service.spawnMarket();
 
-      expect(captured.market.houseEdgePct).toBe(5);
+      expect(captured.market.houseEdgePct).toBe(10);
     });
 
     it("marks market as Economy category", async () => {

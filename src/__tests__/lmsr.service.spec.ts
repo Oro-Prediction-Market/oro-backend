@@ -137,10 +137,10 @@ describe("LMSRService.probabilityToOdds", () => {
 // ── estimatePayout ────────────────────────────────────────────────────────────
 
 describe("LMSRService.estimatePayout", () => {
-  it("calculates payout with default 5% house edge", () => {
-    // betAmount=100, prob=0.5 → odds=2 → gross=200 → net=200*(1-0.05)=190
+  it("calculates payout with the default 10% house edge", () => {
+    // betAmount=100, prob=0.5 → odds=2 → gross=200 → net=200*(1-0.10)=180
     const result = svc.estimatePayout(100, 0.5);
-    expect(result).toBeCloseTo(190, 2);
+    expect(result).toBeCloseTo(180, 2);
   });
 
   it("calculates payout with custom house edge", () => {

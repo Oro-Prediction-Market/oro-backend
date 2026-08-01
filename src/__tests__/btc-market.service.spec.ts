@@ -200,7 +200,7 @@ describe("BtcMarketService", () => {
       expect(createdMarket.category).toBe(MarketCategory.ECONOMY);
       expect(createdMarket.status).toBe(MarketStatus.OPEN);
       expect(createdMarket.externalSource).toBe("btc");
-      expect(createdMarket.houseEdgePct).toBe(5);
+      expect(createdMarket.houseEdgePct).toBe(10);
       expect(createdMarket.metadata.isBtc).toBe(true);
       // The "price to beat" is fixed at open, not at betting close
       expect(createdMarket.metadata.referencePrice).toBe(67000.0);
@@ -638,12 +638,12 @@ describe("BtcMarketService", () => {
   });
 
   describe("BTC market configuration", () => {
-    it("uses 5% house edge", async () => {
+    it("uses the standard 10% house edge", async () => {
       const captured = captureCreatedMarket(dataSource);
 
       await service.spawnMarket();
 
-      expect(captured.market.houseEdgePct).toBe(5);
+      expect(captured.market.houseEdgePct).toBe(10);
     });
 
     it("marks market as Economy category", async () => {

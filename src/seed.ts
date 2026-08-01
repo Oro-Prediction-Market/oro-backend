@@ -5,6 +5,7 @@
 import { DataSource } from "typeorm";
 import { ConfigModule } from "@nestjs/config";
 import * as dotenv from "dotenv";
+import { DEFAULT_HOUSE_EDGE_PCT } from "./markets/fee.constants";
 import { User } from "./entities/user.entity";
 import { Market, MarketStatus } from "./entities/market.entity";
 import { Outcome } from "./entities/outcome.entity";
@@ -55,7 +56,7 @@ async function seed() {
         description:
           "Predict which archery team will win the gold medal in this championship match. National Team has strong recurve archers while Thimphu Team excels in traditional archery.",
         status: MarketStatus.OPEN,
-        houseEdgePct: 5,
+        houseEdgePct: DEFAULT_HOUSE_EDGE_PCT,
         opensAt: new Date("2026-03-20"),
         closesAt: new Date("2026-03-25"),
       }),
@@ -81,7 +82,7 @@ async function seed() {
         description:
           "Inter-district archery tournament final. Paro team has won 3 championships in the past, while Punakha team has strong accuracy in long-range shots.",
         status: MarketStatus.OPEN,
-        houseEdgePct: 5,
+        houseEdgePct: DEFAULT_HOUSE_EDGE_PCT,
         opensAt: new Date("2026-03-22"),
         closesAt: new Date("2026-03-28"),
       }),
@@ -112,7 +113,7 @@ async function seed() {
         description:
           "Regional championship between Eastern and Western teams. Eastern region known for traditional techniques, Western region for modern recurve style.",
         status: MarketStatus.UPCOMING,
-        houseEdgePct: 5,
+        houseEdgePct: DEFAULT_HOUSE_EDGE_PCT,
         opensAt: new Date("2026-03-30"),
         closesAt: new Date("2026-04-05"),
       }),
@@ -138,7 +139,7 @@ async function seed() {
         description:
           "Championship final between two strongest archery teams. Bumthang known for precision shooting, Trongsa for powerful long-distance shots.",
         status: MarketStatus.OPEN,
-        houseEdgePct: 3,
+        houseEdgePct: DEFAULT_HOUSE_EDGE_PCT,
         opensAt: new Date("2026-03-23"),
         closesAt: new Date("2026-03-27"),
       }),
