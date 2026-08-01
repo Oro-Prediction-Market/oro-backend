@@ -45,7 +45,6 @@ export class BankLinkService {
     userId: string,
     cid: string,
     expectedPhone?: string,
-    skipOtp?: boolean,
   ): Promise<{
     accountName: string;
     maskedPhone: string;
@@ -127,28 +126,7 @@ export class BankLinkService {
     account.linkAttempts = 0;
     await this.lbaRepo.save(account);
 
-    // Eagerly save CID + account name on user so wallet/profile shows linked info even before OTP
-    await this.userRepo.update(userId, {
-      dkCid: cleanCid,
-      dkAccountNumber: accountNumber,
-      dkAccountName: accountName,
-    });
 
-    // If skipOtp (e.g. during onboarding where identity is already verified), auto-verify
-    if (skipOtp) {
-      account.isVerified = true;
-      account.verifiedAt = new Date();
-      account.isDefault = true;
-      await this.lbaRepo.save(account);
-      this.logger.log(
-        `[BankLink] Skipped OTP — auto-verified for user ${userId}, CID=${cleanCid}`,
-      );
-      return {
-        accountName,
-        maskedPhone: this.maskPhone(bankPhone),
-        requiresOtp: false,
-      };
-    }
 
     // Generate and send OTP to the DK-registered phone
     const otp = randomInt(100000, 1000000).toString();

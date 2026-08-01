@@ -113,8 +113,14 @@ import { AmlReport } from "./aml/entities/aml-report.entity";
           AmlAlert,
           AmlReport,
         ],
-        synchronize: true,
-        migrationsRun: false,
+        // Schema changes ship as migrations ONLY. synchronize silently DROPs a
+        // column when an entity property is renamed — irrecoverable financial
+        // history on a money DB. Off by default, impossible to enable in prod.
+        synchronize:
+          config.get("NODE_ENV") !== "production" &&
+          config.get("DB_SYNCHRONIZE", "false") === "true",
+        migrations: [__dirname + "/migrations/*{.ts,.js}"],
+        migrationsRun: config.get("DB_MIGRATIONS_RUN", "false") === "true",
         logging: false,
         extra: {
           // App connects DIRECTLY to the CNPG primary (no pooler in path).

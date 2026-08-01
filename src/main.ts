@@ -10,6 +10,7 @@ import {
   ClassSerializerInterceptor,
 } from "@nestjs/common";
 import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
+import { DataSource } from "typeorm";
 import { BaseExceptionFilter } from "@nestjs/core";
 import { ArgumentsHost, Catch, ExceptionFilter } from "@nestjs/common";
 import helmet from "helmet";
@@ -51,6 +52,29 @@ dotenv.config();
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  // Migration gate: with synchronize off, the schema is only ever what the
+  // migrations built. If any are pending, the running code expects columns the
+  // database does not have — in production that must be a hard stop, not a
+  // stream of 500s on money endpoints.
+  {
+    const log = new Logger("migrations");
+    const dataSource = app.get(DataSource);
+    const pending = await dataSource.showMigrations();
+    if (pending) {
+      if (process.env.NODE_ENV === "production") {
+        log.error(
+          "Pending migrations detected — refusing to start. " +
+            "Run `npm run migration:run` against this database, then redeploy.",
+        );
+        await app.close();
+        process.exit(1);
+      }
+      log.warn(
+        "Pending migrations detected. Run `npm run migration:run` — the schema is behind the entities.",
+      );
+    }
+  }
 
   // socket.io horizontal scaling: Redis pub/sub adapter so WS broadcasts reach
   // clients across ALL backend pods. Falls back to in-memory if Redis is down

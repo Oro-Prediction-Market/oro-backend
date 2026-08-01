@@ -1,24 +1,5 @@
 import { DataSource } from "typeorm";
 import * as dotenv from "dotenv";
-import { User } from "./entities/user.entity";
-import { AuthMethod } from "./entities/auth-method.entity";
-import { Market } from "./entities/market.entity";
-import { Outcome } from "./entities/outcome.entity";
-import { Position } from "./entities/position.entity";
-import { Payment } from "./entities/payment.entity";
-import { Transaction } from "./entities/transaction.entity";
-import { Settlement } from "./entities/settlement.entity";
-import { Dispute } from "./entities/dispute.entity";
-import { DKGatewayAuthToken } from "./entities/dk-gateway-auth-token.entity";
-import { PaymentOtp } from "./entities/payment-otp.entity";
-import { AuditLog } from "./entities/audit-log.entity";
-import { Challenge } from "./entities/challenge.entity";
-import { Season } from "./entities/season.entity";
-import { TelegramGroup } from "./entities/telegram-group.entity";
-import { GroupMembership } from "./entities/group-membership.entity";
-import { UserEvent } from "./entities/user-event.entity";
-import { LinkedBankAccount } from "./entities/linked-bank-account.entity";
-import { RevenueDistribution } from "./entities/revenue-distribution.entity";
 
 dotenv.config();
 
@@ -29,7 +10,9 @@ export const AppDataSource = new DataSource({
   username: process.env.DB_USERNAME || "postgres",
   password: process.env.DB_PASSWORD || "postgres",
   database: process.env.DB_NAME || "oro_db",
-  synchronize: true,
+  // NEVER true here: this DataSource backs the typeorm CLI, so a stray
+  // `synchronize` would rewrite the schema of whatever DB the env points at.
+  synchronize: false,
   migrationsRun: false,
   logging: true,
   extra: {
@@ -37,27 +20,10 @@ export const AppDataSource = new DataSource({
     connectionTimeoutMillis: 10000,
     idleTimeoutMillis: 30000,
   },
-  entities: [
-    User,
-    AuthMethod,
-    Market,
-    Outcome,
-    Position,
-    Payment,
-    Transaction,
-    Settlement,
-    Dispute,
-    DKGatewayAuthToken,
-    PaymentOtp,
-    AuditLog,
-    Challenge,
-    Season,
-    TelegramGroup,
-    GroupMembership,
-    UserEvent,
-    LinkedBankAccount,
-    RevenueDistribution,
-  ],
+  // Glob, not a hand-maintained list: this list had drifted behind app.module
+  // (Reconciliation + the AML entities were missing), and `migration:generate`
+  // emits DROP TABLE for any table whose entity it cannot see.
+  entities: [__dirname + "/**/*.entity{.ts,.js}"],
   migrations: [__dirname + "/migrations/*{.ts,.js}"],
   subscribers: [],
 });

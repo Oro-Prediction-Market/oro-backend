@@ -7,8 +7,54 @@ import { MarketStatus } from "../entities/market.entity";
 
 function makeEm(positions: any[]) {
   const saved: Array<[any, any]> = [];
+  const makeQueryBuilder = () => {
+    let pendingValues: any[] = [];
+    const qb: any = {
+      select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      groupBy: jest.fn().mockReturnThis(),
+      insert: jest.fn().mockReturnThis(),
+      into: jest.fn().mockReturnThis(),
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      values: jest.fn().mockImplementation((values: any[]) => {
+        pendingValues = Array.isArray(values) ? values : [values];
+        return qb;
+      }),
+      execute: jest.fn().mockImplementation(() => {
+        for (const value of pendingValues) saved.push([undefined, value]);
+        pendingValues = [];
+        return Promise.resolve({});
+      }),
+      getRawOne: jest.fn().mockResolvedValue({ balance: "100" }),
+      getRawMany: jest.fn().mockResolvedValue(
+        [...new Set(positions.map((p) => p.userId))].map((userId) => ({
+          userId,
+          balance: "100",
+        })),
+      ),
+    };
+    return qb;
+  };
+
   return {
-    find: jest.fn().mockResolvedValue(positions),
+    find: jest.fn().mockImplementation((Entity: any, opts: any) => {
+      if (Entity?.name === "User") {
+        const ids = opts?.where?.id?._value ?? opts?.where?.id ?? [];
+        const userIds = Array.isArray(ids) ? ids : [ids];
+        return Promise.resolve(
+          userIds.map((id) => ({
+            id,
+            telegramId: "111",
+            bonusBalance: "0",
+            bonusRealPayoutRemaining: "0",
+          })),
+        );
+      }
+      return Promise.resolve(positions);
+    }),
     findOne: jest.fn().mockImplementation((_Entity: any, opts: any) => {
       const id = opts?.where?.id;
       return Promise.resolve(
@@ -23,13 +69,9 @@ function makeEm(positions: any[]) {
     }),
     create: jest.fn().mockImplementation((_E: any, data: any) => ({ ...data })),
     update: jest.fn().mockResolvedValue({}),
+    createQueryBuilder: jest.fn().mockImplementation(makeQueryBuilder),
     getRepository: jest.fn().mockReturnValue({
-      createQueryBuilder: jest.fn().mockReturnValue({
-        select: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        getRawOne: jest.fn().mockResolvedValue({ balance: "100" }),
-      }),
+      createQueryBuilder: jest.fn().mockImplementation(makeQueryBuilder),
     }),
     _saved: saved,
   };
@@ -250,6 +292,41 @@ describe("ParimutuelEngine — thin-pool guard (settleMarket)", () => {
       "thin_pool",
     );
     expect(telegramSimple.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("refunds when the 1.05x floor exceeds the post-rake payout pool", async () => {
+    const positions = [
+      mkPos("p1", "u1", "o-yes", 900),
+      mkPos("p2", "u2", "o-no", 100),
+    ];
+    const em = makeEm(positions);
+    const { engine, telegramSimple } = makeEngine(em);
+    const market = { ...mkMarket(1000), houseEdgePct: "8" };
+    const winner = { ...YES, totalBetAmount: "900" };
+
+    const settlement = await (engine as any).settleMarket(market, winner, 0);
+
+    expect(settlement.cancelReason).toBe("payout_floor_underfunded");
+    expect(settlement.houseAmount).toBe(0);
+    expect(settlement.payoutPool).toBe(0);
+    expect(settlement.totalPaidOut).toBe(0);
+
+    const refundTxs = em._saved.filter(
+      ([, d]: any) => d?.type === TransactionType.REFUND,
+    );
+    expect(refundTxs).toHaveLength(2);
+    expect(refundTxs.map(([, d]: any) => d.amount).sort()).toEqual([100, 900]);
+
+    const payoutTxs = em._saved.filter(
+      ([, d]: any) => d?.type === TransactionType.POSITION_PAYOUT,
+    );
+    expect(payoutTxs).toHaveLength(0);
+    expect(telegramSimple.sendRefundNotification).toHaveBeenCalledWith(
+      111,
+      "Test Market",
+      900,
+      "payout_floor_underfunded",
+    );
   });
 });
 

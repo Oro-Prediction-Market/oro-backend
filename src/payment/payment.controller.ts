@@ -73,13 +73,7 @@ class LinkBankAccountDto {
   @IsOptional()
   phone?: string;
 
-  @Prop({
-    description:
-      "Skip OTP verification (used during onboarding where identity is already verified)",
-    required: false,
-  })
-  @IsOptional()
-  skipOtp?: boolean;
+
 }
 
 class VerifyBankLinkDto {
@@ -421,7 +415,6 @@ export class PaymentController {
       req.user.userId,
       dto.cid,
       dto.phone,
-      dto.skipOtp,
     );
   }
 
