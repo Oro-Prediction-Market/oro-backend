@@ -1819,7 +1819,6 @@ Good luck! 🍀
 
         if (accuracy)
           msg += `⭐ Insight: <b>${accuracy}</b> over ${totalPredictions} ${totalPredictions === 1 ? "prediction" : "predictions"}\n`;
-        msg += `\n💡 Every prediction builds your reputation. Keep going.`;
 
         dmJobs.push({
           name: JobName.SETTLEMENT_NOTIFY,
@@ -1841,14 +1840,6 @@ Good luck! 🍀
             `[Shield] Streak reset skipped for user ${user.id} on market ${market.id}`,
           );
         }
-
-        // Consecutive loss consolation DM (also queued)
-        await this.enqueueLosingStreakConsolation(
-          userId,
-          chatId,
-          user.firstName,
-          dmJobs,
-        ).catch(() => {});
       }
     }
 
@@ -1867,63 +1858,6 @@ Good luck! 🍀
       `[Notify] Queued ${dmJobs.length} settlement DMs for market ${market.id} ` +
         `(${Object.keys(betsByUser).length} predictors, ${bets.length} positions)`,
     );
-  }
-
-  // ── Consecutive-loss consolation ──────────────────────────────────────────
-  private async enqueueLosingStreakConsolation(
-    userId: string,
-    chatId: number,
-    firstName: string | null | undefined,
-    dmJobs: { name: string; data: SettlementNotifyJobData }[],
-  ): Promise<void> {
-    const recentMarkets = await this.dataSource
-      .getRepository(Position)
-      .createQueryBuilder("p")
-      .select("p.marketId", "marketId")
-      .addSelect("MAX(p.placedAt)", "lastPlaced")
-      .addSelect(
-        `CASE WHEN bool_or(p.status = 'won') THEN 'won' ELSE 'lost' END`,
-        "result",
-      )
-      .where("p.userId = :uid", { uid: userId })
-      .andWhere("p.status IN (:...statuses)", {
-        statuses: [PositionStatus.WON, PositionStatus.LOST],
-      })
-      .groupBy("p.marketId")
-      .orderBy('"lastPlaced"', "DESC")
-      .limit(3)
-      .getRawMany<{ marketId: string; lastPlaced: string; result: string }>();
-
-    if (recentMarkets.length < 2) return;
-
-    // Count how many consecutive losses from the most recent market
-    const firstWinIndex = recentMarkets.findIndex((r) => r.result !== "lost");
-    const lossCount =
-      firstWinIndex === -1 ? recentMarkets.length : firstWinIndex;
-
-    if (lossCount < 3) return;
-
-    const name = firstName?.trim() || "Predictor";
-
-    // Find the most active open market as a "hot tip"
-    const topMarket = await this.dataSource
-      .getRepository(Market)
-      .createQueryBuilder("m")
-      .where("m.status = :s", { s: MarketStatus.OPEN })
-      .andWhere("m.totalPool > 0")
-      .orderBy("m.totalPool", "DESC")
-      .limit(1)
-      .getOne();
-
-    const tipMsg = topMarket
-      ? `${name}, 3 losses in a row is just variance. ` +
-        `The crowd is active on <b>${topMarket.title}</b> right now — worth a look.`
-      : `${name}, 3 losses in a row happens to the best. Your next prediction turns it around.`;
-
-    dmJobs.push({
-      name: JobName.SETTLEMENT_NOTIFY,
-      data: { telegramChatId: chatId, message: tipMsg },
-    });
   }
 
   // Cancel market: refund all bets
