@@ -404,6 +404,9 @@ export class AdminController {
     @Query("limit") limit = "20",
     @Query("status") status?: string,
     @Query("externalSource") externalSource?: string,
+    @Query("category") category?: string,
+    @Query("subcategory") subcategory?: string,
+    @Query("search") search?: string,
   ) {
     const take = Math.min(Number(limit) || 20, 500);
     const skip = (Math.max(Number(page), 1) - 1) * take;
@@ -414,8 +417,36 @@ export class AdminController {
       .orderBy("market.createdAt", "DESC")
       .skip(skip)
       .take(take);
+    if (category && category.toLowerCase() !== "all") {
+      qb.andWhere("market.category = :category", { category });
+    }
+    if (subcategory && subcategory.toLowerCase() !== "all") {
+      qb.andWhere("market.subcategory = :subcategory", { subcategory });
+    }
+    const q = search?.trim();
+    if (q) {
+      qb.andWhere("LOWER(market.title) LIKE :q", {
+        q: `%${q.toLowerCase()}%`,
+      });
+    }
     if (status && status.toLowerCase() !== "all") {
-      qb.andWhere("market.status = :status", { status: status.toLowerCase() });
+      const s = status.toLowerCase();
+      // Resolving a market immediately settles it (payout runs in the same step),
+      // so every finished market ends up `settled` regardless of whether it was
+      // disputed. Split the two finished-market tabs by whether an objection was
+      // raised: "Resolved" = had a dispute that was adjudicated, "Settled" = clean
+      // resolution with no objection. Each finished market shows in exactly one tab.
+      const FINISHED = ["resolved", "settled"];
+      const HAD_DISPUTE = `EXISTS (SELECT 1 FROM disputes d WHERE d."marketId" = market.id)`;
+      if (s === "resolved") {
+        qb.andWhere("market.status IN (:...statuses)", { statuses: FINISHED });
+        qb.andWhere(HAD_DISPUTE);
+      } else if (s === "settled") {
+        qb.andWhere("market.status IN (:...statuses)", { statuses: FINISHED });
+        qb.andWhere(`NOT ${HAD_DISPUTE}`);
+      } else {
+        qb.andWhere("market.status = :status", { status: s });
+      }
     }
     if (externalSource === "none") {
       qb.andWhere("market.externalSource IS NULL");

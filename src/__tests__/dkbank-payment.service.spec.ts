@@ -23,6 +23,7 @@ function makeUser(overrides: any = {}) {
 }
 
 function makePayment(overrides: any = {}) {
+  const { metadata: metaOverride, ...rest } = overrides;
   return {
     id: "payment-1",
     userId: "user-1",
@@ -31,17 +32,34 @@ function makePayment(overrides: any = {}) {
     currency: "BTN",
     method: PaymentMethod.DK_BANK,
     type: PaymentType.DEPOSIT,
-    metadata: {},
-    ...overrides,
+    // DK session stored by initiatePayment (account_auth); confirmPayment reads
+    // these to run the debit. Merge so tests can override individual keys.
+    metadata: {
+      bfsTxnId: "BFS-TXN-001",
+      stanNumber: "100001",
+      txDatetime: "2026-01-01 00:00:00",
+      otpExpiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+      customerAccountNumber: "ACC001",
+      customerAccountName: "Test User",
+      ...(metaOverride ?? {}),
+    },
+    ...rest,
   };
 }
 
 function makeWithdrawalPayment(overrides: any = {}) {
+  const { metadata: metaOverride, ...rest } = overrides;
   return makePayment({
     id: "withdrawal-1",
     type: PaymentType.WITHDRAWAL,
     amount: 200,
-    ...overrides,
+    // confirmWithdrawal pushes funds to the account stored on the payment.
+    metadata: {
+      dkAccountNumber: "ACC001",
+      dkAccountName: "Test User",
+      ...(metaOverride ?? {}),
+    },
+    ...rest,
   });
 }
 
@@ -65,11 +83,22 @@ function makeUserRepo(user: any = makeUser()) {
 }
 
 function makePaymentRepo(payment: any = makePayment()) {
+  // initiatePayment sums the user's deposits today via a query builder.
+  const qb: any = {
+    select: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    andWhere: jest.fn().mockReturnThis(),
+    getRawOne: jest.fn().mockResolvedValue({ todayTotal: "0" }),
+  };
   return {
     findOne: jest.fn().mockResolvedValue(payment),
     create: jest.fn().mockImplementation((d: any) => d),
     save: jest.fn().mockImplementation((d: any) => Promise.resolve(d)),
     find: jest.fn().mockResolvedValue([]),
+    // confirmPayment atomically flips PENDING→PROCESSING via update().
+    update: jest.fn().mockResolvedValue({ affected: 1 }),
+    createQueryBuilder: jest.fn().mockReturnValue(qb),
+    _qb: qb,
   };
 }
 
@@ -328,22 +357,6 @@ describe("DKBankPaymentService.initiatePayment", () => {
     ).rejects.toThrow(BadRequestException);
   });
 
-  it("throws when phone identity verification fails", async () => {
-    const telegramVerification = {
-      verifyPaymentIdentity: jest
-        .fn()
-        .mockRejectedValue(new BadRequestException("Phone not verified")),
-    };
-    const { service } = makeService({ telegramVerification });
-    await expect(
-      service.initiatePayment("user-1", {
-        amount: 100,
-        cid: "11000000001",
-        description: "top-up",
-      }),
-    ).rejects.toThrow(BadRequestException);
-  });
-
   it("throws when user is not found", async () => {
     const { service } = makeService({ user: null });
     await expect(
@@ -355,8 +368,8 @@ describe("DKBankPaymentService.initiatePayment", () => {
     ).rejects.toThrow(NotFoundException);
   });
 
-  it("returns otpRequired: true on success and sends Telegram OTP", async () => {
-    const { service, redis } = makeService();
+  it("returns otpRequired: true on success and records the OTP session", async () => {
+    const { service, otpRepo } = makeService();
     const result = await service.initiatePayment("user-1", {
       amount: 200,
       cid: "11000000001",
@@ -366,8 +379,8 @@ describe("DKBankPaymentService.initiatePayment", () => {
     expect(result.otpRequired).toBe(true);
     expect(result.status).toBe("pending");
     expect(result.amount).toBe(200);
-    // OTP stored in Redis
-    expect(redis.setJsonEx).toHaveBeenCalled();
+    // OTP session persisted (account_auth → otpRepo.save)
+    expect(otpRepo.save).toHaveBeenCalled();
   });
 });
 
@@ -390,20 +403,32 @@ describe("DKBankPaymentService.confirmPayment", () => {
     ).rejects.toThrow(BadRequestException);
   });
 
-  it("throws when OTP has expired (not in Redis)", async () => {
-    const redis = makeRedis(null); // null = expired / missing
-    const { service } = makeService({ redis });
+  it("throws when the OTP session has expired", async () => {
+    // Expiry is enforced from the payment's stored otpExpiresAt.
+    const payment = makePayment({
+      metadata: { otpExpiresAt: new Date(Date.now() - 60_000).toISOString() },
+    });
+    const { service } = makeService({ payment });
     await expect(
       service.confirmPayment("user-1", "payment-1", "123456"),
     ).rejects.toThrow(BadRequestException);
   });
 
   it("throws and increments failedAttempts on wrong OTP", async () => {
+    // The OTP is validated by DK's debit_request, so a wrong OTP surfaces as a
+    // rejected debit (production mode; the staging bypass skips DK entirely).
     const otpRecord = makeOtpRecord({ failedAttempts: 0 });
     const otpRepo = makeOtpRepo(otpRecord);
-    const redis = makeRedis({ otp: "654321", userId: "user-1" }); // correct OTP is 654321
+    const dkGateway = makeDkGateway();
+    dkGateway.executeTransactionWithOtp = jest
+      .fn()
+      .mockRejectedValue(new BadRequestException("Invalid OTP"));
 
-    const { service } = makeService({ otp: otpRecord, redis });
+    const { service } = makeService({
+      otp: otpRecord,
+      dkGateway,
+      configService: makeProductionConfigService(),
+    });
     // Re-bind otpRepo so we can inspect saves
     (service as any).otpRepo = otpRepo;
 
@@ -476,7 +501,7 @@ describe("DKBankPaymentService.confirmPayment", () => {
 
   // ── PRODUCTION path: real DK debit ───────────────────────────────────────
 
-  it("[PRODUCTION] calls account_auth then debit_request before crediting balance", async () => {
+  it("[PRODUCTION] calls debit_request (with stored bfsTxnId) before crediting balance", async () => {
     const payment = makePayment({
       status: PaymentStatus.PENDING,
       metadata: {
@@ -521,16 +546,10 @@ describe("DKBankPaymentService.confirmPayment", () => {
 
     expect(result.status).toBe("success");
 
-    // Step 1: account_auth was called with the customer account details
-    expect(dkGateway.authorizeTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({
-        customerAccountNumber: "ACC001",
-        customerAccountName: "Test User",
-        amount: 100,
-      }),
-    );
+    // account_auth now happens at initiatePayment; confirm must NOT re-run it.
+    expect(dkGateway.authorizeTransaction).not.toHaveBeenCalled();
 
-    // Step 2: debit_request was called with the bfsTxnId from account_auth
+    // debit_request is called with the bfsTxnId stored during initiate
     expect(dkGateway.executeTransactionWithOtp).toHaveBeenCalledWith(
       expect.objectContaining({
         bfsTxnId: "BFS-TXN-001",
@@ -539,38 +558,32 @@ describe("DKBankPaymentService.confirmPayment", () => {
       }),
     );
 
-    // Step 3: oro balance was credited
+    // oro balance was credited
     expect(em.save).toHaveBeenCalledWith(
       expect.any(Function),
       expect.objectContaining({ type: TransactionType.DEPOSIT }),
     );
   });
 
-  it("[PRODUCTION] marks payment FAILED and throws when account_auth fails", async () => {
-    const payment = makePayment({
-      status: PaymentStatus.PENDING,
-      metadata: {
-        customerAccountNumber: "ACC001",
-        customerAccountName: "Test",
-      },
-    });
-    const paymentRepo = makePaymentRepo(payment);
-    const redis = makeRedis({ otp: "123456", userId: "user-1" });
+  it("[PRODUCTION] initiatePayment marks payment FAILED and throws when account_auth fails", async () => {
+    // account_auth runs during initiatePayment now — a failure there marks the
+    // freshly-created payment FAILED and no OTP session / debit is started.
     const dkGateway = makeDkGateway();
     dkGateway.authorizeTransaction = jest
       .fn()
       .mockRejectedValue(new BadRequestException("Account not found"));
 
-    const { service } = makeService({
-      payment,
-      redis,
+    const { service, paymentRepo } = makeService({
       dkGateway,
       configService: makeProductionConfigService(),
     });
-    (service as any).paymentRepo = paymentRepo;
 
     await expect(
-      service.confirmPayment("user-1", "payment-1", "123456"),
+      service.initiatePayment("user-1", {
+        amount: 100,
+        cid: "11000000001",
+        description: "top-up",
+      }),
     ).rejects.toThrow(BadRequestException);
 
     // Payment marked FAILED
@@ -660,8 +673,8 @@ describe("DKBankPaymentService.confirmPayment", () => {
       expect.any(Function),
       expect.objectContaining({ type: TransactionType.DEPOSIT }),
     );
-    // Redis OTP key was deleted after use
-    expect(redis.del).toHaveBeenCalledWith("oro:tg-otp:payment-1");
+    // Balance cache invalidated after crediting
+    expect(redis.del).toHaveBeenCalledWith("oro:cache:balance:user-1");
   });
 });
 
@@ -702,6 +715,8 @@ describe("DKBankPaymentService.getPaymentStatus", () => {
       status: PaymentStatus.PENDING,
       dkTxnStatusId: null,
       externalPaymentId: null,
+      // No account_auth yet → no bfsTxnId → still "pending" (not "otp_required")
+      metadata: { bfsTxnId: null },
     });
     const { service } = makeService({ payment });
     const result = await service.getPaymentStatus("user-1", "payment-1");

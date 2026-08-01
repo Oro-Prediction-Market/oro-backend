@@ -6,6 +6,9 @@ import { MarketStatus } from "../entities/market.entity";
 // ─── Mock factories ───────────────────────────────────────────────────────────
 
 function makeEm(positions: any[]) {
+  // `saved` captures every persisted row: em.save(...) pairs AND rows written via
+  // the bulk INSERT builder (payout/refund transactions), so tests can assert on
+  // transaction rows with `_saved.filter(([, d]) => d.type === ...)`.
   const saved: Array<[any, any]> = [];
   const makeQueryBuilder = () => {
     let pendingValues: any[] = [];
@@ -361,6 +364,83 @@ describe("ParimutuelEngine — healthy 50/50 pool (guard regression)", () => {
 
     // Loser position set to LOST (not REFUNDED)
     expect(positions[1].status).toBe(PositionStatus.LOST);
+  });
+});
+
+// ─── Payout-floor funding guard ───────────────────────────────────────────────
+// The 1.05x winner floor must never create an unfunded payout: total paid to
+// winners + house edge booked must never exceed the money actually in the pool.
+
+describe("ParimutuelEngine — payout-floor funding guard (settleMarket)", () => {
+  const sumPayouts = (em: any) =>
+    em._saved
+      .filter(([, d]: any) => d?.type === TransactionType.POSITION_PAYOUT)
+      .reduce((s: number, [, d]: any) => s + Number(d.amount), 0);
+
+  it("heavy winning side: floor is funded by reducing the house edge, books balance", async () => {
+    // Boss's example: Nu 1,000 pool, 8% edge, Nu 950 on the winning side.
+    // payoutPool = 920, but the 1.05x floor wants 1.05 * 950 = 997.50.
+    const positions = [
+      mkPos("p1", "u1", "o-yes", 950), // winner
+      mkPos("p2", "u2", "o-no", 50),   // loser
+    ];
+    const em = makeEm(positions);
+    const { engine } = makeEngine(em);
+
+    const market = {
+      id: "m1",
+      title: "Heavy pool",
+      status: MarketStatus.RESOLVING,
+      totalPool: "1000",
+      houseEdgePct: "8",
+      outcomes: [
+        { id: "o-yes", label: "YES", totalBetAmount: "950" },
+        { id: "o-no", label: "NO", totalBetAmount: "50" },
+      ],
+    };
+    const winner = { id: "o-yes", label: "YES", totalBetAmount: "950" };
+    const settlement = await (engine as any).settleMarket(market, winner, 0);
+
+    expect(settlement.cancelReason).toBeUndefined();
+    // Winner gets the full 1.05x floor…
+    expect(sumPayouts(em)).toBeCloseTo(997.5, 1);
+    expect(settlement.totalPaidOut).toBeCloseTo(997.5, 1);
+    // …funded by dropping house from 80 to 2.50.
+    expect(settlement.houseAmount).toBeCloseTo(2.5, 1);
+    // Fully funded: nothing paid beyond the pool.
+    expect(settlement.totalPaidOut + settlement.houseAmount).toBeCloseTo(1000, 1);
+  });
+
+  it("extreme concentration: floor scales down pro-rata, still never exceeds the pool", async () => {
+    // 99% on the winning side — even a fully waived edge can't fund 1.05x.
+    const positions = [
+      mkPos("p1", "u1", "o-yes", 990), // winner
+      mkPos("p2", "u2", "o-no", 10),   // loser
+    ];
+    const em = makeEm(positions);
+    const { engine } = makeEngine(em);
+
+    const market = {
+      id: "m1",
+      title: "Extreme pool",
+      status: MarketStatus.RESOLVING,
+      totalPool: "1000",
+      houseEdgePct: "8",
+      outcomes: [
+        { id: "o-yes", label: "YES", totalBetAmount: "990" },
+        { id: "o-no", label: "NO", totalBetAmount: "10" },
+      ],
+    };
+    const winner = { id: "o-yes", label: "YES", totalBetAmount: "990" };
+    const settlement = await (engine as any).settleMarket(market, winner, 0);
+
+    expect(settlement.cancelReason).toBeUndefined();
+    // House edge fully absorbed, payout capped at the pool.
+    expect(settlement.houseAmount).toBe(0);
+    expect(settlement.totalPaidOut).toBeCloseTo(1000, 0);
+    expect(settlement.totalPaidOut).toBeLessThanOrEqual(1000);
+    // The single winner receives less than the 1.05x floor (scaled down).
+    expect(sumPayouts(em)).toBeLessThan(990 * 1.05);
   });
 });
 

@@ -76,7 +76,9 @@ function makeService(overrides: {
   config?: any;
   redis?: any;
   marketRepo?: any;
+  disputeRepo?: any;
   epl?: any;
+  ucl?: any;
 } = {}) {
   const marketsService = overrides.marketsService ?? makeMarketsService();
   const telegram = overrides.telegram ?? makeTelegram();
@@ -88,6 +90,10 @@ function makeService(overrides: {
       releaseLock: jest.fn().mockResolvedValue(undefined),
     };
   const marketRepo = overrides.marketRepo ?? makeMarketRepo();
+  // Dispute repo — defaults to zero objections so auto-settle proceeds unless a
+  // test overrides count to simulate a disputed market.
+  const disputeRepo =
+    overrides.disputeRepo ?? { count: jest.fn().mockResolvedValue(0) };
   const epl =
     overrides.epl ?? {
       getSeasonInfo: jest
@@ -101,6 +107,23 @@ function makeService(overrides: {
       }),
       getUpcomingFixtures: jest.fn().mockResolvedValue([]),
     };
+  // UCL service mock — off-season/no fixtures by default so its crons are no-ops
+  // in tests that don't exercise UCL.
+  const ucl =
+    overrides.ucl ?? {
+      getSeasonInfo: jest
+        .fn()
+        .mockResolvedValue({ started: false, seasonStart: null, maxPlayed: 0 }),
+      getStats: jest.fn().mockResolvedValue({
+        goals: [],
+        assists: [],
+        yellow: [],
+        red: [],
+      }),
+      getUpcomingFixtures: jest.fn().mockResolvedValue([]),
+      getUpcomingKnockoutTies: jest.fn().mockResolvedValue([]),
+      getBracket: jest.fn().mockResolvedValue({ hasData: false, decided: false, rounds: [] }),
+    };
 
   const svc = new KeeperService(
     marketsService,
@@ -108,9 +131,11 @@ function makeService(overrides: {
     config,
     redis as any,
     marketRepo as any,
+    disputeRepo as any,
     epl as any,
+    ucl as any,
   );
-  return { svc, marketsService, telegram, config, redis, marketRepo, epl };
+  return { svc, marketsService, telegram, config, redis, marketRepo, disputeRepo, epl, ucl };
 }
 
 // ── setActive / getStatus ─────────────────────────────────────────────────────
@@ -386,6 +411,31 @@ describe("KeeperService.handleDisputeWindowExpiry", () => {
 
     expect(marketsService.resolve).toHaveBeenCalledWith("m4", "o1");
     expect(svc.getStatus().stats.marketsAutoSettled).toBe(1);
+  });
+
+  it("does NOT auto-settle a market with objections — leaves it for admin review", async () => {
+    // Window expired, proposal set — but a bettor has objected. The keeper must
+    // NOT uphold the proposal / forfeit the bond; it leaves the market RESOLVING.
+    const market = makeMarket({
+      id: "m5",
+      title: "Disputed Market",
+      status: MarketStatus.RESOLVING,
+      disputeDeadlineAt: pastDate(),
+      proposedOutcomeId: "o1",
+      outcomes: [{ id: "o1", label: "Yes" }],
+    });
+    const marketsService = makeMarketsService();
+    const marketRepo = makeMarketRepo([market]);
+    const disputeRepo = { count: jest.fn().mockResolvedValue(1) }; // 1 objection
+    const { svc } = makeService({ marketsService, marketRepo, disputeRepo });
+
+    await svc.handleDisputeWindowExpiry();
+
+    expect(disputeRepo.count).toHaveBeenCalledWith({
+      where: { marketId: "m5" },
+    });
+    expect(marketsService.resolve).not.toHaveBeenCalled();
+    expect(svc.getStatus().stats.marketsAutoSettled).toBe(0);
   });
 
   it("skips RESOLVING market whose dispute window is still open", async () => {

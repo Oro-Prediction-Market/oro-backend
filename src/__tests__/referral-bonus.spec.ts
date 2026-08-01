@@ -116,11 +116,6 @@ function makeEngine(ds: any) {
   (engine as any).logger = logger;
   (engine as any).sse = sse;
 
-  // Stub out the prize check so it doesn't cascade
-  jest
-    .spyOn(engine as any, "creditReferralPrizeIfEligible")
-    .mockResolvedValue(undefined);
-
   return { engine, redis, logger, sse };
 }
 

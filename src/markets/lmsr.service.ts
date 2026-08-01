@@ -1,5 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import { Outcome } from "../entities/outcome.entity";
+import { DEFAULT_HOUSE_EDGE_PCT } from "./fee.constants";
 
 /**
  * LMSR (Logarithmic Market Scoring Rule) Service
@@ -104,12 +105,12 @@ export class LMSRService {
    *
    * @param betAmount - Amount being bet
    * @param currentProbability - Current LMSR probability
-   * @param houseEdgePct - House edge percentage (default: 5%)
+   * @param houseEdgePct - House edge percentage (default: DEFAULT_HOUSE_EDGE_PCT)
    */
   estimatePayout(
     betAmount: number,
     currentProbability: number,
-    houseEdgePct: number = 5,
+    houseEdgePct: number = DEFAULT_HOUSE_EDGE_PCT,
   ): number {
     const odds = this.probabilityToOdds(currentProbability);
     const grossPayout = betAmount * odds;

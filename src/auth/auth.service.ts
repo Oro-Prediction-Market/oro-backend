@@ -111,18 +111,30 @@ export class AuthService {
       expectedBuf.length === receivedBuf.length &&
       timingSafeEqual(expectedBuf, receivedBuf);
     if (!hashValid) {
-      this.logger.warn(
-        `[Auth] initData hash mismatch.\n  Expected : ${expectedHash}\n  Got      : ${hash}\n  dataCheckString:\n${dataCheckString}\n  rawInitData (full): ${rawInitData}`,
-      );
+      // Do NOT log rawInitData / dataCheckString — they carry the user's Telegram
+      // profile (id, name, username). A generic warning is enough to notice
+      // problems without writing personal data to the logs.
+      this.logger.warn("[Auth] initData signature check failed");
       throw new UnauthorizedException("Invalid Telegram initData signature");
     }
 
-    // Check freshness: reject if older than 24h
+    // Check freshness. Reject anything older than 24h, and — just as important —
+    // anything dated in the FUTURE (beyond a small clock-skew tolerance). A
+    // future auth_date produces a negative "age" that would otherwise sail past
+    // the max-age check and effectively never expire.
+    const MAX_AGE_SECONDS = 86400; // 24h
+    const CLOCK_SKEW_SECONDS = 300; // tolerate 5 min of clock drift
     const authDate = parseInt(params.get("auth_date") || "0", 10);
     const ageSeconds = Math.floor(Date.now() / 1000 - authDate);
-    if (ageSeconds > 86400) {
+    if (ageSeconds > MAX_AGE_SECONDS) {
       this.logger.warn(`[Auth] initData expired — age: ${ageSeconds}s`);
       throw new UnauthorizedException("initData is expired");
+    }
+    if (ageSeconds < -CLOCK_SKEW_SECONDS) {
+      this.logger.warn(
+        `[Auth] initData rejected — auth_date is in the future (age: ${ageSeconds}s)`,
+      );
+      throw new UnauthorizedException("initData timestamp is invalid");
     }
 
     const userJson = params.get("user");
@@ -1086,11 +1098,27 @@ export class AuthService {
     // .env stores the key with literal \n — convert to real newlines
     const publicKey = rawKey.replace(/\\n/g, "\n");
 
+    // Constrain issuer/audience so a validly-signed token minted for a DIFFERENT
+    // service can't be replayed here (a valid signature only proves the token
+    // wasn't tampered with — not that it was issued for us). Enforced only when
+    // the expected values are configured, so existing logins keep working until
+    // the values are set; set BHUTANAPP_JWT_ISSUER and BHUTANAPP_JWT_AUDIENCE to
+    // turn enforcement on.
+    const expectedIssuer = process.env.BHUTANAPP_JWT_ISSUER?.trim();
+    const expectedAudience = process.env.BHUTANAPP_JWT_AUDIENCE?.trim();
+    if (!expectedIssuer || !expectedAudience) {
+      this.logger.warn(
+        "[Auth] BhutanApp token issuer/audience not enforced — set " +
+          "BHUTANAPP_JWT_ISSUER and BHUTANAPP_JWT_AUDIENCE to constrain tokens",
+      );
+    }
+    const verifyOptions: jwt.VerifyOptions = { algorithms: ["RS256"] };
+    if (expectedIssuer) verifyOptions.issuer = expectedIssuer;
+    if (expectedAudience) verifyOptions.audience = expectedAudience;
+
     let claims: jwt.JwtPayload;
     try {
-      claims = jwt.verify(dto.token, publicKey, {
-        algorithms: ["RS256"],
-      }) as jwt.JwtPayload;
+      claims = jwt.verify(dto.token, publicKey, verifyOptions) as jwt.JwtPayload;
     } catch (err: any) {
       this.logger.warn(
         `[Auth] BhutanApp token verification failed: ${err.message}`,
@@ -1098,16 +1126,11 @@ export class AuthService {
       throw new UnauthorizedException("Invalid or expired BhutanApp token");
     }
 
-    // Use the CID from the verified token claims — not blindly from the request body
-    const cid = (
-      claims.sub ??
-      claims.cid ??
-      dto.username ??
-      dto.externalUserId ??
-      ""
-    )
-      .toString()
-      .trim();
+    // Identity MUST come only from the cryptographically-verified token claims.
+    // NEVER fall back to request-body fields (dto.username / dto.externalUserId):
+    // the caller controls those and could set them to a victim's CID to log in as
+    // them. If the signed token carries no CID, reject the login outright.
+    const cid = (claims.sub ?? claims.cid ?? "").toString().trim();
     if (cid.length !== 11) {
       throw new UnauthorizedException(
         "BhutanApp token does not contain a valid CID",

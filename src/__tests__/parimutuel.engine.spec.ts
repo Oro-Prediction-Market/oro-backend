@@ -297,7 +297,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
     );
   });
 
-  it("throws when user is the CREATOR of an ACTIVE duel on the same market", async () => {
+  it("does NOT block the CREATOR of an ACTIVE duel from betting (guard removed) — reaches balance check", async () => {
     const market = {
       id: "m1",
       status: "open",
@@ -327,8 +327,11 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       getRepository: jest.fn().mockReturnValue({
         createQueryBuilder: jest.fn().mockReturnValue({
           setLock: jest.fn().mockReturnThis(),
+          select: jest.fn().mockReturnThis(),
           where: jest.fn().mockReturnThis(),
           getOne: jest.fn().mockResolvedValue(market),
+          // No active-duel guard remains, so the flow reaches the balance check.
+          getRawOne: jest.fn().mockResolvedValue({ balance: "0" }),
         }),
       }),
       find: jest.fn().mockResolvedValue(market.outcomes),
@@ -371,11 +374,11 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
     );
 
     await expect(engine.placePosition("u1", "m1", "o1", 100)).rejects.toThrow(
-      "active duel on this market",
+      "Insufficient balance",
     );
   });
 
-  it("throws when user is the JOINER of an ACTIVE duel on the same market", async () => {
+  it("does NOT block the JOINER of an ACTIVE duel from betting (guard removed) — reaches balance check", async () => {
     const market = {
       id: "m1",
       status: "open",
@@ -406,8 +409,10 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       getRepository: jest.fn().mockReturnValue({
         createQueryBuilder: jest.fn().mockReturnValue({
           setLock: jest.fn().mockReturnThis(),
+          select: jest.fn().mockReturnThis(),
           where: jest.fn().mockReturnThis(),
           getOne: jest.fn().mockResolvedValue(market),
+          getRawOne: jest.fn().mockResolvedValue({ balance: "0" }),
         }),
       }),
       find: jest.fn().mockResolvedValue(market.outcomes),
@@ -449,7 +454,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
     );
 
     await expect(engine.placePosition("u2", "m1", "o2", 100)).rejects.toThrow(
-      "active duel on this market",
+      "Insufficient balance",
     );
   });
 
@@ -568,18 +573,42 @@ describe("Settlement wallet credit — no DK transfer on market settle", () => {
 
     const balances: Record<string, number> = { u1: 0, u2: 0 };
 
+    // Bulk settlement writes payout/refund rows via a query-builder INSERT (not
+    // em.save), so the builder's values() captures them into savedTransactions.
+    const makeQb = () => {
+      const qb: any = {
+        select: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        groupBy: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        insert: jest.fn().mockReturnThis(),
+        into: jest.fn().mockReturnThis(),
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        values: (rows: any) => {
+          for (const r of Array.isArray(rows) ? rows : [rows]) {
+            if (r?.type) {
+              savedTransactions.push(r);
+              balances[r.userId] = (balances[r.userId] ?? 0) + r.amount;
+            }
+          }
+          return qb;
+        },
+        getRawMany: jest.fn().mockResolvedValue([]),
+        getRawOne: jest.fn().mockResolvedValue({ balance: 0 }),
+        execute: jest.fn().mockResolvedValue({}),
+      };
+      return qb;
+    };
     const mockEm = {
-      getRepository: jest.fn().mockReturnValue({
-        createQueryBuilder: jest.fn().mockReturnValue({
-          select: jest.fn().mockReturnThis(),
-          where: jest.fn().mockReturnThis(),
-          getRawOne: jest
-            .fn()
-            .mockImplementation(() => Promise.resolve({ balance: 0 })),
-        }),
-      }),
+      getRepository: jest.fn().mockReturnValue({ createQueryBuilder: jest.fn(makeQb) }),
+      createQueryBuilder: jest.fn(makeQb),
       find: jest.fn().mockResolvedValue(positions),
-      findOne: jest.fn().mockResolvedValue({ id: "u1", bonusBalance: 0 }),
+      // Must be null: settleMarket's idempotency guard returns early if findOne
+      // (existing Settlement) is truthy.
+      findOne: jest.fn().mockResolvedValue(null),
       save: jest.fn().mockImplementation(async (_cls: any, data: any) => {
         if (data?.type) {
           savedTransactions.push(data);
@@ -935,16 +964,37 @@ describe("Batch payment — NOT triggered on market settlement", () => {
       },
     ];
 
+    // Payouts are written via a bulk INSERT builder, so capture them in values().
+    const makeQb = () => {
+      const qb: any = {
+        select: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        groupBy: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        insert: jest.fn().mockReturnThis(),
+        into: jest.fn().mockReturnThis(),
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        values: (rows: any) => {
+          for (const r of Array.isArray(rows) ? rows : [rows]) {
+            if (r?.type === TransactionType.POSITION_PAYOUT)
+              savedTransactions.push(r);
+          }
+          return qb;
+        },
+        getRawMany: jest.fn().mockResolvedValue([]),
+        getRawOne: jest.fn().mockResolvedValue({ balance: 0 }),
+        execute: jest.fn().mockResolvedValue({}),
+      };
+      return qb;
+    };
     const mockEm = {
-      getRepository: jest.fn().mockReturnValue({
-        createQueryBuilder: jest.fn().mockReturnValue({
-          select: jest.fn().mockReturnThis(),
-          where: jest.fn().mockReturnThis(),
-          getRawOne: jest.fn().mockResolvedValue({ balance: 0 }),
-        }),
-      }),
+      getRepository: jest.fn().mockReturnValue({ createQueryBuilder: jest.fn(makeQb) }),
+      createQueryBuilder: jest.fn(makeQb),
       find: jest.fn().mockResolvedValue(positions),
-      findOne: jest.fn().mockResolvedValue({ bonusBalance: 0 }),
+      findOne: jest.fn().mockResolvedValue(null), // no existing settlement
       save: jest.fn().mockImplementation(async (_cls: any, data: any) => {
         if (data?.type === TransactionType.POSITION_PAYOUT)
           savedTransactions.push(data);
