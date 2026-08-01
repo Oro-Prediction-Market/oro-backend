@@ -1,4 +1,5 @@
-import { createHmac } from "crypto";
+import { createHmac, generateKeyPairSync } from "crypto";
+import * as jwt from "jsonwebtoken";
 import { UnauthorizedException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import * as bcrypt from "bcryptjs";
@@ -223,6 +224,27 @@ describe("AuthService.validateTelegramInitData", () => {
     expect(() => service.validateTelegramInitData(initData)).toThrow(
       UnauthorizedException,
     );
+  });
+
+  it("throws when auth_date is in the future (beyond clock-skew tolerance)", () => {
+    // A validly-signed token dated well in the future must be rejected — its
+    // negative "age" must not sneak past the max-age freshness check.
+    const futureAuthDate = Math.floor(Date.now() / 1000) + 3600; // +1h
+    const initData = buildValidInitData({ auth_date: futureAuthDate });
+    expect(() => service.validateTelegramInitData(initData)).toThrow(
+      UnauthorizedException,
+    );
+  });
+
+  it("accepts a slightly-future auth_date within the clock-skew tolerance", () => {
+    // A minute of clock drift between servers must NOT reject a real login.
+    const skewedAuthDate = Math.floor(Date.now() / 1000) + 60; // +1min
+    const initData = buildValidInitData({
+      id: 4242,
+      auth_date: skewedAuthDate,
+    });
+    const result = service.validateTelegramInitData(initData);
+    expect(result.id).toBe(4242);
   });
 
   it("throws when TELEGRAM_BOT_TOKEN is not set", () => {
@@ -709,5 +731,96 @@ describe("AuthService.loginWithDKBank", () => {
     );
 
     process.env.NODE_ENV = "test";
+  });
+});
+
+// ─── loginWithBhutanApp — identity binding ────────────────────────────────────
+
+describe("AuthService.loginWithBhutanApp — identity binding", () => {
+  let service: AuthService;
+  let privateKey: string;
+
+  beforeEach(() => {
+    const keys = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    privateKey = keys.privateKey;
+    process.env.BHUTANAPP_JWT_PUBLIC_KEY = keys.publicKey;
+    service = new AuthService(
+      makeUserRepo() as any,
+      makeAuthMethodRepo() as any,
+      makeTransactionRepo() as any,
+      makeMarketRepo() as any,
+      makePositionRepo() as any,
+      makeJwtService(),
+      makeDkGateway() as any,
+      makeTelegramVerification() as any,
+      makeTelegramSimple() as any,
+      makeAuditService() as any,
+      makeAuditLogRepo() as any,
+      makeRedis() as any,
+      { sendSms: jest.fn().mockResolvedValue(true) } as any,
+    );
+  });
+
+  afterEach(() => {
+    delete process.env.BHUTANAPP_JWT_PUBLIC_KEY;
+    delete process.env.BHUTANAPP_JWT_ISSUER;
+    delete process.env.BHUTANAPP_JWT_AUDIENCE;
+  });
+
+  const sign = (payload: object) =>
+    jwt.sign(payload, privateKey, { algorithm: "RS256" });
+
+  it("rejects when the signed token has no CID, even if the request body supplies one", async () => {
+    // The attacker signs a valid token that carries NO identity claim, then puts a
+    // victim's CID in the request body. The old code would have trusted the body;
+    // the fix must ignore it and reject.
+    const token = sign({ foo: "bar" }); // no sub / cid
+    await expect(
+      service.loginWithBhutanApp({
+        token,
+        externalUserId: "11000000001", // valid-looking CID in the BODY — must be ignored
+        fullName: "Attacker",
+        username: "11000000001",
+      }),
+    ).rejects.toThrow(/does not contain a valid CID/);
+  });
+
+  it("rejects a validly-signed token whose audience does not match when enforcement is configured", async () => {
+    process.env.BHUTANAPP_JWT_ISSUER = "bhutanapp";
+    process.env.BHUTANAPP_JWT_AUDIENCE = "oro";
+    // Correctly signed by BhutanApp's key, but minted for a DIFFERENT service.
+    const token = sign({
+      sub: "11000000001",
+      iss: "bhutanapp",
+      aud: "some-other-app",
+    });
+    await expect(
+      service.loginWithBhutanApp({
+        token,
+        externalUserId: "11000000001",
+        fullName: "X",
+      }),
+    ).rejects.toThrow(/Invalid or expired BhutanApp token/);
+  });
+
+  it("rejects a validly-signed token from an unexpected issuer when enforcement is configured", async () => {
+    process.env.BHUTANAPP_JWT_ISSUER = "bhutanapp";
+    process.env.BHUTANAPP_JWT_AUDIENCE = "oro";
+    const token = sign({
+      sub: "11000000001",
+      iss: "not-bhutanapp",
+      aud: "oro",
+    });
+    await expect(
+      service.loginWithBhutanApp({
+        token,
+        externalUserId: "11000000001",
+        fullName: "X",
+      }),
+    ).rejects.toThrow(/Invalid or expired BhutanApp token/);
   });
 });
