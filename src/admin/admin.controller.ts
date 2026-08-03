@@ -67,6 +67,7 @@ import { GetUsersQueryDto } from "./dto/get-users-query.dto";
 import { ToggleAdminDto } from "./dto/toggle-admin.dto";
 import { HealthCheckResponse } from "./dto/health-check.dto";
 import { csvCell } from "../shared/utils/csv.util";
+import { buildLateMoneyStats, LateMoneyStats } from "./late-money.util";
 
 class CreditUserDto {
   @ApiProperty({ example: 500, description: "Amount to credit (BTN)" })
@@ -104,6 +105,78 @@ export class AdminController {
     private revenueDistributionService: RevenueDistributionService,
     private eplService: EplService,
   ) {}
+
+  // ── Late-money monitor (REAL aggregation — no random/demo data) ────────────
+  @Get("markets/:id/late-money")
+  @ApiOperation({
+    summary:
+      "Real late-money stats for a market: share of bets (count & amount) in the final window before close",
+  })
+  @ApiQuery({ name: "windowMinutes", required: false, example: 1 })
+  async getLateMoney(
+    @Param("id") id: string,
+    @Query("windowMinutes") windowMinutesRaw?: string,
+  ): Promise<LateMoneyStats> {
+    const market = await this.dataSource
+      .getRepository(Market)
+      .findOne({ where: { id } });
+    if (!market) throw new NotFoundException("Market not found");
+
+    // Clamp the window to a sane 1–60 minutes.
+    const windowMinutes = Math.min(
+      60,
+      Math.max(1, Math.floor(Number(windowMinutesRaw)) || 1),
+    );
+    const closesAt = market.closesAt ? new Date(market.closesAt) : null;
+    // Final window = the last N minutes before close; a bet with createdAt at or
+    // after this boundary counts as "late". Null when the market has no close.
+    const windowStart = closesAt
+      ? new Date(closesAt.getTime() - windowMinutes * 60_000)
+      : null;
+
+    const qb = this.betRepo
+      .createQueryBuilder("p")
+      .select("COUNT(*)", "totalBets")
+      .addSelect("COALESCE(SUM(p.amount), 0)", "totalAmount")
+      .addSelect(
+        windowStart
+          ? "COUNT(*) FILTER (WHERE p.placedAt >= :windowStart)"
+          : "0",
+        "windowBets",
+      )
+      .addSelect(
+        windowStart
+          ? "COALESCE(SUM(p.amount) FILTER (WHERE p.placedAt >= :windowStart), 0)"
+          : "0",
+        "windowAmount",
+      )
+      .where("p.marketId = :id", { id });
+    if (windowStart) qb.setParameter("windowStart", windowStart.toISOString());
+
+    const row = await qb.getRawOne<{
+      totalBets: string;
+      totalAmount: string;
+      windowBets: string;
+      windowAmount: string;
+    }>();
+
+    return buildLateMoneyStats(
+      {
+        totalBets: Number(row?.totalBets ?? 0),
+        totalAmount: Number(row?.totalAmount ?? 0),
+        windowBets: Number(row?.windowBets ?? 0),
+        windowAmount: Number(row?.windowAmount ?? 0),
+      },
+      {
+        marketId: id,
+        status: market.status,
+        windowMinutes,
+        closesAt,
+        now: Date.now(),
+        alertThresholdPct: 40,
+      },
+    );
+  }
 
   // ── Health Check ──────────────────────────────────────────────────────────
   @Get("health")
