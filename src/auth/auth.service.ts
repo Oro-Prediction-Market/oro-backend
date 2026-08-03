@@ -81,9 +81,9 @@ export class AuthService {
   validateTelegramInitData(rawInitData: string): TelegramInitData {
     const botToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
     if (!botToken) throw new UnauthorizedException("Bot token not configured");
-    this.logger.debug(
-      `[Auth] Using bot token: id=${botToken.split(":")[0]} len=${botToken.length}`,
-    );
+    // Log only the public bot id (before the ":"), never the token length or
+    // the secret half — the secret must never reach log storage.
+    this.logger.debug(`[Auth] Using bot id=${botToken.split(":")[0]}`);
 
     const params = new URLSearchParams(rawInitData);
     const hash = params.get("hash");

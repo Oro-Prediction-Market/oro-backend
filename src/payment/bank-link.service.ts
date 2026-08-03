@@ -191,7 +191,9 @@ export class BankLinkService {
         `[BankLink] SMS failed for ${bankPhone}, sent via Telegram fallback`,
       );
     } else {
-      this.logger.log(`[BankLink] OTP sent via SMS to ${bankPhone}`);
+      this.logger.log(
+        `[BankLink] OTP sent via SMS to ${this.maskPhone(bankPhone)}`,
+      );
     }
 
     return {
