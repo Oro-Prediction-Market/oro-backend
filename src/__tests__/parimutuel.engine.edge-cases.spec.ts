@@ -410,6 +410,77 @@ describe("ParimutuelEngine — payout-floor funding guard (settleMarket)", () =>
   });
 });
 
+// ─── Exact revenue-residual conservation ──────────────────────────────────────
+// House revenue is booked as the exact pool residual (totalPool − totalPaidOut),
+// so the books always balance to the chhertum — even when per-winner rounding
+// leaves a fractional remainder ("breakage"). Breakage is deterministically kept
+// as house revenue, the standard parimutuel treatment, so no money is invented
+// or lost across a settlement.
+
+describe("ParimutuelEngine — exact revenue-residual conservation", () => {
+  // Compare in whole chhertum (minor units) so float noise can't mask a real gap.
+  const chhertum = (n: number) => Math.round(n * 100);
+
+  it("uneven split still balances: totalPaidOut + houseAmount === totalPool exactly", async () => {
+    // 3 equal winners share payoutPool 380 → 126.6667 each → rounds to 126.67,
+    // which does NOT sum back to 380 cleanly. The residual keeps the books whole.
+    const positions = [
+      mkPos("p1", "u1", "o-yes", 100),
+      mkPos("p2", "u2", "o-yes", 100),
+      mkPos("p3", "u3", "o-yes", 100),
+      mkPos("p4", "u4", "o-no", 100),
+    ];
+    const em = makeEm(positions);
+    const { engine } = makeEngine(em);
+
+    const market = {
+      id: "m1",
+      title: "Uneven split",
+      status: MarketStatus.RESOLVING,
+      totalPool: "400",
+      houseEdgePct: "5",
+      outcomes: [
+        { id: "o-yes", label: "YES", totalBetAmount: "300" },
+        { id: "o-no", label: "NO", totalBetAmount: "100" },
+      ],
+    };
+    const winner = { id: "o-yes", label: "YES", totalBetAmount: "300" };
+    const settlement = await (engine as any).settleMarket(market, winner, 0);
+
+    // Exact conservation to the chhertum — nothing invented, nothing lost.
+    expect(
+      chhertum(settlement.totalPaidOut) + chhertum(settlement.houseAmount),
+    ).toBe(chhertum(400));
+    // And it never pays beyond the pool.
+    expect(settlement.totalPaidOut).toBeLessThanOrEqual(400);
+    expect(settlement.houseAmount).toBeGreaterThanOrEqual(0);
+  });
+
+  it("forfeited bonds sit exactly on top of the pool residual", async () => {
+    const positions = [
+      mkPos("p1", "u1", "o-yes", 100), // winner
+      mkPos("p2", "u2", "o-no", 100), // loser
+    ];
+    const em = makeEm(positions);
+    const { engine } = makeEngine(em);
+    const winner = { ...YES, totalBetAmount: "100" };
+
+    // Nu 100 forfeited bond passed in as houseForfeit.
+    const settlement = await (engine as any).settleMarket(
+      mkMarket(200),
+      winner,
+      100,
+    );
+
+    // The pool half still balances exactly; the bond adds cleanly on top.
+    expect(
+      chhertum(settlement.totalPaidOut) +
+        chhertum(settlement.houseAmount - 100),
+    ).toBe(chhertum(200));
+    expect(settlement.houseAmount).toBeCloseTo(110, 2);
+  });
+});
+
 // ─── Forfeited-bond routing to house revenue (houseForfeit) ────────────────────
 // When a resolution objection loses and there is no winning side to reward,
 // resolveMarket() passes the forfeited bonds to settleMarket() as houseForfeit,

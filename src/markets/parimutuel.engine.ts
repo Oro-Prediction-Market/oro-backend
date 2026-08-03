@@ -1253,9 +1253,9 @@ export class ParimutuelEngine implements OnModuleInit {
         const floor = parseFloat((Number(bet.amount) * 1.05).toFixed(2));
         desiredWinnerTotal += Math.max(raw, floor);
       }
-      const floorOverflow = Math.max(0, desiredWinnerTotal - payoutPool);
-      const houseSubsidy = Math.min(houseAmount, floorOverflow);
       // Only scale down when the floor can't be funded even with a zero edge.
+      // (A bound floor simply raises totalPaidOut; house revenue is derived from
+      // the actual residual below, so no explicit subsidy figure is needed here.)
       const payoutScale =
         desiredWinnerTotal > maxBudget ? maxBudget / desiredWinnerTotal : 1;
 
@@ -1473,10 +1473,22 @@ export class ParimutuelEngine implements OnModuleInit {
       market.status = MarketStatus.SETTLED;
       await em.save(Market, market);
 
-      // Book the house edge actually kept after subsidising the payout floor,
-      // plus any forfeited dispute bonds routed to revenue.
+      // Book house revenue as the EXACT residual of the pool: whatever was not
+      // paid out to winners (totalPaidOut), plus any forfeited dispute bonds
+      // routed to revenue. Deriving revenue from the money actually paid —
+      // rather than the theoretical edge — makes the books balance to the
+      // chhertum by construction:
+      //     totalPool === totalPaidOut + (bookedHouseAmount − houseForfeit)
+      // and deterministically assigns all rounding breakage (the standard
+      // parimutuel treatment) to house revenue instead of leaving unaccounted
+      // fractions. A subsidised payout floor is captured automatically: it
+      // raises totalPaidOut, which lowers this residual.
+      const poolResidual = Math.max(
+        0,
+        parseFloat((totalPool - totalPaidOut).toFixed(2)),
+      );
       const bookedHouseAmount = parseFloat(
-        (houseAmount - houseSubsidy + houseForfeit).toFixed(2),
+        (poolResidual + houseForfeit).toFixed(2),
       );
 
       const settlement = em.create(Settlement, {
