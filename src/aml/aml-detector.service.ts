@@ -40,12 +40,15 @@ export class AmlDetectorService {
           AND t.amount::numeric >= 3000
       ),
       suspicious AS (
+        -- Withdrawals are stored as NEGATIVE ledger debits; ABS() converts them
+        -- to a positive magnitude so the ">= 50% of deposit" comparison works.
+        -- Without ABS the sum is negative and this alert would never fire.
         SELECT
           d."userId",
           d.id                         AS deposit_id,
           d.amt                        AS deposit_amount,
           d.dt                         AS deposit_time,
-          SUM(w.amount::numeric)       AS wd_total,
+          SUM(ABS(w.amount::numeric))  AS wd_total,
           MIN(w."createdAt")           AS wd_time
         FROM deposits d
         JOIN transactions w
@@ -53,7 +56,7 @@ export class AmlDetectorService {
           AND w.type        = 'withdrawal'
           AND w."createdAt" BETWEEN d.dt AND d.dt + INTERVAL '2 hours'
         GROUP BY d."userId", d.id, d.amt, d.dt
-        HAVING SUM(w.amount::numeric) >= d.amt * 0.5
+        HAVING SUM(ABS(w.amount::numeric)) >= d.amt * 0.5
       )
       SELECT
         s."userId",
@@ -111,7 +114,10 @@ export class AmlDetectorService {
         HAVING SUM(amount::numeric) > 20000
       ),
       user_bets AS (
-        SELECT "userId", SUM(amount::numeric) AS total_bet
+        -- Bets are stored as NEGATIVE ledger debits; ABS() gives the positive
+        -- amount wagered. Without it total_bet is negative, so every high
+        -- depositor would falsely trip the "<15% wagered" ratio.
+        SELECT "userId", SUM(ABS(amount::numeric)) AS total_bet
         FROM transactions
         WHERE type = 'bet_placed' AND "createdAt" BETWEEN $1 AND $2
         GROUP BY "userId"
