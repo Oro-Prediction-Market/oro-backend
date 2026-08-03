@@ -594,7 +594,10 @@ describe("DKBankPaymentService.confirmPayment", () => {
     expect(dkGateway.executeTransactionWithOtp).not.toHaveBeenCalled();
   });
 
-  it("[PRODUCTION] marks payment FAILED and throws when debit_request fails", async () => {
+  it("[PRODUCTION] reverts the deposit to PENDING (retryable) on a failed OTP below the cap", async () => {
+    // A rejected OTP must not kill the payment — the user is allowed up to
+    // MAX_OTP_ATTEMPTS tries, so a sub-cap failure reverts to PENDING so a fresh
+    // OTP can be submitted against the SAME payment.
     const payment = makePayment({
       status: PaymentStatus.PENDING,
       metadata: {
@@ -608,11 +611,13 @@ describe("DKBankPaymentService.confirmPayment", () => {
     dkGateway.executeTransactionWithOtp = jest
       .fn()
       .mockRejectedValue(new BadRequestException("Invalid OTP"));
+    const otpRecord = makeOtpRecord({ failedAttempts: 0 });
 
-    const { service } = makeService({
+    const { service, otpRepo } = makeService({
       payment,
       redis,
       dkGateway,
+      otp: otpRecord,
       configService: makeProductionConfigService(),
     });
     (service as any).paymentRepo = paymentRepo;
@@ -621,7 +626,50 @@ describe("DKBankPaymentService.confirmPayment", () => {
       service.confirmPayment("user-1", "payment-1", "123456"),
     ).rejects.toThrow(BadRequestException);
 
-    // Payment marked FAILED
+    // Failure counted…
+    expect(otpRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({ failedAttempts: 1 }),
+    );
+    // …but the payment stays retryable (PENDING), NOT terminally FAILED.
+    expect(paymentRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({ status: PaymentStatus.PENDING }),
+    );
+    expect(paymentRepo.save).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: PaymentStatus.FAILED }),
+    );
+  });
+
+  it("[PRODUCTION] marks the deposit FAILED once the OTP attempt cap is reached", async () => {
+    const payment = makePayment({
+      status: PaymentStatus.PENDING,
+      metadata: {
+        customerAccountNumber: "ACC001",
+        customerAccountName: "Test",
+      },
+    });
+    const paymentRepo = makePaymentRepo(payment);
+    const redis = makeRedis({ otp: "123456", userId: "user-1" });
+    const dkGateway = makeDkGateway();
+    dkGateway.executeTransactionWithOtp = jest
+      .fn()
+      .mockRejectedValue(new BadRequestException("Invalid OTP"));
+    // Already at 4 failures — this attempt is the 5th (== MAX_OTP_ATTEMPTS).
+    const otpRecord = makeOtpRecord({ failedAttempts: 4 });
+
+    const { service } = makeService({
+      payment,
+      redis,
+      dkGateway,
+      otp: otpRecord,
+      configService: makeProductionConfigService(),
+    });
+    (service as any).paymentRepo = paymentRepo;
+
+    await expect(
+      service.confirmPayment("user-1", "payment-1", "123456"),
+    ).rejects.toThrow(BadRequestException);
+
+    // Only now — at the cap — is the payment terminally FAILED.
     expect(paymentRepo.save).toHaveBeenCalledWith(
       expect.objectContaining({ status: PaymentStatus.FAILED }),
     );
@@ -978,8 +1026,10 @@ describe("Merchant vault → user DK account (withdrawal flow)", () => {
       );
     });
 
-    it("rolls back the balance debit when DK transfer fails (atomicity)", async () => {
-      // DK Gateway throws — the DB transaction must NOT commit the debit
+    it("leaves the withdrawal PROCESSING with the debit intact when the DK call is ambiguous (throws)", async () => {
+      // DK Gateway THROWS (timeout/network) — we cannot know whether the bank
+      // paid, so we must NOT reverse the debit and must NOT confirm. The reserved
+      // debit stays put and the payment is left PROCESSING for reconciliation.
       const withdrawal = makeWithdrawalPayment({
         status: PaymentStatus.PENDING,
       });
@@ -990,32 +1040,18 @@ describe("Merchant vault → user DK account (withdrawal flow)", () => {
         .fn()
         .mockRejectedValue(new Error("DK Bank timeout"));
 
-      // Simulate dataSource.transaction throwing when the callback throws
-      const dataSource = {
-        transaction: jest.fn().mockImplementation(async (cb: Function) => {
-          // Run the callback but let it throw — simulates DB rollback
-          await cb({
-            getRepository: jest.fn().mockReturnValue({
-              createQueryBuilder: jest.fn().mockReturnValue({
-                setLock: jest.fn().mockReturnThis(),
-                select: jest.fn().mockReturnThis(),
-                where: jest.fn().mockReturnThis(),
-                andWhere: jest.fn().mockReturnThis(),
-                getOne: jest.fn().mockResolvedValue(withdrawal),
-                getRawOne: jest.fn().mockResolvedValue({ balance: 1000 }),
-              }),
-            }),
-            save: jest
-              .fn()
-              .mockImplementation((_e: any, d: any) => Promise.resolve(d)),
-            create: jest.fn().mockImplementation((_e: any, d: any) => d),
-            findOne: jest
-              .fn()
-              .mockResolvedValue({ id: "user-1", bonusBalance: 0 }),
-          });
+      const dataSource = makeDataSource();
+      const em = dataSource._em;
+      em.getRepository.mockReturnValue({
+        createQueryBuilder: jest.fn().mockReturnValue({
+          setLock: jest.fn().mockReturnThis(),
+          select: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          getOne: jest.fn().mockResolvedValue(withdrawal),
+          getRawOne: jest.fn().mockResolvedValue({ balance: 1000 }),
         }),
-        _em: null,
-      };
+      });
 
       const { service } = makeService({
         payment: withdrawal,
@@ -1026,15 +1062,32 @@ describe("Merchant vault → user DK account (withdrawal flow)", () => {
       });
       (service as any).paymentRepo = paymentRepo;
 
-      await expect(
-        (service as any).confirmWithdrawal("user-1", "withdrawal-1", "123456"),
-      ).rejects.toThrow("DK Bank timeout");
+      const result = await (service as any).confirmWithdrawal(
+        "user-1",
+        "withdrawal-1",
+        "123456",
+      );
 
-      // Payment should NOT be marked SUCCESS — it must remain PENDING or FAILED
-      const savedPayment = paymentRepo.save.mock.calls
-        .map((c: any[]) => c[0])
-        .find((p: any) => p.status === PaymentStatus.SUCCESS);
-      expect(savedPayment).toBeUndefined();
+      // Ambiguous → reported as processing (resolves, not rejects).
+      expect(result.status).toBe("processing");
+
+      // The debit WAS reserved before the bank call…
+      const debit = em.save.mock.calls
+        .map((c: any[]) => c[1])
+        .find(
+          (d: any) =>
+            d?.type === TransactionType.WITHDRAWAL && d?.amount === -200,
+        );
+      expect(debit).toBeDefined();
+
+      // …and was NOT reversed (no refund), because DK may have paid.
+      const refund = em.save.mock.calls
+        .map((c: any[]) => c[1])
+        .find((d: any) => d?.type === TransactionType.REFUND);
+      expect(refund).toBeUndefined();
+
+      // Payment is left PROCESSING — never SUCCESS, never FAILED.
+      expect(withdrawal.status).toBe(PaymentStatus.PROCESSING);
     });
   });
 
@@ -1073,7 +1126,7 @@ describe("Merchant vault → user DK account (withdrawal flow)", () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("sets payment to FAILED and does not debit balance when DK returns a failure status", async () => {
+    it("reserves then reverses the debit (net zero) and marks FAILED when DK returns a failure status", async () => {
       const withdrawal = makeWithdrawalPayment({
         status: PaymentStatus.PENDING,
       });
@@ -1117,18 +1170,27 @@ describe("Merchant vault → user DK account (withdrawal flow)", () => {
       // Response must report failure
       expect(result.status).toBe("failed");
 
-      // No WITHDRAWAL debit transaction should have been written
-      const debitCall = em.save.mock.calls
+      // The debit was reserved up front…
+      const debit = em.save.mock.calls
         .map((c: any[]) => c[1])
-        .find((d: any) => d?.type === TransactionType.WITHDRAWAL);
-      expect(debitCall).toBeUndefined();
+        .find(
+          (d: any) =>
+            d?.type === TransactionType.WITHDRAWAL && d?.amount === -200,
+        );
+      expect(debit).toBeDefined();
 
-      // Payment entity must be marked FAILED with a reason
-      expect(paymentRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({
-          status: PaymentStatus.FAILED,
-          failureReason: expect.stringContaining("Recipient account inactive"),
-        }),
+      // …then reversed with a REFUND (+200) so the net balance effect is zero.
+      const refund = em.save.mock.calls
+        .map((c: any[]) => c[1])
+        .find(
+          (d: any) => d?.type === TransactionType.REFUND && d?.amount === 200,
+        );
+      expect(refund).toBeDefined();
+
+      // Payment entity marked FAILED with a reason.
+      expect(withdrawal.status).toBe(PaymentStatus.FAILED);
+      expect(withdrawal.failureReason).toEqual(
+        expect.stringContaining("Recipient account inactive"),
       );
     });
   });

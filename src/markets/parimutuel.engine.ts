@@ -16,9 +16,14 @@ import { Position, PositionStatus } from "../entities/position.entity";
 import { Payment } from "../entities/payment.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { Settlement } from "../entities/settlement.entity";
-import { Dispute, DisputeBondStatus } from "../entities/dispute.entity";
+import {
+  Dispute,
+  DisputeBondStatus,
+  DisputeSide,
+} from "../entities/dispute.entity";
 import { User } from "../entities/user.entity";
 import { LMSRService } from "./lmsr.service";
+import { DEFAULT_HOUSE_EDGE_PCT } from "./fee.constants";
 import { ReputationService } from "./reputation.service";
 import { MarketsGateway } from "./markets.gateway";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
@@ -126,7 +131,7 @@ export class ParimutuelEngine implements OnModuleInit {
     let betOutcome: Outcome | null = null;
     let betUser: User | null = null;
     let betUserTelegramId: string | null = null;
-    let capturedHouseEdgePct = 8; // default; overwritten inside transaction
+    let capturedHouseEdgePct = DEFAULT_HOUSE_EDGE_PCT; // default; overwritten inside transaction
 
     try {
       lockToken = await this.redis.acquireLockWithRetry(
@@ -217,7 +222,7 @@ export class ParimutuelEngine implements OnModuleInit {
         betUserTelegramId = user.telegramId;
         betMarket = market;
         betOutcome = outcome;
-        capturedHouseEdgePct = Number(market.houseEdgePct) || 8;
+        capturedHouseEdgePct = Number(market.houseEdgePct) || DEFAULT_HOUSE_EDGE_PCT;
 
         const balanceBefore = await this.getCreditsBalance(em, userId);
         this.logger.log(
@@ -627,10 +632,37 @@ export class ParimutuelEngine implements OnModuleInit {
       relations: ["outcomes"],
     });
     if (!market) throw new BadRequestException("Market not found");
-    if (market.status !== MarketStatus.RESOLVING)
-      throw new BadRequestException(
-        "Market must be in Resolving state before final resolution",
-      );
+
+    // Normal path: the market is RESOLVING. Recovery path: an earlier resolution
+    // atomically claimed RESOLVING → RESOLVED but then failed before a Settlement
+    // row was written, leaving the market stuck (RESOLVED can only transition to
+    // SETTLED, so the normal call could never retry it). Allow re-entry when the
+    // market is RESOLVED-but-unsettled so this same call can finish the job. The
+    // downstream work (dispute payouts + settleMarket) is idempotent, so a retry
+    // never double-pays.
+    let isRecovery = false;
+    if (market.status !== MarketStatus.RESOLVING) {
+      const existingSettlement =
+        market.status === MarketStatus.RESOLVED
+          ? await this.settlementRepo.findOne({ where: { marketId } })
+          : null;
+      isRecovery =
+        market.status === MarketStatus.RESOLVED && !existingSettlement;
+      if (!isRecovery) {
+        throw new BadRequestException(
+          market.status === MarketStatus.RESOLVED
+            ? "Market is already resolved and settled"
+            : "Market must be in Resolving state before final resolution",
+        );
+      }
+      // On recovery the winner was already fixed by the earlier claim — a retry
+      // must settle the SAME outcome, never silently switch it.
+      if (market.resolvedOutcomeId !== winningOutcomeId) {
+        throw new BadRequestException(
+          "Market was already resolved to a different outcome; cannot change it during recovery",
+        );
+      }
+    }
 
     const winner = market.outcomes.find((o) => o.id === winningOutcomeId);
     if (!winner)
@@ -644,7 +676,9 @@ export class ParimutuelEngine implements OnModuleInit {
     const windowStillOpen =
       market.disputeDeadlineAt && now < market.disputeDeadlineAt;
 
-    if (windowStillOpen) {
+    // On recovery the window was already satisfied by the original resolution;
+    // re-enforcing it would wrongly block the retry.
+    if (windowStillOpen && !isRecovery) {
       const objectionCount = await this.disputeRepo.count({
         where: { marketId },
       });
@@ -671,26 +705,33 @@ export class ParimutuelEngine implements OnModuleInit {
     // Placed AFTER all validation so that a thrown validation error does not
     // leave the market in a half-resolved state (RESOLVED with no winner /
     // no settlement).
-    const claim = await this.marketRepo
-      .createQueryBuilder()
-      .update(Market)
-      .set({
-        status: MarketStatus.RESOLVED,
-        resolvedOutcomeId: winningOutcomeId,
-        resolvedAt: new Date(),
-      })
-      .where("id = :id AND status = :status", {
-        id: marketId,
-        status: MarketStatus.RESOLVING,
-      })
-      .execute();
-    if (claim.affected === 0) {
-      this.logger.warn(
-        `[Concurrency] Market ${marketId} already claimed by another resolver — aborting duplicate resolution`,
-      );
-      throw new BadRequestException(
-        "Market is already being resolved or has been resolved",
-      );
+    //
+    // Skipped on recovery: the market is already RESOLVED (the earlier pass
+    // claimed it), so this conditional UPDATE would match zero rows and wrongly
+    // abort the retry. Concurrency during recovery is instead guarded by the
+    // idempotent, row-locked dispute payouts and settleMarket's own guard.
+    if (!isRecovery) {
+      const claim = await this.marketRepo
+        .createQueryBuilder()
+        .update(Market)
+        .set({
+          status: MarketStatus.RESOLVED,
+          resolvedOutcomeId: winningOutcomeId,
+          resolvedAt: new Date(),
+        })
+        .where("id = :id AND status = :status", {
+          id: marketId,
+          status: MarketStatus.RESOLVING,
+        })
+        .execute();
+      if (claim.affected === 0) {
+        this.logger.warn(
+          `[Concurrency] Market ${marketId} already claimed by another resolver — aborting duplicate resolution`,
+        );
+        throw new BadRequestException(
+          "Market is already being resolved or has been resolved",
+        );
+      }
     }
 
     // ── Mark the winner ───────────────────────────────────────────────────────
@@ -712,26 +753,32 @@ export class ParimutuelEngine implements OnModuleInit {
 
     await this.marketRepo.save(market);
 
-    // ── Mark each objection and settle bonds ──────────────────────────────────
+    // ── Settle the two-sided resolution contest ───────────────────────────────
+    // OBJECT participants win iff the admin changed the proposal; SUPPORT
+    // (defenders) win iff the proposal was kept. The winning side gets each
+    // bond back plus a pro-rata (here: equal, since all bonds match) share of
+    // the losing side's forfeited bonds. Any forfeited money with no winning
+    // side — objectors lost and nobody defended — plus floor-rounding dust is
+    // booked as house revenue via settleMarket()'s houseForfeit, so it flows
+    // through the normal revenue-distribution mechanism instead of leaking.
     const disputes = await this.disputeRepo.find({ where: { marketId } });
+    let unclaimedForfeit = 0;
     if (disputes.length > 0) {
       const proposalChanged =
         !!market.proposedOutcomeId &&
         winningOutcomeId !== market.proposedOutcomeId;
 
-      // Split into correct (upheld) and wrong (overruled) objectors
-      const upheldDisputes = disputes.filter(() => proposalChanged); // all upheld when outcome changed
-      const overruledDisputes = disputes.filter(() => !proposalChanged); // all overruled when outcome kept
+      // The side that was right about the resolution wins the contest.
+      const winningSide = proposalChanged
+        ? DisputeSide.OBJECT
+        : DisputeSide.SUPPORT;
+      const winners = disputes.filter((d) => d.side === winningSide);
+      const losers = disputes.filter((d) => d.side !== winningSide);
 
-      // Total forfeited pool = sum of bonds from wrong objectors
-      const forfeitPool = overruledDisputes.reduce(
-        (sum, d) => sum + Number(d.bondAmount),
-        0,
-      );
-
-      // Total bond staked by correct objectors (for pro-rata reward split)
-      const upheldTotalBond = upheldDisputes.reduce(
-        (sum, d) => sum + Number(d.bondAmount),
+      // Forfeited pool = sum of the losing side's bonds.
+      const forfeitPool = losers.reduce((s, d) => s + Number(d.bondAmount), 0);
+      const winnerTotalBond = winners.reduce(
+        (s, d) => s + Number(d.bondAmount),
         0,
       );
 
@@ -739,63 +786,107 @@ export class ParimutuelEngine implements OnModuleInit {
       market.disputeBondPool = forfeitPool;
       await this.marketRepo.save(market);
 
-      // Process each dispute — settle their bond
-      for (const d of disputes) {
-        d.upheld = !!proposalChanged;
+      // Pay the winning side: bond back + share of the forfeit pool.
+      //
+      // `distributedReward` accumulates every winner's (deterministic) share so
+      // the house-forfeit remainder is correct on both a first pass and a retry.
+      // The actual PAYMENT is idempotent: each winner's reward transaction and
+      // its REWARDED status are written together inside a row-locked transaction,
+      // and a winner already marked REWARDED (by an earlier, possibly failed,
+      // pass) is skipped — so re-running resolveMarket never double-pays a bond.
+      let distributedReward = 0;
+      for (const d of winners) {
+        const rewardShare =
+          winnerTotalBond > 0
+            ? Math.floor((Number(d.bondAmount) / winnerTotalBond) * forfeitPool)
+            : 0;
+        distributedReward += rewardShare;
+        const totalReturn = Number(d.bondAmount) + rewardShare;
 
-        if (proposalChanged) {
-          // ✓ Correct objector: return bond + pro-rata share of forfeit pool
-          const rewardShare =
-            upheldTotalBond > 0
-              ? Math.floor(
-                  (Number(d.bondAmount) / upheldTotalBond) * forfeitPool,
-                )
-              : 0;
-          const totalReturn = Number(d.bondAmount) + rewardShare;
+        // Already paid on a previous pass — count the share (above) but don't
+        // pay again.
+        if (d.bondStatus !== DisputeBondStatus.LOCKED) continue;
 
-          const { balance: rawBal } = await this.transactionRepo
+        await this.dataSource.transaction(async (em) => {
+          // Re-read the dispute under a write lock and re-check LOCKED so two
+          // concurrent resolvers can't both pay the same bond.
+          const locked = await em
+            .getRepository(Dispute)
+            .createQueryBuilder("d")
+            .setLock("pessimistic_write")
+            .where("d.id = :id", { id: d.id })
+            .getOne();
+          if (!locked || locked.bondStatus !== DisputeBondStatus.LOCKED) return;
+
+          const { balance: rawBal } = await em
+            .getRepository(Transaction)
             .createQueryBuilder("t")
             .select("COALESCE(SUM(t.amount), 0)", "balance")
             .where("t.userId = :userId", { userId: d.userId })
             .getRawOne();
           const balBefore = Number(rawBal);
 
-          await this.transactionRepo.save(
-            this.transactionRepo.create({
+          await em.save(
+            Transaction,
+            em.create(Transaction, {
               userId: d.userId,
               type: TransactionType.DISPUTE_BOND_REWARD,
               amount: totalReturn,
               balanceBefore: balBefore,
               balanceAfter: balBefore + totalReturn,
               note:
-                `Objection UPHELD on "${market.title}" — bond returned + ` +
-                `Nu ${rewardShare} reward from forfeit pool`,
+                `Resolution ${d.side === DisputeSide.OBJECT ? "objection" : "defence"} ` +
+                `WON on "${market.title}" — bond returned + Nu ${rewardShare} from the losing side`,
             }),
           );
+          locked.upheld = true;
+          locked.bondStatus = DisputeBondStatus.REWARDED;
+          await em.save(Dispute, locked);
+          // Mirror onto the in-memory copy for the bulk save + logging below.
+          d.upheld = true;
           d.bondStatus = DisputeBondStatus.REWARDED;
+        });
 
-          this.logger.log(
-            `[Bond] User ${d.userId} objection UPHELD — returned Nu ${d.bondAmount} + reward Nu ${rewardShare}`,
-          );
-        } else {
-          // ✗ Wrong objector: bond already deducted at lock time — just mark forfeited
-          d.bondStatus = DisputeBondStatus.FORFEITED;
-          this.logger.log(
-            `[Bond] User ${d.userId} objection OVERRULED — bond Nu ${d.bondAmount} forfeited`,
-          );
-        }
+        this.logger.log(
+          `[Bond] User ${d.userId} (${d.side}) WON — returned Nu ${d.bondAmount} + reward Nu ${rewardShare}`,
+        );
       }
+
+      // The losing side forfeits — bond was already deducted at lock time.
+      for (const d of losers) {
+        d.upheld = false;
+        d.bondStatus = DisputeBondStatus.FORFEITED;
+        this.logger.log(
+          `[Bond] User ${d.userId} (${d.side}) LOST — bond Nu ${d.bondAmount} forfeited`,
+        );
+      }
+
+      // Whatever wasn't paid to a winning side (no winners, or floor-rounding
+      // dust) is booked as house revenue instead of disappearing.
+      unclaimedForfeit = parseFloat(
+        (forfeitPool - distributedReward).toFixed(2),
+      );
+
       await this.disputeRepo.save(disputes);
 
       this.logger.log(
-        `[Dispute] Market ${marketId} resolved with ${disputes.length} objection(s). ` +
-          `Admin ${adminId ?? "unknown"} chose outcome ${winningOutcomeId}. ` +
-          `Proposal was ${market.proposedOutcomeId}. Changed: ${!!proposalChanged}. ` +
-          `Forfeit pool: Nu ${forfeitPool}. Rewarded: ${upheldDisputes.length} objector(s).`,
+        `[Dispute] Market ${marketId} resolved with ${disputes.length} contest entr${
+          disputes.length === 1 ? "y" : "ies"
+        }. ` +
+          `Admin ${adminId ?? "unknown"} chose outcome ${winningOutcomeId} ` +
+          `(proposal ${market.proposedOutcomeId}, changed: ${proposalChanged}). ` +
+          `Winners: ${winners.length}, losers: ${losers.length}, ` +
+          `forfeit pool: Nu ${forfeitPool}, booked to house revenue: Nu ${unclaimedForfeit}.`,
       );
 
       // ── Admin accountability: track & publicise wrong resolutions ───────────
-      if (proposalChanged && adminId && adminId !== "system:auto-resolve") {
+      // Skipped on recovery so a retry never double-counts the admin's stats.
+      if (
+        proposalChanged &&
+        adminId &&
+        adminId !== "system:auto-resolve" &&
+        !isRecovery
+      ) {
         try {
           const adminUser = await this.dataSource
             .getRepository(User)
@@ -842,7 +933,8 @@ export class ParimutuelEngine implements OnModuleInit {
       } else if (
         !proposalChanged &&
         adminId &&
-        adminId !== "system:auto-resolve"
+        adminId !== "system:auto-resolve" &&
+        !isRecovery
       ) {
         // Admin kept the proposal — still count as a resolved market
         try {
@@ -861,8 +953,14 @@ export class ParimutuelEngine implements OnModuleInit {
     }
 
     // ── Settle payouts ────────────────────────────────────────────────────────
-    // If no disputes existed but a real admin resolved (not system), count the clean resolution
-    if (disputes.length === 0 && adminId && adminId !== "system:auto-resolve") {
+    // If no disputes existed but a real admin resolved (not system), count the
+    // clean resolution. Skipped on recovery so a retry never double-counts.
+    if (
+      disputes.length === 0 &&
+      adminId &&
+      adminId !== "system:auto-resolve" &&
+      !isRecovery
+    ) {
       try {
         await this.dataSource
           .getRepository(User)
@@ -872,7 +970,7 @@ export class ParimutuelEngine implements OnModuleInit {
       }
     }
 
-    const settlement = await this.settleMarket(market, winner, 0);
+    const settlement = await this.settleMarket(market, winner, unclaimedForfeit);
 
     // Record revenue distribution (house edge → pending transfer to public account)
     if (settlement && !settlement.cancelReason && settlement.houseAmount > 0) {
@@ -983,7 +1081,10 @@ export class ParimutuelEngine implements OnModuleInit {
   private async settleMarket(
     market: Market,
     winner: Outcome,
-    slashedBondPool = 0,
+    // Forfeited dispute bonds with no winning side to reward. Booked as house
+    // revenue so they flow through the normal revenue-distribution mechanism
+    // (recordDistribution) instead of being kept off-ledger.
+    houseForfeit = 0,
   ): Promise<Settlement> {
     return await this.dataSource.transaction(async (em) => {
       // ── Idempotency guard — prevent double settlement ─────────────────────────
@@ -1004,9 +1105,7 @@ export class ParimutuelEngine implements OnModuleInit {
       // Configured edge; the amount actually booked can be lower when the payout
       // floor has to be subsidised (see the funding guard and bookedHouseAmount).
       const houseAmount = totalPool * (Number(market.houseEdgePct) / 100);
-      // 95% of any slashed dispute bonds flows to winning bettors; 5% is platform fee
-      const disputeBonus = slashedBondPool * 0.95;
-      const payoutPool = totalPool - houseAmount + disputeBonus;
+      const payoutPool = totalPool - houseAmount;
 
       const winnerPool = Number(winner.totalBetAmount);
       // Only settle PENDING positions — never re-process already-settled bets.
@@ -1078,7 +1177,9 @@ export class ParimutuelEngine implements OnModuleInit {
           totalPositions: bets.length,
           winningPositions: 0,
           totalPool,
-          houseAmount: 0,
+          // Bets are refunded, but any forfeited dispute bonds are still booked
+          // as revenue for the audit trail.
+          houseAmount: houseForfeit,
           payoutPool: 0,
           totalPaidOut: 0,
           cancelReason: "thin_pool",
@@ -1372,8 +1473,11 @@ export class ParimutuelEngine implements OnModuleInit {
       market.status = MarketStatus.SETTLED;
       await em.save(Market, market);
 
-      // Book the house edge actually kept after subsidising the payout floor.
-      const bookedHouseAmount = parseFloat((houseAmount - houseSubsidy).toFixed(2));
+      // Book the house edge actually kept after subsidising the payout floor,
+      // plus any forfeited dispute bonds routed to revenue.
+      const bookedHouseAmount = parseFloat(
+        (houseAmount - houseSubsidy + houseForfeit).toFixed(2),
+      );
 
       const settlement = em.create(Settlement, {
         marketId: market.id,

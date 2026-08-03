@@ -410,6 +410,64 @@ describe("ParimutuelEngine — payout-floor funding guard (settleMarket)", () =>
   });
 });
 
+// ─── Forfeited-bond routing to house revenue (houseForfeit) ────────────────────
+// When a resolution objection loses and there is no winning side to reward,
+// resolveMarket() passes the forfeited bonds to settleMarket() as houseForfeit,
+// which books them onto the settlement's houseAmount so they flow through the
+// normal revenue-distribution mechanism — never touching bettor payouts and
+// never leaking off-ledger.
+
+describe("ParimutuelEngine — forfeited-bond routing to house revenue", () => {
+  const sumPayouts = (em: any) =>
+    em._saved
+      .filter(([, d]: any) => d?.type === TransactionType.POSITION_PAYOUT)
+      .reduce((s: number, [, d]: any) => s + Number(d.amount), 0);
+
+  it("books forfeited bonds as house revenue without changing the payout", async () => {
+    const positions = [
+      mkPos("p1", "u1", "o-yes", 100), // winner
+      mkPos("p2", "u2", "o-no", 100), // loser
+    ];
+    const em = makeEm(positions);
+    const { engine } = makeEngine(em);
+    const winner50 = { ...YES, totalBetAmount: "100" };
+
+    // Nu 100 forfeited: houseAmount = 10 (edge) + 100 (forfeit) = 110,
+    // payout stays 200 - 10 = 190.
+    const settlement = await (engine as any).settleMarket(
+      mkMarket(200),
+      winner50,
+      100,
+    );
+
+    expect(settlement.cancelReason).toBeUndefined();
+    expect(settlement.houseAmount).toBeCloseTo(110, 1);
+    expect(settlement.payoutPool).toBeCloseTo(190, 1);
+    expect(sumPayouts(em)).toBeCloseTo(190, 1);
+  });
+
+  it("zero forfeit leaves house edge and payout unchanged (baseline)", async () => {
+    const positions = [
+      mkPos("p1", "u1", "o-yes", 100),
+      mkPos("p2", "u2", "o-no", 100),
+    ];
+    const em = makeEm(positions);
+    const { engine } = makeEngine(em);
+    const winner50 = { ...YES, totalBetAmount: "100" };
+
+    const settlement = await (engine as any).settleMarket(
+      mkMarket(200),
+      winner50,
+      0,
+    );
+
+    // House edge only: houseAmount = 10, payoutPool = 190.
+    expect(settlement.houseAmount).toBeCloseTo(10, 1);
+    expect(settlement.payoutPool).toBeCloseTo(190, 1);
+    expect(sumPayouts(em)).toBeCloseTo(190, 1);
+  });
+});
+
 // ─── cancelMarket error propagation ──────────────────────────────────────────
 
 describe("ParimutuelEngine.cancelMarket — error propagation", () => {

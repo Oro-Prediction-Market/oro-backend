@@ -10,6 +10,7 @@ import {
 } from "typeorm";
 import { Outcome } from "./outcome.entity";
 import { Position } from "./position.entity";
+import { DEFAULT_HOUSE_EDGE_PCT } from "../markets/fee.constants";
 
 export enum MarketStatus {
   UPCOMING = "upcoming",
@@ -59,8 +60,13 @@ export class Market {
   @Column({ type: "decimal", precision: 18, scale: 2, default: 0 })
   totalPool: number;
 
-  @Column({ type: "decimal", precision: 5, scale: 2, default: 10 })
-  houseEdgePct: number; // e.g. 10 = 10%
+  @Column({
+    type: "decimal",
+    precision: 5,
+    scale: 2,
+    default: DEFAULT_HOUSE_EDGE_PCT,
+  })
+  houseEdgePct: number; // percent, e.g. 10 = 10% — see fee.constants.ts
 
   @Column({
     type: "enum",
@@ -141,6 +147,14 @@ export class Market {
    */
   @Column({ type: "decimal", precision: 18, scale: 2, default: 0 })
   disputeBondPool: number;
+
+  /**
+   * Per-participant bond for this market's resolution contest, in BTN.
+   * Set by the FIRST objector (minimum Nu 10); every later participant on
+   * either side must lock exactly this amount. Null until the first objection.
+   */
+  @Column({ type: "decimal", precision: 18, scale: 2, nullable: true, default: null })
+  disputeBondAmount: number | null;
 
   /** football-data.org match ID — set when a market is created from a fixture */
   @Column({ type: "int", nullable: true })
