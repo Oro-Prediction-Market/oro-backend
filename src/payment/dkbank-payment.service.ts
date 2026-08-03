@@ -1113,10 +1113,14 @@ export class DKBankPaymentService {
       }
     }
 
+    const transferStatus = (transferResult?.status ?? "").toUpperCase();
     const transferSucceeded =
-      !transferThrew &&
-      typeof transferResult?.status === "string" &&
-      transferResult.status.toUpperCase().includes("SUCCESS");
+      !transferThrew && transferStatus.includes("SUCCESS");
+    // DK replied, but with an indeterminate code (timeout / no-response /
+    // internal error): treat it exactly like a thrown call — money state
+    // unknown, so keep the debit and leave PROCESSING, never refund.
+    const transferAmbiguous =
+      !transferThrew && transferStatus === "AMBIGUOUS";
 
     // ── Phase 3: finalise (short txn) ─────────────────────────────────────────
     await this.dataSource.transaction(async (em) => {
@@ -1135,13 +1139,21 @@ export class DKBankPaymentService {
         return;
       }
 
-      if (transferThrew) {
-        // Ambiguous — keep the debit and leave PROCESSING for reconciliation.
+      if (transferThrew || transferAmbiguous) {
+        // Ambiguous — either the call threw (no reply at all) or DK replied with
+        // an indeterminate code (timeout / no-response / internal error). Either
+        // way we do NOT know whether the money moved, so keep the debit and
+        // leave PROCESSING for reconciliation. Never auto-refund: refunding a
+        // transfer that actually settled would double-pay the user.
+        const reason = transferThrew
+          ? transferError
+          : (transferResult?.statusDesc ??
+            "DK Bank returned an indeterminate status");
         result.status = "processing";
-        result.failureReason = transferError;
+        result.failureReason = reason;
         this.logger.warn(
           `[Withdrawal] DK transfer ambiguous for payment ${paymentId} — left ` +
-            `PROCESSING with debit intact for reconciliation: ${transferError}`,
+            `PROCESSING with debit intact for reconciliation: ${reason}`,
         );
         return;
       }

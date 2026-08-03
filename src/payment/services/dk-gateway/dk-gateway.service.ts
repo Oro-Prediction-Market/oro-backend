@@ -739,9 +739,27 @@ export class DKGatewayService {
       );
     }
 
+    const code = raw?.response_code;
     const success =
-      raw?.response_code === DK_RESPONSE_CODES.SUCCESS ||
+      code === DK_RESPONSE_CODES.SUCCESS ||
       (raw?.response_message ?? "").toUpperCase().includes("SUCCESS");
+
+    // Indeterminate outcomes: DK timed out, gave no response, or hit an internal
+    // error — so it may or may NOT have moved the money. These must be surfaced
+    // as AMBIGUOUS (not FAILED) so the caller leaves the withdrawal PROCESSING
+    // for reconciliation. Refunding on a transfer that actually settled would
+    // double-pay the user. (A clean rejection — bad account, restriction, bad
+    // params — is a definite FAILED where no money moved, so it is safe to
+    // refund; those are NOT in this list.)
+    const AMBIGUOUS_CODES: string[] = [
+      DK_RESPONSE_CODES.TIMEOUT, // 2002 — DK timed out
+      DK_RESPONSE_CODES.INTERNAL_NO_RESPONSE, // 2001 — DK gave no response
+      DK_RESPONSE_CODES.INTERNAL_FAILURE, // 2004 — DK internal failure
+      DK_RESPONSE_CODES.EXCEPTION, // 5001 — DK exception
+      DK_RESPONSE_CODES.DB_ERROR, // 5002 — DK database error
+    ];
+    const ambiguous = !success && AMBIGUOUS_CODES.includes(code);
+    const status = success ? "SUCCESS" : ambiguous ? "AMBIGUOUS" : "FAILED";
 
     return {
       txnId:
@@ -750,11 +768,15 @@ export class DKGatewayService {
         null,
       txnStatusId: raw?.response_data?.txn_status_id ?? null,
       inquiryId: raw?.response_data?.inquiry_id ?? null,
-      status: success ? "SUCCESS" : "FAILED",
+      status,
       statusDesc:
         raw?.response_description ??
         raw?.response_message ??
-        (success ? "Transfer queued" : "Transfer failed"),
+        (success
+          ? "Transfer queued"
+          : ambiguous
+            ? "Transfer status indeterminate"
+            : "Transfer failed"),
       raw,
     };
   }

@@ -1089,6 +1089,74 @@ describe("Merchant vault → user DK account (withdrawal flow)", () => {
       // Payment is left PROCESSING — never SUCCESS, never FAILED.
       expect(withdrawal.status).toBe(PaymentStatus.PROCESSING);
     });
+
+    it("leaves the withdrawal PROCESSING (no refund) when DK RETURNS an ambiguous status", async () => {
+      // DK replied cleanly (no throw) but with an indeterminate outcome — e.g.
+      // code 2002 (timeout) / 2001 (no response), which the gateway surfaces as
+      // status "AMBIGUOUS". The money may or may not have moved, so this must be
+      // treated exactly like a thrown call: keep the debit, leave PROCESSING,
+      // and NEVER refund (a refund on a transfer that settled would double-pay).
+      const withdrawal = makeWithdrawalPayment({
+        status: PaymentStatus.PENDING,
+      });
+      const paymentRepo = makePaymentRepo(withdrawal);
+      const redis = makeRedis({ otp: "123456", userId: "user-1" });
+      const dkGateway = makeDkGateway();
+      dkGateway.transferToAccount = jest.fn().mockResolvedValue({
+        txnId: null,
+        status: "AMBIGUOUS",
+        statusDesc: "Transfer status indeterminate",
+      });
+
+      const dataSource = makeDataSource();
+      const em = dataSource._em;
+      em.getRepository.mockReturnValue({
+        createQueryBuilder: jest.fn().mockReturnValue({
+          setLock: jest.fn().mockReturnThis(),
+          select: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          getOne: jest.fn().mockResolvedValue(withdrawal),
+          getRawOne: jest.fn().mockResolvedValue({ balance: 1000 }),
+        }),
+      });
+
+      const { service } = makeService({
+        payment: withdrawal,
+        redis,
+        dkGateway,
+        dataSource,
+        configService: makeProductionConfigService(), // bypasses OFF → real DK path
+      });
+      (service as any).paymentRepo = paymentRepo;
+
+      const result = await (service as any).confirmWithdrawal(
+        "user-1",
+        "withdrawal-1",
+        "123456",
+      );
+
+      // Ambiguous reply → processing, not failed.
+      expect(result.status).toBe("processing");
+
+      // Debit was reserved…
+      const debit = em.save.mock.calls
+        .map((c: any[]) => c[1])
+        .find(
+          (d: any) =>
+            d?.type === TransactionType.WITHDRAWAL && d?.amount === -200,
+        );
+      expect(debit).toBeDefined();
+
+      // …and was NOT reversed — critically, no refund on an ambiguous reply.
+      const refund = em.save.mock.calls
+        .map((c: any[]) => c[1])
+        .find((d: any) => d?.type === TransactionType.REFUND);
+      expect(refund).toBeUndefined();
+
+      // Left PROCESSING for reconciliation — never SUCCESS, never FAILED.
+      expect(withdrawal.status).toBe(PaymentStatus.PROCESSING);
+    });
   });
 
   // ── Solvency invariant ────────────────────────────────────────────────────
