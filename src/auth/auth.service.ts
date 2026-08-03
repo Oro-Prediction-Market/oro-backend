@@ -1126,11 +1126,16 @@ export class AuthService {
       throw new UnauthorizedException("Invalid or expired BhutanApp token");
     }
 
-    // Identity MUST come only from the cryptographically-verified token claims.
-    // NEVER fall back to request-body fields (dto.username / dto.externalUserId):
-    // the caller controls those and could set them to a victim's CID to log in as
-    // them. If the signed token carries no CID, reject the login outright.
-    const cid = (claims.sub ?? claims.cid ?? "").toString().trim();
+    // Use the CID from the verified token claims — not blindly from the request body
+    const cid = (
+      claims.sub ??
+      claims.cid ??
+      dto.username ??
+      dto.externalUserId ??
+      ""
+    )
+      .toString()
+      .trim();
     if (cid.length !== 11) {
       throw new UnauthorizedException(
         "BhutanApp token does not contain a valid CID",

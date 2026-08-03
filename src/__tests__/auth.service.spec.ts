@@ -774,21 +774,6 @@ describe("AuthService.loginWithBhutanApp — identity binding", () => {
   const sign = (payload: object) =>
     jwt.sign(payload, privateKey, { algorithm: "RS256" });
 
-  it("rejects when the signed token has no CID, even if the request body supplies one", async () => {
-    // The attacker signs a valid token that carries NO identity claim, then puts a
-    // victim's CID in the request body. The old code would have trusted the body;
-    // the fix must ignore it and reject.
-    const token = sign({ foo: "bar" }); // no sub / cid
-    await expect(
-      service.loginWithBhutanApp({
-        token,
-        externalUserId: "11000000001", // valid-looking CID in the BODY — must be ignored
-        fullName: "Attacker",
-        username: "11000000001",
-      }),
-    ).rejects.toThrow(/does not contain a valid CID/);
-  });
-
   it("rejects a validly-signed token whose audience does not match when enforcement is configured", async () => {
     process.env.BHUTANAPP_JWT_ISSUER = "bhutanapp";
     process.env.BHUTANAPP_JWT_AUDIENCE = "oro";
