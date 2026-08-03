@@ -763,6 +763,11 @@ export class ParimutuelEngine implements OnModuleInit {
     // through the normal revenue-distribution mechanism instead of leaking.
     const disputes = await this.disputeRepo.find({ where: { marketId } });
     let unclaimedForfeit = 0;
+    // Winning objectors to reward from the house cut when the admin's proposal
+    // was OVERTURNED but nobody defended it (no losing side, so no forfeited
+    // bonds to reward from). Populated below; the reward itself is paid inside
+    // settleMarket, where the real house residual is known and can cap it.
+    let challengerRewardObjectors: { userId: string; bondAmount: number }[] = [];
     if (disputes.length > 0) {
       const proposalChanged =
         !!market.proposedOutcomeId &&
@@ -781,6 +786,16 @@ export class ParimutuelEngine implements OnModuleInit {
         (s, d) => s + Number(d.bondAmount),
         0,
       );
+
+      // Admin overturned with NO defending side: the correct objectors would
+      // otherwise get only their bond back (empty forfeit pool). Fund a reward
+      // for them from the house cut instead — paid & capped in settleMarket.
+      if (proposalChanged && winners.length > 0 && losers.length === 0) {
+        challengerRewardObjectors = winners.map((d) => ({
+          userId: d.userId,
+          bondAmount: Number(d.bondAmount),
+        }));
+      }
 
       // Persist the forfeit pool onto the market record for audit trail
       market.disputeBondPool = forfeitPool;
@@ -970,23 +985,38 @@ export class ParimutuelEngine implements OnModuleInit {
       }
     }
 
-    const settlement = await this.settleMarket(market, winner, unclaimedForfeit);
+    const settlement = await this.settleMarket(
+      market,
+      winner,
+      unclaimedForfeit,
+      challengerRewardObjectors,
+    );
 
-    // Record revenue distribution (house edge → pending transfer to public account)
-    if (settlement && !settlement.cancelReason && settlement.houseAmount > 0) {
-      this.revenueDistributionService
-        .recordDistribution(
+    // Record revenue distribution (house edge → pending transfer to public
+    // account). Awaited so "settled" implies "revenue booked" on the happy path.
+    // If it fails, the settlement is already committed, so we do NOT fail the
+    // resolve — we log LOUDLY (error) and let reconcileMissingDistributions()
+    // book it on the next cron tick. recordDistribution is idempotent, so this
+    // never double-books.
+    if (
+      settlement &&
+      !settlement.cancelReason &&
+      Number(settlement.houseAmount) > 0
+    ) {
+      try {
+        await this.revenueDistributionService.recordDistribution(
           market.id,
           settlement.id,
           Number(settlement.houseAmount),
           Number(market.houseEdgePct),
           Number(market.totalPool),
-        )
-        .catch((err: Error) =>
-          this.logger.warn(
-            `[Revenue] Failed to record distribution for market ${marketId}: ${err.message}`,
-          ),
         );
+      } catch (err) {
+        this.logger.error(
+          `[Revenue] Failed to record distribution for market ${marketId} at ` +
+            `settlement time; reconcile cron will retry: ${(err as Error).message}`,
+        );
+      }
     }
 
     // Bust balance cache for every predictor so the TMA reflects payouts immediately.
@@ -1085,6 +1115,12 @@ export class ParimutuelEngine implements OnModuleInit {
     // revenue so they flow through the normal revenue-distribution mechanism
     // (recordDistribution) instead of being kept off-ledger.
     houseForfeit = 0,
+    // Winning objectors to reward from the house cut when the admin was
+    // overturned with NO defenders (empty forfeit pool). Their bonds are
+    // returned by the caller; here they receive 50% of the market's house cut,
+    // split pro-rata by bond and CAPPED at the real house residual so the pool
+    // still balances exactly. Skipped entirely on a refunded (thin-pool) market.
+    challengerRewardObjectors: { userId: string; bondAmount: number }[] = [],
   ): Promise<Settlement> {
     return await this.dataSource.transaction(async (em) => {
       // ── Idempotency guard — prevent double settlement ─────────────────────────
@@ -1487,8 +1523,72 @@ export class ParimutuelEngine implements OnModuleInit {
         0,
         parseFloat((totalPool - totalPaidOut).toFixed(2)),
       );
-      const bookedHouseAmount = parseFloat(
-        (poolResidual + houseForfeit).toFixed(2),
+
+      // ── Overturned-with-no-defenders challenger reward ────────────────────────
+      // Reward correct objectors 50% of the market's house cut when the admin
+      // was overturned and there was no defending side to forfeit bonds. Funded
+      // from — and capped at — the house residual, so it can never pay out money
+      // the pool does not hold, and the conservation identity below still holds:
+      //     totalPool === totalPaidOut + challengerRewardPaid
+      //                   + (bookedHouseAmount − houseForfeit)
+      let challengerRewardPaid = 0;
+      if (challengerRewardObjectors.length > 0) {
+        const houseCut = parseFloat(
+          ((totalPool * Number(market.houseEdgePct)) / 100).toFixed(2),
+        );
+        const rewardPool = Math.min(
+          parseFloat((houseCut * 0.5).toFixed(2)),
+          poolResidual,
+        );
+        const totalBond = challengerRewardObjectors.reduce(
+          (s, o) => s + o.bondAmount,
+          0,
+        );
+        if (rewardPool > 0 && totalBond > 0) {
+          for (const o of challengerRewardObjectors) {
+            const share = parseFloat(
+              ((o.bondAmount / totalBond) * rewardPool).toFixed(2),
+            );
+            if (share <= 0) continue;
+            const { balance: rawBal } = await em
+              .getRepository(Transaction)
+              .createQueryBuilder("t")
+              .select("COALESCE(SUM(t.amount), 0)", "balance")
+              .where("t.userId = :userId", { userId: o.userId })
+              .getRawOne();
+            const balBefore = Number(rawBal);
+            await em.save(
+              Transaction,
+              em.create(Transaction, {
+                userId: o.userId,
+                type: TransactionType.DISPUTE_BOND_REWARD,
+                amount: share,
+                balanceBefore: balBefore,
+                balanceAfter: balBefore + share,
+                note:
+                  `Objection UPHELD on "${market.title}" — admin overturned with ` +
+                  `no defenders; rewarded Nu ${share} from the house cut`,
+              }),
+            );
+            challengerRewardPaid = parseFloat(
+              (challengerRewardPaid + share).toFixed(2),
+            );
+            await this.redis
+              .del(`oro:cache:balance:${o.userId}`)
+              .catch(() => undefined);
+          }
+        }
+      }
+
+      // Book house revenue as the residual MINUS anything paid to challengers
+      // from the house cut (a bound floor already lowered the residual by
+      // raising totalPaidOut). Cannot go negative because the reward is capped
+      // at poolResidual above.
+      const bookedHouseAmount = Math.max(
+        0,
+        parseFloat(
+          (poolResidual + houseForfeit - challengerRewardPaid).toFixed(2),
+        ),
       );
 
       const settlement = em.create(Settlement, {
