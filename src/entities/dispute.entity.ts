@@ -87,6 +87,19 @@ export class Dispute {
   })
   bondStatus: DisputeBondStatus;
 
+  /**
+   * Reward paid to this participant on top of the returned bond when their side
+   * won — a share of the losing side's forfeited bonds, or (when the admin was
+   * overturned with no defenders) a share of the house cut. Excludes the bond
+   * itself, which is returned separately. 0 for losing/pending/unrewarded rows.
+   */
+  @ApiProperty({
+    example: 25,
+    description: "BTN reward paid on top of the returned bond when this side won",
+  })
+  @Column({ type: "decimal", precision: 18, scale: 2, default: 0 })
+  rewardAmount: number;
+
   @ApiProperty()
   @CreateDateColumn()
   createdAt: Date;

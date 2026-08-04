@@ -856,10 +856,12 @@ export class ParimutuelEngine implements OnModuleInit {
           );
           locked.upheld = true;
           locked.bondStatus = DisputeBondStatus.REWARDED;
+          locked.rewardAmount = rewardShare;
           await em.save(Dispute, locked);
           // Mirror onto the in-memory copy for the bulk save + logging below.
           d.upheld = true;
           d.bondStatus = DisputeBondStatus.REWARDED;
+          d.rewardAmount = rewardShare;
         });
 
         this.logger.log(
@@ -1525,10 +1527,12 @@ export class ParimutuelEngine implements OnModuleInit {
       );
 
       // ── Overturned-with-no-defenders challenger reward ────────────────────────
-      // Reward correct objectors 50% of the market's house cut when the admin
-      // was overturned and there was no defending side to forfeit bonds. Funded
-      // from — and capped at — the house residual, so it can never pay out money
-      // the pool does not hold, and the conservation identity below still holds:
+      // Reward correct objectors a fraction of the market's house cut when the
+      // admin was overturned and there was no defending side to forfeit bonds.
+      // The fraction is configurable via CHALLENGER_REWARD_HOUSE_CUT_FRACTION
+      // (default 0.2 = 20% of the house cut ≈ 2% of the pool at a 10% edge).
+      // Funded from — and capped at — the house residual, so it can never pay out
+      // money the pool does not hold, and the conservation identity below holds:
       //     totalPool === totalPaidOut + challengerRewardPaid
       //                   + (bookedHouseAmount − houseForfeit)
       let challengerRewardPaid = 0;
@@ -1536,8 +1540,16 @@ export class ParimutuelEngine implements OnModuleInit {
         const houseCut = parseFloat(
           ((totalPool * Number(market.houseEdgePct)) / 100).toFixed(2),
         );
+        // Clamp to [0, 1]; fall back to 0.2 for a missing/garbage config value.
+        const rawFraction = Number(
+          this.configService.get("CHALLENGER_REWARD_HOUSE_CUT_FRACTION", "0.2"),
+        );
+        const rewardFraction =
+          Number.isFinite(rawFraction) && rawFraction >= 0 && rawFraction <= 1
+            ? rawFraction
+            : 0.2;
         const rewardPool = Math.min(
-          parseFloat((houseCut * 0.5).toFixed(2)),
+          parseFloat((houseCut * rewardFraction).toFixed(2)),
           poolResidual,
         );
         const totalBond = challengerRewardObjectors.reduce(
@@ -1572,6 +1584,18 @@ export class ParimutuelEngine implements OnModuleInit {
             );
             challengerRewardPaid = parseFloat(
               (challengerRewardPaid + share).toFixed(2),
+            );
+            // Record the reward on the objector's dispute row so the UI can show
+            // exactly what they won. resolveMarket already marked it REWARDED with
+            // rewardAmount 0 (no defenders → empty forfeit pool); set the real
+            // house-cut figure here. Idempotent: a retry writes the same value.
+            await em.getRepository(Dispute).update(
+              {
+                marketId: market.id,
+                userId: o.userId,
+                side: DisputeSide.OBJECT,
+              },
+              { rewardAmount: share },
             );
             await this.redis
               .del(`oro:cache:balance:${o.userId}`)

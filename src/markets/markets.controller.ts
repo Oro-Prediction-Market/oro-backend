@@ -167,6 +167,17 @@ export class MarketsController {
     return this.marketsService.getRecentActivity(20);
   }
 
+  // NOTE: must stay ABOVE the `:id` route below, or "my-disputes" is captured
+  // as a market id. Authenticated (not @Public).
+  @Get("my-disputes")
+  @ApiOperation({
+    summary:
+      "All of the authenticated user's disputes across markets (result + bond + reward). Used to flag disputed markets in the results list.",
+  })
+  getMyDisputes(@Request() req: any) {
+    return this.marketsService.getMyDisputes(req.user.userId);
+  }
+
   @Get(":id")
   @Public()
   @ApiOperation({ summary: "Get market by ID with outcomes & live odds" })
@@ -219,6 +230,15 @@ export class MarketsController {
   getDisputeInfo(@Param("id") id: string, @Request() req: any) {
     const userId = req?.user?.userId as string | undefined;
     return this.marketsService.getDisputeInfo(id, userId);
+  }
+
+  @Get(":id/my-dispute")
+  @ApiOperation({
+    summary:
+      "The authenticated user's own dispute for this market — result (won/lost), bond locked, and reward paid. Returns null if they did not object.",
+  })
+  getMyDispute(@Param("id") id: string, @Request() req: any) {
+    return this.marketsService.getMyDispute(id, req.user.userId);
   }
 
   @Post(":id/disputes")

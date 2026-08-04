@@ -1055,6 +1055,55 @@ export class MarketsService implements OnModuleInit {
       upheld: d.upheld,
       bondAmount: d.bondAmount,
       bondStatus: d.bondStatus,
+      rewardAmount: d.rewardAmount,
+      createdAt: d.createdAt,
+    }));
+  }
+
+  /**
+   * The authenticated caller's own dispute record for a market — used to show
+   * "you challenged this and won/lost" plus the exact bond and reward. Returns
+   * null when the user did not object. Only ever exposes the caller's own row,
+   * so (unlike the public list) it may safely include the settlement result.
+   */
+  async getMyDispute(marketId: string, userId: string) {
+    const d = await this.disputeRepo.findOne({
+      where: { marketId, userId },
+      order: { createdAt: "DESC" },
+    });
+    if (!d) return null;
+    return {
+      id: d.id,
+      reason: d.reason,
+      side: d.side,
+      upheld: d.upheld,
+      bondAmount: d.bondAmount,
+      bondStatus: d.bondStatus,
+      rewardAmount: d.rewardAmount,
+      createdAt: d.createdAt,
+    };
+  }
+
+  /**
+   * Every dispute the caller has raised, across all markets — used to flag which
+   * settled markets they disputed (and the result) in the results list. Only the
+   * caller's own rows, so it may include the settlement outcome + reward.
+   */
+  async getMyDisputes(userId: string) {
+    const disputes = await this.disputeRepo.find({
+      where: { userId },
+      relations: { market: true },
+      order: { createdAt: "DESC" },
+    });
+    return disputes.map((d) => ({
+      id: d.id,
+      marketId: d.marketId,
+      marketTitle: d.market?.title ?? null,
+      side: d.side,
+      upheld: d.upheld,
+      bondAmount: d.bondAmount,
+      bondStatus: d.bondStatus,
+      rewardAmount: d.rewardAmount,
       createdAt: d.createdAt,
     }));
   }

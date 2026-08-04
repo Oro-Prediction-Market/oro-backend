@@ -603,7 +603,10 @@ describe("Settlement wallet credit — no DK transfer on market settle", () => {
       return qb;
     };
     const mockEm = {
-      getRepository: jest.fn().mockReturnValue({ createQueryBuilder: jest.fn(makeQb) }),
+      getRepository: jest.fn().mockReturnValue({
+        createQueryBuilder: jest.fn(makeQb),
+        update: jest.fn().mockResolvedValue(undefined),
+      }),
       createQueryBuilder: jest.fn(makeQb),
       find: jest.fn().mockResolvedValue(positions),
       // Must be null: settleMarket's idempotency guard returns early if findOne
@@ -758,7 +761,7 @@ describe("Settlement wallet credit — no DK transfer on market settle", () => {
     expect(loserPayouts).toHaveLength(0);
   });
 
-  it("rewards a correct objector from 50% of the house cut when the admin is overturned with no defenders — and the pool still balances", async () => {
+  it("rewards a correct objector from 20% of the house cut when the admin is overturned with no defenders — and the pool still balances", async () => {
     const savedTransactions: any[] = [];
     const { engine } = buildSettlementEngine(savedTransactions);
 
@@ -767,7 +770,8 @@ describe("Settlement wallet credit — no DK transfer on market settle", () => {
       status: "resolved",
       title: "Test market",
       totalPool: 300,
-      houseEdgePct: 8, // house cut = Nu 24 → challenger reward pool = Nu 12
+      // house cut = Nu 24 → challenger reward = 20% = Nu 4.80 (default fraction)
+      houseEdgePct: 8,
       outcomes: [
         { id: "o-win", label: "Yes", totalBetAmount: 200, isWinner: true },
         { id: "o-lose", label: "No", totalBetAmount: 100, isWinner: false },
@@ -780,22 +784,22 @@ describe("Settlement wallet credit — no DK transfer on market settle", () => {
       { userId: "u3", bondAmount: 50 },
     ]);
 
-    // Challenger got 50% of the Nu 24 house cut = Nu 12.
+    // Challenger got 20% of the Nu 24 house cut = Nu 4.80.
     const rewards = savedTransactions.filter(
       (t) => t.type === TransactionType.DISPUTE_BOND_REWARD,
     );
     expect(rewards).toHaveLength(1);
     expect(rewards[0].userId).toBe("u3");
-    expect(rewards[0].amount).toBeCloseTo(12);
+    expect(rewards[0].amount).toBeCloseTo(4.8);
 
-    // House revenue is reduced by exactly the reward: 24 − 12 = 12.
-    expect(settlement.houseAmount).toBeCloseTo(12);
+    // House revenue is reduced by exactly the reward: 24 − 4.8 = 19.2.
+    expect(settlement.houseAmount).toBeCloseTo(19.2);
 
     // Conservation: pool = winner payout + challenger reward + house revenue.
     const winnerPayout = savedTransactions
       .filter((t) => t.type === TransactionType.POSITION_PAYOUT)
       .reduce((s, t) => s + t.amount, 0);
-    expect(winnerPayout + 12 + Number(settlement.houseAmount)).toBeCloseTo(300);
+    expect(winnerPayout + 4.8 + Number(settlement.houseAmount)).toBeCloseTo(300);
   });
 });
 
@@ -1031,7 +1035,10 @@ describe("Batch payment — NOT triggered on market settlement", () => {
       return qb;
     };
     const mockEm = {
-      getRepository: jest.fn().mockReturnValue({ createQueryBuilder: jest.fn(makeQb) }),
+      getRepository: jest.fn().mockReturnValue({
+        createQueryBuilder: jest.fn(makeQb),
+        update: jest.fn().mockResolvedValue(undefined),
+      }),
       createQueryBuilder: jest.fn(makeQb),
       find: jest.fn().mockResolvedValue(positions),
       findOne: jest.fn().mockResolvedValue(null), // no existing settlement
