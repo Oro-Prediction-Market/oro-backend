@@ -15,7 +15,7 @@ import {
 } from "@nestjs/swagger";
 import { IsNumber, IsString, IsUUID, Min, IsOptional, IsEnum } from "class-validator";
 import { Type } from "class-transformer";
-import { JwtAuthGuard } from "../auth/guards";
+import { JwtAuthGuard, Public } from "../auth/guards";
 import { ChallengesService } from "./challenges.service";
 import { CardType } from "../entities/challenge.entity";
 
@@ -94,6 +94,16 @@ export class ChallengesController {
   async join(@Req() req: any, @Param("id") id: string) {
     const challenge = await this.challengesService.join(id, req.user.userId);
     return this.toResponse(challenge, req.user.userId);
+  }
+
+  @Public()
+  @Get(":id/preview")
+  @ApiOperation({
+    summary:
+      "Public challenge preview — powers the landing page a challenge deep link opens before sign-in",
+  })
+  getPreview(@Param("id") id: string) {
+    return this.challengesService.getPublicPreview(id);
   }
 
   private toResponse(challenge: any, currentUserId: string) {

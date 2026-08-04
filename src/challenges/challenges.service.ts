@@ -469,6 +469,51 @@ export class ChallengesService {
       .getMany();
   }
 
+  // ── Public preview (no auth) ──────────────────────────────────────────────
+  // Powers the landing page a `challenge_<id>` deep link opens for someone who
+  // is not signed in yet. Returns only what's safe to show a stranger — never a
+  // raw telegramId, and the wager is hidden while a Ghost card is active.
+
+  async getPublicPreview(id: string): Promise<{
+    id: string;
+    marketId: string;
+    marketTitle: string | null;
+    marketStatus: MarketStatus | null;
+    outcomeId: string;
+    outcomeLabel: string | null;
+    creatorName: string;
+    wagerAmount: number | null;
+    status: ChallengeStatus;
+    expiresAt: Date | null;
+  }> {
+    const c = await this.challengeRepo
+      .createQueryBuilder("c")
+      .leftJoinAndSelect("c.market", "m")
+      .leftJoinAndSelect("c.outcome", "o")
+      .leftJoinAndSelect("c.creator", "u")
+      .where("c.id = :id", { id })
+      .getOne();
+
+    if (!c) throw new NotFoundException("Challenge not found");
+
+    const ghostActive =
+      c.equippedCard === CardType.GHOST && c.status === ChallengeStatus.OPEN;
+
+    return {
+      id: c.id,
+      marketId: c.marketId,
+      marketTitle: c.market?.title ?? null,
+      marketStatus: c.market?.status ?? null,
+      outcomeId: c.outcomeId,
+      outcomeLabel: c.outcome?.label ?? null,
+      creatorName:
+        c.creator?.username ?? c.creator?.firstName ?? "Someone",
+      wagerAmount: ghostActive ? null : Number(c.wagerAmount ?? 0),
+      status: c.status,
+      expiresAt: c.expiresAt ?? null,
+    };
+  }
+
   // ── My challenges (created + joined) ──────────────────────────────────────
 
   async findForUser(userId: string): Promise<Challenge[]> {
