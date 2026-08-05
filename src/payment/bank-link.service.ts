@@ -15,6 +15,7 @@ import { User } from "../entities/user.entity";
 import { RedisService } from "../redis/redis.service";
 import { SmsService } from "../shared/services/sms.service";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
+import { TelegramVerificationService } from "../telegram/telegram-verification.service";
 import { DKGatewayService } from "./services/dk-gateway/dk-gateway.service";
 
 const OTP_TTL_SEC = 300; // 5 minutes
@@ -39,13 +40,13 @@ export class BankLinkService {
     private readonly redis: RedisService,
     private readonly smsService: SmsService,
     private readonly telegramSimple: TelegramSimpleService,
+    private readonly telegramVerification: TelegramVerificationService,
   ) {}
 
   async linkBankAccount(
     userId: string,
     cid: string,
     expectedPhone?: string,
-    skipOtp?: boolean,
   ): Promise<{
     accountName: string;
     maskedPhone: string;
@@ -134,14 +135,31 @@ export class BankLinkService {
       dkAccountName: accountName,
     });
 
-    // If skipOtp (e.g. during onboarding where identity is already verified), auto-verify
-    if (skipOtp) {
+    // Decide whether an OTP is needed — SERVER-SIDE, never from a client flag.
+    // The bank OTP proves the caller controls the DK-registered phone. We can
+    // safely skip it only when the server already holds that proof: the user
+    // has a phone they verified earlier (telegramPhoneHash, set at onboarding
+    // OTP / phone-verification) AND it hashes to the same number DK Bank has on
+    // file for this CID. An attacker who verified their own phone and then tries
+    // a victim's CID won't match, so they get an OTP sent to the victim's phone
+    // — which they can't read. This closes the old request-body `skipOtp` hole.
+    const verifier = await this.userRepo.findOne({
+      where: { id: userId },
+      select: ["id", "telegramPhoneHash"],
+    });
+    const canSkipOtp =
+      !!verifier?.telegramPhoneHash &&
+      this.telegramVerification.hashPhone(bankPhone) ===
+        verifier.telegramPhoneHash;
+
+    if (canSkipOtp) {
       account.isVerified = true;
       account.verifiedAt = new Date();
       account.isDefault = true;
       await this.lbaRepo.save(account);
       this.logger.log(
-        `[BankLink] Skipped OTP — auto-verified for user ${userId}, CID=${cleanCid}`,
+        `[BankLink] OTP skipped — DK phone matches the user's already-verified ` +
+          `phone. Auto-verified for user ${userId}, CID=${cleanCid}`,
       );
       return {
         accountName,
