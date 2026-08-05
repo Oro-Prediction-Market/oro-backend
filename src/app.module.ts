@@ -114,7 +114,14 @@ import { AmlReport } from "./aml/entities/aml-report.entity";
           AmlAlert,
           AmlReport,
         ],
-        synchronize: true,
+        // Never let the app auto-rewrite the schema in production — a stray
+        // rename or removed field would silently drop a live column and its
+        // data. Production schema changes go through reviewed migrations only.
+        // Opt in for local dev with DB_SYNCHRONIZE=true; it is force-disabled
+        // whenever NODE_ENV=production so a misplaced flag can't touch prod.
+        synchronize:
+          config.get("NODE_ENV") !== "production" &&
+          config.get("DB_SYNCHRONIZE") === "true",
         migrationsRun: false,
         logging: false,
         extra: {
