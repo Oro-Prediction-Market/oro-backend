@@ -809,3 +809,300 @@ describe("AuthService.loginWithBhutanApp — identity binding", () => {
     ).rejects.toThrow(/Invalid or expired BhutanApp token/);
   });
 });
+
+// ─── loginWithBhutanApp — userId anchoring (account-takeover fix) ──────────────
+// The signed token carries only { userId, type, iat, exp }; the CID rides in the
+// request body (username). These tests lock in that the body CID can never
+// select or take over an account — resolution is anchored on the verified userId.
+
+describe("AuthService.loginWithBhutanApp — userId anchoring", () => {
+  let privateKey: string;
+
+  const ATTACKER = "aaaaaaaa-0000-0000-0000-000000000001";
+  const VICTIM_CID = "11000000009";
+
+  beforeEach(() => {
+    const keys = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    privateKey = keys.privateKey;
+    process.env.BHUTANAPP_JWT_PUBLIC_KEY = keys.publicKey;
+  });
+  afterEach(() => {
+    delete process.env.BHUTANAPP_JWT_PUBLIC_KEY;
+  });
+
+  const sign = (payload: object) =>
+    jwt.sign(payload, privateKey, { algorithm: "RS256" });
+
+  function userRepoFor(opts: { byId?: any; byCid?: any; byPhone?: any } = {}) {
+    return {
+      findOneBy: jest.fn().mockImplementation((where: any) => {
+        if (where.id !== undefined) return Promise.resolve(opts.byId ?? null);
+        if (where.dkCid !== undefined) return Promise.resolve(opts.byCid ?? null);
+        if (where.telegramPhoneHash !== undefined)
+          return Promise.resolve(opts.byPhone ?? null);
+        if (where.dkPhoneHash !== undefined)
+          return Promise.resolve(opts.byPhone ?? null);
+        return Promise.resolve(null);
+      }),
+      findOne: jest.fn().mockResolvedValue(null),
+      create: jest.fn().mockImplementation((d: any) => ({ id: "new-user", ...d })),
+      save: jest
+        .fn()
+        .mockImplementation((u: any) =>
+          Promise.resolve({ id: u.id ?? "new-user", ...u }),
+        ),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
+      createQueryBuilder: jest.fn().mockReturnValue({
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 1 }),
+      }),
+    };
+  }
+
+  function authRepoFor(
+    opts: { byProviderId?: any; byUserId?: any; legacy?: any } = {},
+  ) {
+    return {
+      findOne: jest.fn().mockImplementation((arg: any) => {
+        const where = arg?.where ?? arg ?? {};
+        if (where.providerId !== undefined) {
+          // Reflect a re-keyed legacy row so the idempotent ensure step finds it.
+          if (opts.legacy && opts.legacy.providerId === where.providerId)
+            return Promise.resolve(opts.legacy);
+          return Promise.resolve(opts.byProviderId ?? null);
+        }
+        if (where.userId !== undefined)
+          return Promise.resolve(opts.byUserId ?? null);
+        return Promise.resolve(null);
+      }),
+      createQueryBuilder: jest.fn().mockReturnValue({
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(opts.legacy ?? null),
+      }),
+      create: jest.fn().mockImplementation((d: any) => d),
+      save: jest.fn().mockImplementation((m: any) => Promise.resolve(m)),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+  }
+
+  function redisWithStore() {
+    const store = new Map<string, any>();
+    return {
+      _store: store,
+      setJsonEx: jest.fn().mockImplementation((k: string, _t: number, v: any) => {
+        store.set(k, v);
+        return Promise.resolve();
+      }),
+      getJson: jest
+        .fn()
+        .mockImplementation((k: string) => Promise.resolve(store.get(k) ?? null)),
+      del: jest.fn().mockImplementation((k: string) => {
+        store.delete(k);
+        return Promise.resolve();
+      }),
+      get: jest.fn().mockResolvedValue(null),
+      setEx: jest.fn().mockResolvedValue(undefined),
+      redis: {
+        incr: jest.fn().mockResolvedValue(1),
+        expire: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+  }
+
+  function buildService(o: {
+    userRepo: any;
+    authRepo: any;
+    redis?: any;
+    sms?: any;
+  }) {
+    return new AuthService(
+      o.userRepo,
+      o.authRepo,
+      makeTransactionRepo() as any,
+      makeMarketRepo() as any,
+      makePositionRepo() as any,
+      makeJwtService(),
+      makeDkGateway() as any,
+      makeTelegramVerification() as any,
+      makeTelegramSimple() as any,
+      makeAuditService() as any,
+      makeAuditLogRepo() as any,
+      (o.redis ?? redisWithStore()) as any,
+      (o.sms ?? {
+        sendOtp: jest.fn().mockResolvedValue(true),
+        sendSms: jest.fn(),
+      }) as any,
+    );
+  }
+
+  it("rejects when body externalUserId does not match the signed userId", async () => {
+    const service = buildService({
+      userRepo: userRepoFor(),
+      authRepo: authRepoFor(),
+    });
+    const token = sign({ userId: ATTACKER, type: "ACCESS_TOKEN" });
+    await expect(
+      service.loginWithBhutanApp({
+        token,
+        externalUserId: "some-other-uuid",
+        fullName: "X",
+        username: VICTIM_CID,
+      }),
+    ).rejects.toThrow(/identity mismatch/i);
+  });
+
+  it("does NOT log an attacker into a victim's VERIFIED account — demands OTP", async () => {
+    const victim = {
+      id: "victim-1",
+      dkCid: VICTIM_CID,
+      telegramPhoneHash: "hashed-phone",
+      dkPhoneHash: "hashed-phone", // verified: telegram == dk
+    };
+    const sms = { sendOtp: jest.fn().mockResolvedValue(true), sendSms: jest.fn() };
+    const service = buildService({
+      userRepo: userRepoFor({ byCid: victim, byId: victim }),
+      authRepo: authRepoFor(),
+      sms,
+    });
+    const token = sign({ userId: ATTACKER, type: "ACCESS_TOKEN" });
+    const result: any = await service.loginWithBhutanApp({
+      token,
+      externalUserId: ATTACKER,
+      fullName: "Attacker",
+      username: VICTIM_CID, // victim's CID in the body
+    });
+    expect(result.requiresOtp).toBe(true);
+    expect(result.token).toBeUndefined();
+    expect(result.challengeId).toBeTruthy();
+    expect(sms.sendOtp).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs a returning user in by verified userId, ignoring the body CID", async () => {
+    const user = { id: "user-1", dkCid: "11000000001", email: null };
+    const service = buildService({
+      userRepo: userRepoFor({ byId: user }),
+      authRepo: authRepoFor({
+        byProviderId: { userId: "user-1", providerId: ATTACKER },
+      }),
+    });
+    const token = sign({ userId: ATTACKER, type: "ACCESS_TOKEN" });
+    const result: any = await service.loginWithBhutanApp({
+      token,
+      externalUserId: ATTACKER,
+      fullName: "User",
+      username: VICTIM_CID, // different CID in body — must be ignored
+    });
+    expect(result.token).toBe("mock-jwt-token");
+    expect(result.user.id).toBe("user-1");
+  });
+
+  it("migrates a pre-fix (CID-keyed) BhutanApp user via metadata.externalUserId, no OTP", async () => {
+    const user = { id: "user-1", email: null };
+    const legacy = {
+      id: "am-1",
+      userId: "user-1",
+      providerId: "oldcid",
+      metadata: { externalUserId: ATTACKER },
+    };
+    const authRepo = authRepoFor({ legacy });
+    const service = buildService({
+      userRepo: userRepoFor({ byId: user }),
+      authRepo,
+    });
+    const token = sign({ userId: ATTACKER, type: "ACCESS_TOKEN" });
+    const result: any = await service.loginWithBhutanApp({
+      token,
+      externalUserId: ATTACKER,
+      fullName: "User",
+      username: "11000000001",
+    });
+    expect(result.token).toBe("mock-jwt-token");
+    expect(authRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({ providerId: ATTACKER }),
+    );
+  });
+
+  it("binds directly to an UNVERIFIED orphan account (no OTP)", async () => {
+    const orphan = {
+      id: "orphan-1",
+      dkCid: VICTIM_CID,
+      telegramPhoneHash: null,
+      dkPhoneHash: null,
+    };
+    const service = buildService({
+      userRepo: userRepoFor({ byCid: orphan, byId: orphan }),
+      authRepo: authRepoFor(),
+    });
+    const token = sign({ userId: ATTACKER, type: "ACCESS_TOKEN" });
+    const result: any = await service.loginWithBhutanApp({
+      token,
+      externalUserId: ATTACKER,
+      fullName: "User",
+      username: VICTIM_CID,
+    });
+    expect(result.token).toBe("mock-jwt-token");
+    expect(result.requiresOtp).toBeUndefined();
+  });
+
+  it("creates a brand-new account when no candidate exists", async () => {
+    const userRepo = userRepoFor();
+    const service = buildService({ userRepo, authRepo: authRepoFor() });
+    const token = sign({ userId: ATTACKER, type: "ACCESS_TOKEN" });
+    const result: any = await service.loginWithBhutanApp({
+      token,
+      externalUserId: ATTACKER,
+      fullName: "New User",
+      username: "11000000002",
+    });
+    expect(result.token).toBe("mock-jwt-token");
+    expect(userRepo.create).toHaveBeenCalled();
+  });
+
+  it("completes a protected merge only with the correct OTP", async () => {
+    const victim = {
+      id: "victim-1",
+      dkCid: VICTIM_CID,
+      telegramPhoneHash: "hashed-phone",
+      dkPhoneHash: "hashed-phone",
+    };
+    const redis = redisWithStore();
+    const authRepo = authRepoFor();
+    const service = buildService({
+      userRepo: userRepoFor({ byCid: victim, byId: victim }),
+      authRepo,
+      redis,
+    });
+    const token = sign({ userId: ATTACKER, type: "ACCESS_TOKEN" });
+    const login: any = await service.loginWithBhutanApp({
+      token,
+      externalUserId: ATTACKER,
+      fullName: "Legit cross-channel user",
+      username: VICTIM_CID,
+    });
+    expect(login.requiresOtp).toBe(true);
+    const session = redis._store.get(`bhutan_merge:${login.challengeId}`);
+    expect(session).toBeTruthy();
+
+    // Wrong OTP → rejected, no binding.
+    await expect(
+      service.verifyBhutanAppMerge(login.challengeId, "000000"),
+    ).rejects.toThrow(/Invalid OTP/i);
+
+    // Correct OTP → the verified userId is bound to the account.
+    const ok: any = await service.verifyBhutanAppMerge(
+      login.challengeId,
+      session.otp,
+    );
+    expect(ok.token).toBe("mock-jwt-token");
+    expect(authRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({ providerId: ATTACKER, userId: "victim-1" }),
+    );
+  });
+});
