@@ -44,6 +44,13 @@ import {
   buildEplStatMarketDto,
   EplStatKey,
 } from "../epl/epl-stat-markets";
+import { UclService } from "../ucl/ucl.service";
+import {
+  UCL_STAT_MARKET_META,
+  UCL_STAT_SUBCATEGORIES,
+  buildUclStatMarketDto,
+  UclStatKey,
+} from "../ucl/ucl-stat-markets";
 import { DistributionStatus } from "../entities/revenue-distribution.entity";
 import { FixturesService } from "./fixtures.service";
 import { AuditService } from "./audit.service";
@@ -104,6 +111,7 @@ export class AdminController {
     private transactionRepo: Repository<Transaction>,
     private revenueDistributionService: RevenueDistributionService,
     private eplService: EplService,
+    private uclService: UclService,
   ) {}
 
   // ── Late-money monitor (REAL aggregation — no random/demo data) ────────────
@@ -2238,6 +2246,94 @@ export class AdminController {
     }
 
     const dto = buildEplStatMarketDto(stat, players, body?.closesAt);
+    const market = await this.marketsService.create(dto);
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action: AuditAction.MARKET_CREATE,
+      entityType: "market",
+      entityId: market.id,
+      after: { title: market.title, subcategory: meta.subcategory, outcomes: players.length, closesAt: dto.closesAt },
+      ipAddress: req.ip,
+    });
+    return market;
+  }
+
+  // ── UCL stat markets ──────────────────────────────────────────────────────
+  // Champions League equivalent of the EPL stat markets above. Shares the same
+  // one-click flow and builder (ucl-stat-markets.ts). Note: only goals & assists
+  // have a free-tier CL data source, so the yellow/red boards come back empty and
+  // their buttons stay disabled until a data source exists.
+  @Get("ucl/stat-market/preview")
+  @ApiOperation({ summary: "Live UCL leaderboards + which stat markets already exist" })
+  async previewUclStatMarkets() {
+    const [stats, season] = await Promise.all([
+      this.uclService.getStats(),
+      this.uclService.getSeasonInfo(),
+    ]);
+    const existing = await this.dataSource.getRepository(Market).find({
+      where: {
+        subcategory: In(UCL_STAT_SUBCATEGORIES),
+        status: In([
+          MarketStatus.UPCOMING,
+          MarketStatus.OPEN,
+          MarketStatus.CLOSED,
+          MarketStatus.RESOLVING,
+        ]),
+      },
+      select: ["id", "title", "subcategory", "status"],
+    });
+    return { stats, existing, season };
+  }
+
+  @Post("ucl/stat-market")
+  @ApiOperation({ summary: "Create a season stat market from the live leaderboard" })
+  async createUclStatMarket(
+    @Body() body: { stat?: string; closesAt?: string; topN?: number },
+    @Request() req: any,
+  ) {
+    const stat = body?.stat as UclStatKey;
+    const meta = UCL_STAT_MARKET_META[stat];
+    if (!meta) {
+      throw new BadRequestException("stat must be one of: goals, assists, yellow, red");
+    }
+
+    // Safety: outside the season the boards show LAST season's data via the
+    // fallback. Refuse to bake a stale-season leaderboard into a new market.
+    if (!(await this.uclService.seasonHasStarted())) {
+      throw new BadRequestException(
+        "The Champions League season hasn't started yet — the leaderboard is still showing last season's data. Wait until the new season is live before creating this market.",
+      );
+    }
+
+    // Block a duplicate active market for the same stat.
+    const dup = await this.dataSource.getRepository(Market).findOne({
+      where: {
+        subcategory: meta.subcategory,
+        status: In([
+          MarketStatus.UPCOMING,
+          MarketStatus.OPEN,
+          MarketStatus.CLOSED,
+          MarketStatus.RESOLVING,
+        ]),
+      },
+    });
+    if (dup) {
+      throw new BadRequestException(
+        `An active "${meta.title}" market already exists (id ${dup.id}). Resolve or cancel it first.`,
+      );
+    }
+
+    const stats = await this.uclService.getStats();
+    const topN = Math.min(Math.max(Number(body?.topN ?? 15), 2), 25);
+    const players = (stats[meta.board] ?? []).slice(0, topN);
+    if (players.length < 2) {
+      throw new BadRequestException(
+        "The live leaderboard doesn't have enough players yet to open this market. (Champions League card data isn't available on the free tier.)",
+      );
+    }
+
+    const dto = buildUclStatMarketDto(stat, players, body?.closesAt);
     const market = await this.marketsService.create(dto);
     await this.auditService.log({
       adminId: req.user.userId,
