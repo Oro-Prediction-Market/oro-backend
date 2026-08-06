@@ -551,6 +551,35 @@ export class AdminController {
     return this.marketsService.getZeroPoolSettled();
   }
 
+  @Get("markets/stats")
+  @ApiOperation({
+    summary:
+      "Dashboard KPIs aggregated over ALL markets (not a single page): open count, open pool volume, unsettled count",
+  })
+  async marketStats() {
+    const repo = this.dataSource.getRepository(Market);
+    const [activeMarkets, unsettledMarkets, poolRow] = await Promise.all([
+      repo.count({ where: { status: MarketStatus.OPEN } }),
+      // "Unsettled" = betting has stopped but the result isn't in yet: markets
+      // waiting to be resolved. (Once resolved, payout runs in the same step.)
+      repo.count({
+        where: {
+          status: In([MarketStatus.CLOSED, MarketStatus.RESOLVING]),
+        },
+      }),
+      repo
+        .createQueryBuilder("m")
+        .select("COALESCE(SUM(m.totalPool), 0)", "sum")
+        .where("m.status = :s", { s: MarketStatus.OPEN })
+        .getRawOne<{ sum: string }>(),
+    ]);
+    return {
+      activeMarkets,
+      unsettledMarkets,
+      totalPoolVolume: Number(poolRow?.sum ?? 0),
+    };
+  }
+
   @Delete("markets/cleanup/zero-pool-settled")
   @ApiOperation({ summary: "Delete all settled markets with zero pool volume" })
   async purgeZeroPoolSettled(@Request() req: any) {
