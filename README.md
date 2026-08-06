@@ -137,7 +137,7 @@ Oro uses a **parimutuel pool** model. All stakes go into a shared pool. When the
 
 **Thin-pool guard** — if all bets are on the winning outcome (no opposition), the market cannot pay out proportionally. All stakes are fully refunded, no house edge is deducted, and users receive a Telegram notification. The settlement record is written with `cancelReason: "thin_pool"`.
 
-**1.05× payout floor** *(planned)* — a future release will guarantee winning bettors at least 1.05× their original stake regardless of pool distribution.
+**1.05× payout floor** — winning bettors receive at least 1.05× their original stake when the post-rake payout pool can fund that floor for every winner. If the floor would require more than the post-rake payout pool, the market is fully refunded instead: all positions receive their original stake back, no house edge is deducted, and the settlement record is written with `cancelReason: "payout_floor_underfunded"`.
 
 **Bonus-funded positions** — positions placed using bonus credits are flagged `isBonusFunded`. Payouts from bonus-funded bets are subject to a lifetime real-payout cap (`bonusRealPayoutRemaining`) to prevent splitting bonus into small bets to multiply withdrawable winnings.
 
