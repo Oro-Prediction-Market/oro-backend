@@ -4,7 +4,6 @@ import {
   Controller,
   Get,
   HttpCode,
-  NotFoundException,
   Param,
   Post,
   Request,
@@ -24,7 +23,7 @@ import {
 } from "@nestjs/swagger";
 import { IsOptional, IsString, Length, Matches } from "class-validator";
 import { InjectRepository } from "@nestjs/typeorm";
-import { In, Repository } from "typeorm";
+import { Repository } from "typeorm";
 import { ConfigService } from "@nestjs/config";
 import { JwtAuthGuard, PreKycJwtAuthGuard, Public } from "../auth/guards";
 import { User } from "../entities/user.entity";
@@ -304,7 +303,6 @@ export class UsersController {
         // contrarian badge
         "contrarianBadge",
         "contrarianWins",
-        "featuredAchievementIds",
         "contrarianAttempts",
         // streak
         "telegramStreak",
@@ -354,84 +352,6 @@ export class UsersController {
       isPhoneVerified: verifiedByPhone || verifiedByAccountNumber,
       referralCount,
       ...streakInfo,
-    };
-  }
-
-  @Post("me/featured-achievements")
-  @HttpCode(200)
-  @ApiOperation({ summary: "Choose up to three achievements to display publicly" })
-  async setFeaturedAchievements(@Request() req: any, @Body() body: { achievementIds?: unknown }) {
-    const ids = Array.isArray(body?.achievementIds) ? body.achievementIds : [];
-    if (ids.length > 3 || ids.some((id) => typeof id !== "string" || id.length > 80)) {
-      throw new BadRequestException("Choose up to three valid achievements");
-    }
-    const unique = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
-    if (unique.length > 3) throw new BadRequestException("Choose up to three achievements");
-    await this.userRepo.update(req.user.userId, { featuredAchievementIds: unique });
-    return { featuredAchievementIds: unique };
-  }
-
-  @Get("profiles/:id")
-  @ApiOperation({ summary: "Public predictor profile (safe leaderboard data only)" })
-  async getPublicProfile(@Param("id") id: string) {
-    const user = await this.userRepo.findOne({
-      where: { id },
-      select: [
-        "id", "firstName", "lastName", "username", "photoUrl", "createdAt",
-        "reputationScore", "reputationTier", "totalPredictions", "correctPredictions",
-        "telegramStreak", "contrarianBadge", "contrarianWins",
-        "featuredAchievementIds",
-      ],
-    });
-    if (!user) throw new NotFoundException("Predictor not found");
-
-    const rank =
-      (await this.userRepo
-        .createQueryBuilder("u")
-        .where("u.totalPredictions >= 10")
-        .andWhere("(u.reputationScore > :score OR (u.reputationScore = :score AND u.correctPredictions > :wins))", {
-          score: user.reputationScore ?? 0,
-          wins: user.correctPredictions,
-        })
-        .getCount()) + 1;
-
-    const recentCalls = await this.betRepo.find({
-      where: {
-        userId: id,
-        status: In([PositionStatus.WON, PositionStatus.LOST, PositionStatus.REFUNDED]),
-      },
-      relations: ["market", "outcome"],
-      order: { placedAt: "DESC" },
-      take: 3,
-    });
-
-    return {
-      id: user.id,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      username: user.username,
-      photoUrl: user.photoUrl,
-      reputationTier: user.reputationTier,
-      reputationScore: user.reputationScore,
-      totalPredictions: user.totalPredictions,
-      correctPredictions: user.correctPredictions,
-      winRate: user.totalPredictions
-        ? Math.round((user.correctPredictions / user.totalPredictions) * 100)
-        : 0,
-      rank: user.totalPredictions >= 10 ? rank : null,
-      streak: user.telegramStreak ?? 0,
-      contrarianBadge: user.contrarianBadge,
-      contrarianWins: user.contrarianWins ?? 0,
-      featuredAchievementIds: user.featuredAchievementIds ?? [],
-      recentCalls: recentCalls.map((call) => ({
-        id: call.id,
-        marketTitle: call.market?.title ?? "Prediction market",
-        outcomeLabel: call.outcome?.label ?? "Selected outcome",
-        status: call.status,
-        payout: call.payout,
-        placedAt: call.placedAt,
-      })),
-      joinedAt: user.createdAt,
     };
   }
 
