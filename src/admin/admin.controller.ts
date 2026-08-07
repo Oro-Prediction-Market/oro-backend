@@ -558,19 +558,36 @@ export class AdminController {
   })
   async marketStats() {
     const repo = this.dataSource.getRepository(Market);
+    // Exclude the algorithmic auto-markets (BTC / TER tickers). They open and
+    // settle on their own every few minutes, so counting them makes these KPIs
+    // noisy and makes them disagree with the market lists (which already hide
+    // them via externalSource=none). NOTE: a NULL externalSource is a real,
+    // admin-managed market and MUST be kept — so we can't use a bare NOT IN,
+    // because `NULL NOT IN (...)` evaluates to NULL and would drop those rows.
+    const AUTO_SOURCES = ["btc", "ter"];
+    const excludeAuto =
+      "(m.externalSource IS NULL OR m.externalSource NOT IN (:...auto))";
+
     const [activeMarkets, unsettledMarkets, poolRow] = await Promise.all([
-      repo.count({ where: { status: MarketStatus.OPEN } }),
+      repo
+        .createQueryBuilder("m")
+        .where("m.status = :s", { s: MarketStatus.OPEN })
+        .andWhere(excludeAuto, { auto: AUTO_SOURCES })
+        .getCount(),
       // "Unsettled" = betting has stopped but the result isn't in yet: markets
       // waiting to be resolved. (Once resolved, payout runs in the same step.)
-      repo.count({
-        where: {
-          status: In([MarketStatus.CLOSED, MarketStatus.RESOLVING]),
-        },
-      }),
+      repo
+        .createQueryBuilder("m")
+        .where("m.status IN (:...st)", {
+          st: [MarketStatus.CLOSED, MarketStatus.RESOLVING],
+        })
+        .andWhere(excludeAuto, { auto: AUTO_SOURCES })
+        .getCount(),
       repo
         .createQueryBuilder("m")
         .select("COALESCE(SUM(m.totalPool), 0)", "sum")
         .where("m.status = :s", { s: MarketStatus.OPEN })
+        .andWhere(excludeAuto, { auto: AUTO_SOURCES })
         .getRawOne<{ sum: string }>(),
     ]);
     return {

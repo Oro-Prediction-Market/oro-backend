@@ -143,6 +143,10 @@ export class User {
   @Column({ type: "jsonb", nullable: true })
   categoryScores: Record<string, { correct: number; total: number }> | null;
 
+  /** Up to three earned collectible IDs the user chooses to display publicly. */
+  @Column({ type: "jsonb", nullable: true, default: () => "'[]'" })
+  featuredAchievementIds: string[];
+
   /**
    * Brier score — measures calibration quality (lower = better, 0–1).
    * Computed as rolling average of (predictedProbability - actual)² across
