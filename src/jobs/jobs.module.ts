@@ -7,6 +7,7 @@ import { AutoResolveMarketsJob } from "./auto-resolve-markets.job";
 import { EngagementJob } from "./engagement.job";
 import { WeeklyReportJob } from "./weekly-report.job";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
+import { BhutanAppNotificationService } from "../shared/services/bhutanapp-notification.service";
 import { User } from "../entities/user.entity";
 import { Market } from "../entities/market.entity";
 import { Dispute } from "../entities/dispute.entity";
@@ -37,6 +38,7 @@ import { RedisModule } from "../redis/redis.module";
   providers: [
     NotificationProcessor,
     TelegramSimpleService,
+    BhutanAppNotificationService,
     AutoResolveMarketsJob,
     EngagementJob,
     WeeklyReportJob,

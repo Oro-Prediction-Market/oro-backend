@@ -22,6 +22,7 @@ import {
   DisputeSide,
 } from "../entities/dispute.entity";
 import { User } from "../entities/user.entity";
+import { AuthMethod, AuthProvider } from "../entities/auth-method.entity";
 import { LMSRService } from "./lmsr.service";
 import { DEFAULT_HOUSE_EDGE_PCT } from "./fee.constants";
 import { ReputationService } from "./reputation.service";
@@ -36,6 +37,7 @@ import {
   NOTIFICATION_QUEUE,
   JobName,
   SettlementNotifyJobData,
+  BhutanAppNotifyJobData,
 } from "../jobs/notification.queue";
 
 // ─── Valid state machine transitions ────────────────────────────────────────
@@ -1734,6 +1736,18 @@ Good luck! 🍀
     const userMap: Record<string, User> = {};
     for (const u of users) userMap[u.id] = u;
 
+    // Map each bettor to their BhutanApp external id (PWA users have no Telegram
+    // chat, so they're notified via BhutanApp push instead). One batched query.
+    const bhutanAuths = await this.dataSource.getRepository(AuthMethod).findBy({
+      provider: AuthProvider.BHUTANAPP,
+      userId: In(userIds),
+    });
+    const bhutanExternalIdByUser: Record<string, string> = {};
+    for (const am of bhutanAuths) {
+      const ext = (am.metadata as any)?.externalUserId ?? am.providerId;
+      if (ext) bhutanExternalIdByUser[am.userId] = String(ext);
+    }
+
     const payoutPool = Number(settlement.payoutPool);
     const winnerPool = Number(winner.totalBetAmount);
 
@@ -1746,13 +1760,42 @@ Good luck! 🍀
     // 4. Build messages and enqueue — one BullMQ job per user.
     //    The NotificationProcessor runs them at ≤25/sec so Telegram is never flooded.
     const dmJobs: { name: string; data: SettlementNotifyJobData }[] = [];
+    const bhutanJobs: { name: string; data: BhutanAppNotifyJobData }[] = [];
+
+    // Telegram HTML → plain text for push bodies (BhutanApp push has no markup).
+    const toPlain = (s: string) => s.replace(/<[^>]+>/g, "").trim();
+
+    // Enqueue a notification to whichever channel(s) the user has: Telegram DM
+    // (TMA), BhutanApp push (PWA), or both if the account is linked to each.
+    const notifyUser = (
+      chatId: number | null,
+      externalUserId: string | null,
+      telegramMsg: string,
+      pushTitle: string,
+    ) => {
+      if (chatId != null) {
+        dmJobs.push({
+          name: JobName.SETTLEMENT_NOTIFY,
+          data: { telegramChatId: chatId, message: telegramMsg },
+        });
+      }
+      if (externalUserId) {
+        bhutanJobs.push({
+          name: JobName.BHUTANAPP_NOTIFY,
+          data: { externalUserId, title: pushTitle, body: toPlain(telegramMsg) },
+        });
+      }
+    };
 
     for (const userId of Object.keys(betsByUser)) {
       const userBets = betsByUser[userId];
       const user = userMap[userId];
-      if (!user?.telegramId) continue;
+      if (!user) continue;
 
-      const chatId = Number(user.telegramId);
+      const chatId = user.telegramId ? Number(user.telegramId) : null;
+      const externalUserId = bhutanExternalIdByUser[userId] ?? null;
+      // No reachable channel (neither Telegram nor BhutanApp) — skip.
+      if (chatId == null && !externalUserId) continue;
       const firstName = user.firstName?.trim() || "there";
       const tierNow = user.reputationTier ?? "rookie";
       const tierBefore = tiersBefore[userId] ?? "rookie";
@@ -1811,25 +1854,21 @@ Good luck! 🍀
           msg += `\n\n${badgeEmoji} <b>Contrarian ${contrarianBadge.charAt(0).toUpperCase() + contrarianBadge.slice(1)} badge earned!</b> You went against the crowd and won. ${updatedUser?.contrarianWins} contrarian wins so far.`;
         }
 
-        dmJobs.push({
-          name: JobName.SETTLEMENT_NOTIFY,
-          data: { telegramChatId: chatId, message: msg },
-        });
+        notifyUser(chatId, externalUserId, msg, "🎉 You won!");
 
-        // Streak update (DB write — keep here, not a Telegram call)
+        // Streak update (DB write — keep here, not a channel call)
         const currentStreak = (user.telegramStreak ?? 0) + 1;
         await this.dataSource
           .getRepository(User)
           .update(user.id, { telegramStreak: currentStreak })
           .catch(() => {});
         if (currentStreak >= 3) {
-          dmJobs.push({
-            name: JobName.SETTLEMENT_NOTIFY,
-            data: {
-              telegramChatId: chatId,
-              message: `🔥 <b>${currentStreak} correct in a row, ${firstName}!</b> You're on fire.`,
-            },
-          });
+          notifyUser(
+            chatId,
+            externalUserId,
+            `🔥 <b>${currentStreak} correct in a row, ${firstName}!</b> You're on fire.`,
+            "🔥 You're on a streak!",
+          );
         }
       } else {
         const outcome = market.outcomes.find(
@@ -1844,10 +1883,7 @@ Good luck! 🍀
         if (accuracy)
           msg += `⭐ Insight: <b>${accuracy}</b> over ${totalPredictions} ${totalPredictions === 1 ? "prediction" : "predictions"}\n`;
 
-        dmJobs.push({
-          name: JobName.SETTLEMENT_NOTIFY,
-          data: { telegramChatId: chatId, message: msg },
-        });
+        notifyUser(chatId, externalUserId, msg, "Market settled");
 
         // Shield card check
         const shielded = await this.challengesService
@@ -1867,7 +1903,8 @@ Good luck! 🍀
       }
     }
 
-    // Bulk-enqueue all DMs in one BullMQ addBulk call — one round-trip to Redis
+    // Bulk-enqueue all notifications in one BullMQ addBulk call per channel —
+    // one round-trip to Redis each.
     if (dmJobs.length > 0) {
       await this.notificationQueue
         .addBulk(dmJobs)
@@ -1877,10 +1914,19 @@ Good luck! 🍀
           ),
         );
     }
+    if (bhutanJobs.length > 0) {
+      await this.notificationQueue
+        .addBulk(bhutanJobs)
+        .catch((err: Error) =>
+          this.logger.warn(
+            `[Notify] Failed to enqueue BhutanApp pushes: ${err.message}`,
+          ),
+        );
+    }
 
     this.logger.log(
-      `[Notify] Queued ${dmJobs.length} settlement DMs for market ${market.id} ` +
-        `(${Object.keys(betsByUser).length} predictors, ${bets.length} positions)`,
+      `[Notify] Queued ${dmJobs.length} Telegram DMs + ${bhutanJobs.length} BhutanApp pushes ` +
+        `for market ${market.id} (${Object.keys(betsByUser).length} predictors, ${bets.length} positions)`,
     );
   }
 

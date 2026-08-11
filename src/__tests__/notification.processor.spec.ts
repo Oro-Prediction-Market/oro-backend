@@ -12,13 +12,20 @@ function makeJob(name: string, data: object) {
 describe("NotificationProcessor", () => {
   let processor: NotificationProcessor;
   let mockTelegram: { sendMessage: jest.Mock; postToChannel: jest.Mock };
+  let mockBhutanApp: { sendNotification: jest.Mock };
 
   beforeEach(() => {
     mockTelegram = {
       sendMessage: jest.fn().mockResolvedValue(undefined),
       postToChannel: jest.fn().mockResolvedValue(undefined),
     };
-    processor = new NotificationProcessor(mockTelegram as any);
+    mockBhutanApp = {
+      sendNotification: jest.fn().mockResolvedValue(true),
+    };
+    processor = new NotificationProcessor(
+      mockTelegram as any,
+      mockBhutanApp as any,
+    );
   });
 
   it("PAYMENT_SUCCESS: sends a DM to the user", async () => {
@@ -129,6 +136,23 @@ describe("NotificationProcessor", () => {
       999,
       expect.stringContaining("20"),
     );
+  });
+
+  it("BHUTANAPP_NOTIFY: sends a push via BhutanApp for a PWA user", async () => {
+    await processor.process(
+      makeJob(JobName.BHUTANAPP_NOTIFY, {
+        externalUserId: "ext-123",
+        title: "🎉 You won!",
+        body: "You predicted correctly! Payout Nu 350",
+      }),
+    );
+    expect(mockBhutanApp.sendNotification).toHaveBeenCalledWith(
+      "ext-123",
+      "🎉 You won!",
+      expect.stringContaining("350"),
+    );
+    // A push-only job must never fall through to Telegram.
+    expect(mockTelegram.sendMessage).not.toHaveBeenCalled();
   });
 
   it("unknown job: does not throw", async () => {
