@@ -125,11 +125,30 @@ export class StreakService {
       };
     }
 
+    const todayUtc = new Date().toISOString().slice(0, 10);
+    const yesterday = new Date();
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    const yesterdayUtc = yesterday.toISOString().slice(0, 10);
+
+    const lastAt = user.betStreakLastAt;
+    // A streak is only "alive" while the last bet was today or yesterday (UTC).
+    // betStreakCount isn't reset in the DB until the next bet, so once a full
+    // day is missed the stored value is stale — report 0 here so the UI hides
+    // the streak instead of showing a broken one.
+    const alive = lastAt === todayUtc || lastAt === yesterdayUtc;
+    if (!alive) {
+      return {
+        betStreakCount: 0,
+        dayInCycle: 0,
+        nextBoostInDays: STREAK_BONUS_DAY,
+        boostReady: false,
+      };
+    }
+
     const count = user.betStreakCount || 0;
     const dayInCycle = count === 0 ? 0 : ((count - 1) % STREAK_BONUS_DAY) + 1;
     const nextBoostInDays = STREAK_BONUS_DAY - dayInCycle;
-    const todayUtc = new Date().toISOString().slice(0, 10);
-    const betToday = user.betStreakLastAt === todayUtc;
+    const betToday = lastAt === todayUtc;
 
     const boostReady =
       dayInCycle === STREAK_BONUS_DAY && !user.streakBoostUsed && betToday;
