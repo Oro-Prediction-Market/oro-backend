@@ -8,9 +8,11 @@ import {
   Param,
   Post,
   Request,
+  Res,
   UseGuards,
   Query,
 } from "@nestjs/common";
+import type { Response } from "express";
 import {
   ApiBearerAuth,
   ApiBody,
@@ -187,6 +189,45 @@ export class UsersController {
     private readonly onboardService: OnboardService,
     private readonly dkGateway: DKGatewayService,
   ) {}
+
+  /**
+   * Public avatar proxy. Telegram's photo hosts (t.me/i/userpic and
+   * api.telegram.org/file) don't send CORS headers on the actual image, so a
+   * <canvas> can't draw them with crossOrigin without tainting (which breaks
+   * the share card's PNG export). We re-serve the user's stored photo from our
+   * own origin with `Access-Control-Allow-Origin: *` so the card can draw AND
+   * export it. Falls through to 404 when there's no photo.
+   */
+  @Get("avatar/:id")
+  @Public()
+  @ApiOperation({ summary: "Proxy a user's profile photo with CORS headers" })
+  async avatar(@Param("id") id: string, @Res() res: Response) {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    const user = await this.userRepo
+      .findOne({ where: { id }, select: ["photoUrl"] })
+      .catch(() => null);
+    const url = user?.photoUrl;
+    if (!url) {
+      res.status(404).end();
+      return;
+    }
+    try {
+      const upstream = await fetch(url); // follows t.me redirects to the real photo
+      if (!upstream.ok) {
+        res.status(404).end();
+        return;
+      }
+      const buf = Buffer.from(await upstream.arrayBuffer());
+      res.setHeader(
+        "Content-Type",
+        upstream.headers.get("content-type") || "image/jpeg",
+      );
+      res.setHeader("Cache-Control", "public, max-age=1800");
+      res.end(buf);
+    } catch {
+      res.status(502).end();
+    }
+  }
 
   // ── Onboarding ────────────────────────────────────────────────────────────
 

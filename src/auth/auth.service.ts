@@ -147,6 +147,16 @@ export class AuthService {
     };
   }
 
+  /**
+   * Telegram Mini App initData usually carries only a generated ".svg"
+   * placeholder avatar in `photo_url` — not the user's real photo. Treat any
+   * `.svg` URL as "no real photo" so we fall back to the Bot API, which returns
+   * a real, CORS-enabled `api.telegram.org/file/*.jpg` the share card can draw.
+   */
+  private isRealPhoto(url?: string | null): boolean {
+    return !!url && !/\.svg(\?|$)/i.test(url);
+  }
+
   // ── Login / Register via Telegram ─────────────────────────────────────────
   async loginWithTelegram(rawInitData: string, referralCode?: string) {
     const tgUser = this.validateTelegramInitData(rawInitData);
@@ -181,12 +191,19 @@ export class AuthService {
         jti: randomUUID(),
       });
 
-      // Fetch profile photo via Bot API if not in initData
-      let photoUrl = tgUser.photo_url || null;
+      // Prefer a real photo. initData's photo_url is usually just a ".svg"
+      // placeholder, so fall back to the Bot API (real, CORS-enabled .jpg) and
+      // only keep the placeholder if nothing better is available.
+      let photoUrl = this.isRealPhoto(tgUser.photo_url)
+        ? tgUser.photo_url
+        : null;
       if (!photoUrl) {
-        photoUrl = await this.telegramSimple
-          .getUserProfilePhotoUrl(Number(providerId))
-          .catch(() => null);
+        photoUrl =
+          (await this.telegramSimple
+            .getUserProfilePhotoUrl(Number(providerId))
+            .catch(() => null)) ||
+          tgUser.photo_url ||
+          null;
       }
 
       return {
@@ -230,15 +247,26 @@ export class AuthService {
       lastName: tgUser.last_name,
     };
 
-    // Telegram Mini App initData often omits photo_url — fetch via Bot API if missing
-    if (tgUser.photo_url) {
+    // Resolve the best avatar. initData's photo_url is usually a generated
+    // ".svg" placeholder, so treat that as "no photo" and fall back to the Bot
+    // API (real, CORS-enabled .jpg the share card can draw). Never clobber an
+    // already-resolved real photo with a placeholder, and only hit the Bot API
+    // when we don't already have a real photo stored.
+    if (this.isRealPhoto(tgUser.photo_url)) {
       updateFields.photoUrl = tgUser.photo_url;
+    } else if (this.isRealPhoto(existingUser.photoUrl)) {
+      // Keep the real photo resolved on a previous login — no API call needed.
     } else {
-      const photoUrl = await this.telegramSimple
+      const fetched = await this.telegramSimple
         .getUserProfilePhotoUrl(Number(providerId))
         .catch(() => null);
-      if (photoUrl) updateFields.photoUrl = photoUrl;
-      // If both are null, don't overwrite existing photoUrl in DB
+      if (fetched) {
+        updateFields.photoUrl = fetched;
+      } else if (!existingUser.photoUrl && tgUser.photo_url) {
+        // Nothing better available — a placeholder beats no avatar at all.
+        updateFields.photoUrl = tgUser.photo_url;
+      }
+      // else: keep whatever exists; never overwrite with a placeholder/null.
     }
 
     if (referredByUserId && !existingUser.referredByUserId) {
