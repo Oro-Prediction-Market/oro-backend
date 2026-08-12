@@ -485,6 +485,7 @@ export class AdminController {
     @Query("limit") limit = "20",
     @Query("status") status?: string,
     @Query("externalSource") externalSource?: string,
+    @Query("excludeSources") excludeSources?: string,
     @Query("category") category?: string,
     @Query("subcategory") subcategory?: string,
     @Query("search") search?: string,
@@ -535,6 +536,18 @@ export class AdminController {
       qb.andWhere("market.externalSource = :externalSource", {
         externalSource,
       });
+    }
+    // Hide specific auto-generated sources (e.g. btc,ter) while still showing
+    // manual (NULL source) and imported markets — a NULL source is kept.
+    const exclude = excludeSources
+      ?.split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (exclude?.length) {
+      qb.andWhere(
+        "(market.externalSource IS NULL OR market.externalSource NOT IN (:...exclude))",
+        { exclude },
+      );
     }
     const [data, total] = await qb.getManyAndCount();
     return {
