@@ -171,6 +171,102 @@ describe("SeasonService", () => {
       expect(updatePayload.winnersSnapshot[0].rank).toBe(1);
       expect(updatePayload.winnersSnapshot[0].userId).toBe("u1");
     });
+
+    it("credits top-3 and excludes sub-floor users when the field is deep enough", async () => {
+      const active = { id: "active1", status: SeasonStatus.ACTIVE };
+      const seasonRepo = makeSeasonRepo(active);
+      // 5 eligible contenders (>= SEASON_MIN_QUALIFIERS) …
+      const strong = Array.from({ length: 5 }, (_, i) => ({
+        id: `s${i}`,
+        firstName: `Strong${i}`,
+        username: null,
+        reputationScore: 0.8,
+        reputationTier: "legend",
+        totalPredictions: 20,
+        correctPredictions: 16, // 16 wins, 80% — clears both floors
+      }));
+      // … plus one user below the win-rate floor who must NOT place.
+      const weak = {
+        id: "weak",
+        firstName: "Weak",
+        username: null,
+        reputationScore: 0.3,
+        reputationTier: "rookie",
+        totalPredictions: 20,
+        correctPredictions: 4, // 20% win rate — below SEASON_MIN_WIN_RATE
+      };
+      const dataSource = makeDataSource();
+      const svc = new SeasonService(
+        seasonRepo as any,
+        makeUserRepo([...strong, weak]) as any,
+        makeAuthMethodRepo() as any,
+        dataSource as any,
+        makeTelegram() as any,
+        makeBhutanApp() as any,
+        makeUserNotifications() as any,
+        makeRedis() as any,
+      );
+
+      await svc.closeActiveSeason();
+      // Crediting is fire-and-forget — flush the microtask queue.
+      await new Promise((r) => setImmediate(r));
+
+      const [, updatePayload] = seasonRepo.update.mock.calls[0];
+      expect(updatePayload.winnersSnapshot).toHaveLength(5); // weak dropped
+      expect(
+        updatePayload.winnersSnapshot.some((w: any) => w.userId === "weak"),
+      ).toBe(false);
+      // Deep field → prizes actually credited (one transaction per top-3 winner).
+      expect(dataSource.transaction).toHaveBeenCalled();
+    });
+
+    it("closes the season WITHOUT paying when too few qualify", async () => {
+      const active = { id: "active1", status: SeasonStatus.ACTIVE };
+      const seasonRepo = makeSeasonRepo(active);
+      // Only 2 eligible — below SEASON_MIN_QUALIFIERS.
+      const users = [
+        {
+          id: "u1",
+          firstName: "Alice",
+          username: null,
+          reputationScore: 0.9,
+          reputationTier: "legend",
+          totalPredictions: 20,
+          correctPredictions: 18,
+        },
+        {
+          id: "u2",
+          firstName: "Bob",
+          username: "bob",
+          reputationScore: 0.7,
+          reputationTier: "hot_hand",
+          totalPredictions: 15,
+          correctPredictions: 10,
+        },
+      ];
+      const dataSource = makeDataSource();
+      const svc = new SeasonService(
+        seasonRepo as any,
+        makeUserRepo(users) as any,
+        makeAuthMethodRepo() as any,
+        dataSource as any,
+        makeTelegram() as any,
+        makeBhutanApp() as any,
+        makeUserNotifications() as any,
+        makeRedis() as any,
+      );
+
+      await svc.closeActiveSeason();
+      await new Promise((r) => setImmediate(r));
+
+      // Season still closes and snapshots …
+      expect(seasonRepo.update).toHaveBeenCalledWith(
+        "active1",
+        expect.objectContaining({ status: SeasonStatus.CLOSED }),
+      );
+      // … but no prize is credited in a thin field.
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
   });
 
   describe("getCurrentSeason", () => {

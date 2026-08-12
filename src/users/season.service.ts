@@ -30,6 +30,19 @@ const SEASON_MIN_PICKS = 15;
 const SEASON_SKILL_WEIGHT = 0.6;
 const SEASON_VOLUME_WEIGHT = 0.4;
 
+// ── Prize eligibility floors ────────────────────────────────────────────────
+// Guardrails so real money isn't handed out in a dead or unopposed month.
+// A user must clear ALL of these to be a prize contender:
+//   • ≥ SEASON_MIN_PICKS resolved picks (activity — enforced in SQL)
+//   • ≥ SEASON_MIN_WINS winning picks (can't grind a losing record to the top)
+//   • ≥ SEASON_MIN_WIN_RATE win rate (nobody collects while underwater)
+// And the season only pays out at all when at least SEASON_MIN_QUALIFIERS
+// contenders exist — otherwise a single grinder could take Nu 700 unopposed
+// in a quiet month. Below the floor, the season closes with NO payout.
+const SEASON_MIN_WINS = 8;
+const SEASON_MIN_WIN_RATE = 0.5;
+const SEASON_MIN_QUALIFIERS = 5;
+
 @Injectable()
 export class SeasonService implements OnApplicationBootstrap {
   private readonly logger = new Logger(SeasonService.name);
@@ -138,9 +151,16 @@ export class SeasonService implements OnApplicationBootstrap {
       return { user, total, wins, volume, winRate: total > 0 ? wins / total : 0 };
     });
 
+    // Prize eligibility: on top of the SQL pick-count floor, require a minimum
+    // number of wins and a non-losing win rate. Users below either bar are
+    // dropped entirely — they can't place and don't count toward the field.
+    const eligible = rows.filter(
+      (r) => r.wins >= SEASON_MIN_WINS && r.winRate >= SEASON_MIN_WIN_RATE,
+    );
+
     // Log-compress + normalize volume to the top qualifier, then blend.
-    const maxVolume = rows.reduce((m, r) => Math.max(m, r.volume), 0);
-    const scored = rows
+    const maxVolume = eligible.reduce((m, r) => Math.max(m, r.volume), 0);
+    const scored = eligible
       .map((r) => ({
         ...r,
         score:
@@ -173,8 +193,18 @@ export class SeasonService implements OnApplicationBootstrap {
     });
 
     this.logger.log(
-      `Season ${active.id} closed with ${snapshot.length} winners`,
+      `Season ${active.id} closed with ${snapshot.length} ranked (${eligible.length} eligible)`,
     );
+
+    // Thin-field guard: only pay out when there's a real contest. Below the
+    // minimum eligible field the season closes with a snapshot but NO prizes —
+    // no unopposed Nu 700 in a quiet month.
+    if (eligible.length < SEASON_MIN_QUALIFIERS) {
+      this.logger.warn(
+        `Season ${active.id}: only ${eligible.length} eligible (< ${SEASON_MIN_QUALIFIERS} required) — no prizes paid this month`,
+      );
+      return;
+    }
 
     // Credit top-3 prizes and send DMs (fire-and-forget so rollover isn't blocked)
     this.creditSeasonPrizes(
