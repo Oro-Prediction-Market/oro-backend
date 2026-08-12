@@ -1172,61 +1172,41 @@ export class ParimutuelEngine implements OnModuleInit {
         losingSideBettors === 0 || // Scenario A: all bets on winning side
         winningBets.length === 0 // Scenario B: no bets on winning side (winnerPool=0)
       ) {
-        await this.refundPositions(em, bets, "Thin pool — market refunded");
-        market.status = MarketStatus.SETTLED;
-        await em.save(Market, market);
-
-        // Load all unique bettors in chunked queries to avoid PG 65,535-param limit
-        const uniqueBetUserIds = [...new Set(bets.map((b) => b.userId))];
-        const THIN_USER_CHUNK = 1000;
-        const thinPoolUsersArr: User[] = [];
-        for (let i = 0; i < uniqueBetUserIds.length; i += THIN_USER_CHUNK) {
-          const chunk = uniqueBetUserIds.slice(i, i + THIN_USER_CHUNK);
-          const rows = await em.find(User, {
-            where: { id: In(chunk) },
-            select: ["id", "telegramId"],
-          });
-          thinPoolUsersArr.push(...rows);
-        }
-        const thinPoolUserMap = new Map(thinPoolUsersArr.map((u) => [u.id, u]));
-        // Sum up refund amount per user (they may have multiple bets)
-        const refundByUser = new Map<string, number>();
-        for (const bet of bets) {
-          refundByUser.set(
-            bet.userId,
-            (refundByUser.get(bet.userId) ?? 0) + Number(bet.amount),
-          );
-        }
-        for (const [uid, totalRefund] of refundByUser.entries()) {
-          const user = thinPoolUserMap.get(uid);
-          if (user?.telegramId) {
-            this.telegramSimple
-              .sendRefundNotification(
-                Number(user.telegramId),
-                market.title,
-                totalRefund,
-                "thin_pool",
-              )
-              .catch(() => undefined);
-          }
-        }
-
-        const settlement = em.create(Settlement, {
-          marketId: market.id,
-          winningOutcomeId: winner.id,
-          totalPositions: bets.length,
-          winningPositions: 0,
+        return this.refundAndRecordSettlement(
+          em,
+          market,
+          winner,
+          bets,
           totalPool,
-          // Bets are refunded, but any forfeited dispute bonds are still booked
-          // as revenue for the audit trail.
-          houseAmount: houseForfeit,
-          payoutPool: 0,
-          totalPaidOut: 0,
-          cancelReason: "thin_pool",
-        });
-        return em.save(Settlement, settlement);
+          "thin_pool",
+          "Thin pool — market refunded",
+          "thin_pool",
+        );
       }
-      // ── End thin-pool guard ───────────────────────────────────────────────────
+
+      const payoutFloorTotal = winningBets.reduce(
+        (sum, bet) => sum + parseFloat((Number(bet.amount) * 1.05).toFixed(2)),
+        0,
+      );
+      const floorShortfall = parseFloat(
+        (payoutFloorTotal - payoutPool).toFixed(2),
+      );
+      if (floorShortfall > 0) {
+        this.logger.warn(
+          `[Settlement] Market ${market.id} refunded: 1.05x floor requires Nu ${payoutFloorTotal}, ` +
+            `but post-rake payout pool is Nu ${payoutPool}. Shortfall Nu ${floorShortfall}.`,
+        );
+        return this.refundAndRecordSettlement(
+          em,
+          market,
+          winner,
+          bets,
+          totalPool,
+          "payout_floor_underfunded",
+          "Payout floor could not be funded — market refunded",
+          "payout_floor_underfunded",
+        );
+      }
 
       // ── BULK settlement — O(bets) queries replaced with O(1) queries ─────────
       //
@@ -2031,6 +2011,83 @@ Good luck! 🍀
         .set({ status: PositionStatus.REFUNDED })
         .where("id IN (:...ids)", { ids: chunk })
         .execute();
+    }
+  }
+
+  private async refundAndRecordSettlement(
+    em: EntityManager,
+    market: Market,
+    winner: Outcome,
+    bets: Position[],
+    totalPool: number,
+    cancelReason: "thin_pool" | "payout_floor_underfunded",
+    note: string,
+    notificationReason: "thin_pool" | "payout_floor_underfunded",
+  ): Promise<Settlement> {
+    await this.refundPositions(em, bets, note);
+    market.status = MarketStatus.SETTLED;
+    await em.save(Market, market);
+
+    await this.sendMarketRefundNotifications(
+      em,
+      bets,
+      market.title,
+      notificationReason,
+    );
+
+    const settlement = em.create(Settlement, {
+      marketId: market.id,
+      winningOutcomeId: winner.id,
+      totalPositions: bets.length,
+      winningPositions: 0,
+      totalPool,
+      houseAmount: 0,
+      payoutPool: 0,
+      totalPaidOut: 0,
+      cancelReason,
+    });
+    return em.save(Settlement, settlement);
+  }
+
+  private async sendMarketRefundNotifications(
+    em: EntityManager,
+    bets: Position[],
+    marketTitle: string,
+    reason: "thin_pool" | "payout_floor_underfunded",
+  ): Promise<void> {
+    const uniqueBetUserIds = [...new Set(bets.map((b) => b.userId))];
+    const USER_CHUNK = 1000;
+    const usersArr: User[] = [];
+    for (let i = 0; i < uniqueBetUserIds.length; i += USER_CHUNK) {
+      const chunk = uniqueBetUserIds.slice(i, i + USER_CHUNK);
+      const rows = await em.find(User, {
+        where: { id: In(chunk) },
+        select: ["id", "telegramId"],
+      });
+      usersArr.push(...rows);
+    }
+    const userMap = new Map(usersArr.map((u) => [u.id, u]));
+
+    const refundByUser = new Map<string, number>();
+    for (const bet of bets) {
+      refundByUser.set(
+        bet.userId,
+        (refundByUser.get(bet.userId) ?? 0) + Number(bet.amount),
+      );
+    }
+
+    for (const [uid, totalRefund] of refundByUser.entries()) {
+      const user = userMap.get(uid);
+      if (user?.telegramId) {
+        this.telegramSimple
+          .sendRefundNotification(
+            Number(user.telegramId),
+            marketTitle,
+            totalRefund,
+            reason,
+          )
+          .catch(() => undefined);
+      }
     }
   }
 }

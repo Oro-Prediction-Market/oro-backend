@@ -73,6 +73,7 @@ class LinkBankAccountDto {
   @IsOptional()
   phone?: string;
 
+
 }
 
 class VerifyBankLinkDto {

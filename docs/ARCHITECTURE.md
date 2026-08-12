@@ -175,12 +175,13 @@ All markets use the **Parimutuel** mechanism. LMSR is used only for real-time pr
 
 1. Compute total pool after house edge deduction: `payoutPool = totalPool × (1 − houseEdgePct/100)`.
 2. For each winning position, compute pro-rata share: `payout = (stake / winOutcomeTotalBet) × payoutPool`.
-3. Write a `PAYOUT` transaction (positive amount) per winner.
-4. Write a `Settlement` record linking market, position, and payout amount.
-5. Update `Position.status` → `won` or `lost`.
-6. Trigger reputation update via `ReputationService.onSettlement()`.
-7. Release dispute bonds (return correct objectors' bonds + reward share; burn wrong objectors' bonds).
-8. Emit SSE `balance:updated` per affected user.
+3. Enforce the 1.05x floor only when it is funded by the post-rake payout pool. If `sum(winning stakes × 1.05) > payoutPool`, refund every position, deduct no house edge, and write `cancelReason: "payout_floor_underfunded"`.
+4. Write a `PAYOUT` transaction (positive amount) per winner.
+5. Write a `Settlement` record linking market, position, and payout amount.
+6. Update `Position.status` → `won` or `lost`.
+7. Trigger reputation update via `ReputationService.onSettlement()`.
+8. Release dispute bonds (return correct objectors' bonds + reward share; burn wrong objectors' bonds).
+9. Emit SSE `balance:updated` per affected user.
 
 ---
 

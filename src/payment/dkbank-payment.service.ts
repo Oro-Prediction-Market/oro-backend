@@ -157,10 +157,10 @@ export class DKBankPaymentService {
     let linkedAccount = await this.lbaRepo.findOne({
       where: { userId, isVerified: true, isDefault: true },
     });
-    // Fallback: if no verified LinkedBankAccount but user has dkCid (set during onboarding link)
+
     if (!linkedAccount) {
       linkedAccount = await this.lbaRepo.findOne({
-        where: { userId, cid: cid },
+        where: { userId, cid: cid, isVerified: true },
       });
     }
     if (!linkedAccount && user.dkCid === cid) {

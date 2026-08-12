@@ -11,6 +11,7 @@ import {
   HttpCode,
   HttpStatus,
   BadRequestException,
+  ParseUUIDPipe,
 } from "@nestjs/common";
 import { IsString, MaxLength } from "class-validator";
 
@@ -167,21 +168,13 @@ export class MarketsController {
     return this.marketsService.getRecentActivity(20);
   }
 
-  // NOTE: must stay ABOVE the `:id` route below, or "my-disputes" is captured
-  // as a market id. Authenticated (not @Public).
-  @Get("my-disputes")
-  @ApiOperation({
-    summary:
-      "All of the authenticated user's disputes across markets (result + bond + reward). Used to flag disputed markets in the results list.",
-  })
-  getMyDisputes(@Request() req: any) {
-    return this.marketsService.getMyDisputes(req.user.userId);
-  }
-
+  // ParseUUIDPipe keeps a non-UUID path segment (a stale link, or a literal
+  // route added below this one by mistake) as a clean 400 instead of a
+  // Postgres 22P02 blowing up as a 500.
   @Get(":id")
   @Public()
   @ApiOperation({ summary: "Get market by ID with outcomes & live odds" })
-  findOne(@Param("id") id: string) {
+  findOne(@Param("id", ParseUUIDPipe) id: string) {
     return this.marketsService.findOne(id);
   }
 
