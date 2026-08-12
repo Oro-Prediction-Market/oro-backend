@@ -1,0 +1,56 @@
+name: diagnose prod
+
+# Read-only. Deploys nothing, changes nothing — just dumps everything needed to
+# work out why a rollout stalled. Run it from the Actions tab.
+on:
+  workflow_dispatch:
+
+env:
+  NS: prod
+  DEPLOY: oro-backend
+
+jobs:
+  look:
+    runs-on: [self-hosted, oro]
+    timeout-minutes: 10
+
+    steps:
+      - name: Setup kubeconfig
+        run: |
+          mkdir -p $RUNNER_TEMP/.kube
+          echo '${{ secrets.KUBECONFIG }}' | base64 -d > $RUNNER_TEMP/.kube/config
+          chmod 600 $RUNNER_TEMP/.kube/config
+          echo "KUBECONFIG=$RUNNER_TEMP/.kube/config" >> $GITHUB_ENV
+
+      # Every command is `|| true` so one failure can't hide the rest.
+      - name: Pods
+        run: kubectl -n $NS get pods -l app=$DEPLOY -o wide || true
+
+      - name: Deployment conditions
+        run: |
+          kubectl -n $NS get deploy $DEPLOY || true
+          echo "── conditions ──"
+          kubectl -n $NS describe deploy $DEPLOY | sed -n '/Conditions:/,/Events:/p' || true
+
+      - name: ReplicaSets
+        run: kubectl -n $NS get rs -l app=$DEPLOY -o wide || true
+
+      - name: Pod details — state, probes, events
+        run: |
+          for p in $(kubectl -n $NS get pods -l app=$DEPLOY -o name); do
+            echo "════════ $p ════════"
+            kubectl -n $NS describe $p \
+              | sed -n '/^Containers:/,$p' \
+              | grep -E "State:|Reason:|Exit Code:|Ready:|Restart Count:|Image:|Liveness:|Readiness:|Startup:" || true
+            echo "── events ──"
+            kubectl -n $NS describe $p | sed -n '/^Events:/,$p' || true
+          done
+
+      - name: Logs — current container
+        run: kubectl -n $NS logs -l app=$DEPLOY --tail=60 --all-containers || true
+
+      - name: Logs — previous (crashed) container
+        run: kubectl -n $NS logs -l app=$DEPLOY --tail=60 --previous --all-containers || true
+
+      - name: Namespace events (newest last)
+        run: kubectl -n $NS get events --sort-by=.lastTimestamp | tail -40 || true
