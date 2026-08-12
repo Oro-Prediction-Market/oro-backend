@@ -81,9 +81,9 @@ export class AuthService {
   validateTelegramInitData(rawInitData: string): TelegramInitData {
     const botToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
     if (!botToken) throw new UnauthorizedException("Bot token not configured");
-    this.logger.debug(
-      `[Auth] Using bot token: id=${botToken.split(":")[0]} len=${botToken.length}`,
-    );
+    // Log only the public bot id (before the ":"), never the token length or
+    // the secret half — the secret must never reach log storage.
+    this.logger.debug(`[Auth] Using bot id=${botToken.split(":")[0]}`);
 
     const params = new URLSearchParams(rawInitData);
     const hash = params.get("hash");
@@ -147,6 +147,16 @@ export class AuthService {
     };
   }
 
+  /**
+   * Telegram Mini App initData usually carries only a generated ".svg"
+   * placeholder avatar in `photo_url` — not the user's real photo. Treat any
+   * `.svg` URL as "no real photo" so we fall back to the Bot API, which returns
+   * a real, CORS-enabled `api.telegram.org/file/*.jpg` the share card can draw.
+   */
+  private isRealPhoto(url?: string | null): boolean {
+    return !!url && !/\.svg(\?|$)/i.test(url);
+  }
+
   // ── Login / Register via Telegram ─────────────────────────────────────────
   async loginWithTelegram(rawInitData: string, referralCode?: string) {
     const tgUser = this.validateTelegramInitData(rawInitData);
@@ -181,12 +191,19 @@ export class AuthService {
         jti: randomUUID(),
       });
 
-      // Fetch profile photo via Bot API if not in initData
-      let photoUrl = tgUser.photo_url || null;
+      // Prefer a real photo. initData's photo_url is usually just a ".svg"
+      // placeholder, so fall back to the Bot API (real, CORS-enabled .jpg) and
+      // only keep the placeholder if nothing better is available.
+      let photoUrl = this.isRealPhoto(tgUser.photo_url)
+        ? tgUser.photo_url
+        : null;
       if (!photoUrl) {
-        photoUrl = await this.telegramSimple
-          .getUserProfilePhotoUrl(Number(providerId))
-          .catch(() => null);
+        photoUrl =
+          (await this.telegramSimple
+            .getUserProfilePhotoUrl(Number(providerId))
+            .catch(() => null)) ||
+          tgUser.photo_url ||
+          null;
       }
 
       return {
@@ -230,15 +247,26 @@ export class AuthService {
       lastName: tgUser.last_name,
     };
 
-    // Telegram Mini App initData often omits photo_url — fetch via Bot API if missing
-    if (tgUser.photo_url) {
+    // Resolve the best avatar. initData's photo_url is usually a generated
+    // ".svg" placeholder, so treat that as "no photo" and fall back to the Bot
+    // API (real, CORS-enabled .jpg the share card can draw). Never clobber an
+    // already-resolved real photo with a placeholder, and only hit the Bot API
+    // when we don't already have a real photo stored.
+    if (this.isRealPhoto(tgUser.photo_url)) {
       updateFields.photoUrl = tgUser.photo_url;
+    } else if (this.isRealPhoto(existingUser.photoUrl)) {
+      // Keep the real photo resolved on a previous login — no API call needed.
     } else {
-      const photoUrl = await this.telegramSimple
+      const fetched = await this.telegramSimple
         .getUserProfilePhotoUrl(Number(providerId))
         .catch(() => null);
-      if (photoUrl) updateFields.photoUrl = photoUrl;
-      // If both are null, don't overwrite existing photoUrl in DB
+      if (fetched) {
+        updateFields.photoUrl = fetched;
+      } else if (!existingUser.photoUrl && tgUser.photo_url) {
+        // Nothing better available — a placeholder beats no avatar at all.
+        updateFields.photoUrl = tgUser.photo_url;
+      }
+      // else: keep whatever exists; never overwrite with a placeholder/null.
     }
 
     if (referredByUserId && !existingUser.referredByUserId) {
@@ -1126,55 +1154,140 @@ export class AuthService {
       throw new UnauthorizedException("Invalid or expired BhutanApp token");
     }
 
-    // Identity MUST come only from the cryptographically-verified token claims.
-    // NEVER fall back to request-body fields (dto.username / dto.externalUserId):
-    // the caller controls those and could set them to a victim's CID to log in as
-    // them. If the signed token carries no CID, reject the login outright.
-    const cid = (claims.sub ?? claims.cid ?? "").toString().trim();
-    if (cid.length !== 11) {
+    // ── Identity: anchor on the cryptographically-verified BhutanApp userId ───
+    // The signed token carries only { userId, type, iat, exp } — NOT the CID.
+    // The CID (dto.username) and phone (dto.phoneNumber) arrive in the REQUEST
+    // BODY, which the caller controls, so they must never select an account on
+    // their own. Account resolution is keyed on the verified userId; the body
+    // CID is used only to find/create the DK account on a genuinely first-time
+    // login, and merging into a PROTECTED account requires proving the
+    // DK-registered phone via OTP.
+    const bhutanUserId = (claims.userId ?? "").toString().trim();
+    if (!bhutanUserId) {
       throw new UnauthorizedException(
-        "BhutanApp token does not contain a valid CID",
+        "BhutanApp token does not contain a user id",
       );
     }
+    // Defence in depth: the body's externalUserId must match the signed id.
+    if (dto.externalUserId && dto.externalUserId.trim() !== bhutanUserId) {
+      throw new UnauthorizedException("BhutanApp identity mismatch");
+    }
 
-    // ── Look up by CID first — prevents duplicates for existing DK Bank users ─
-    let user = await this.userRepo.findOneBy({ dkCid: cid });
+    let user: User | null = null;
 
-    // ── Fallback: phone-hash match against existing TMA users ──────────────
-    // If the user has a TMA account where they verified their Telegram phone
-    // (but never linked DK Bank), there's no dkCid match — so try to find
-    // them via the phone hash instead. Mirrors the pattern in loginWithDKBank.
+    // (1) Returning user — resolve by the verified userId.
+    const byUserId = await this.authMethodRepo.findOne({
+      where: { provider: AuthProvider.BHUTANAPP, providerId: bhutanUserId },
+    });
+    if (byUserId) {
+      user = await this.userRepo.findOneBy({ id: byUserId.userId });
+    }
+
+    // (2) Existing BhutanApp user from BEFORE this fix — those auth_method rows
+    // were keyed by CID but stored the userId in metadata.externalUserId. Match
+    // on that and re-key to providerId=userId so future logins hit path (1). No
+    // OTP: the same cryptographically-verified userId proves it's the same
+    // person, so this migrates existing users with zero friction.
     if (!user) {
-      // Prefer DK Bank's canonical phone (authoritative) over the
-      // BhutanApp-supplied one. DK Bank lookup may fail if the user isn't
-      // a DK Bank customer — fall back to dto.phoneNumber in that case.
-      let phoneForMatch: string | null = null;
-      try {
-        const account = await this.dkGateway.lookupAccountByCID(cid);
-        phoneForMatch = account.phoneNumber || null;
-      } catch (err) {
-        this.logger.debug(
-          `[Auth] BhutanApp login: DK Bank lookup failed for CID ${cid} — ${(err as Error).message}`,
+      const legacy = await this.authMethodRepo
+        .createQueryBuilder("am")
+        .where("am.provider = :p", { p: AuthProvider.BHUTANAPP })
+        .andWhere("am.metadata ->> 'externalUserId' = :uid", {
+          uid: bhutanUserId,
+        })
+        .getOne();
+      if (legacy) {
+        legacy.providerId = bhutanUserId;
+        await this.authMethodRepo.save(legacy);
+        user = await this.userRepo.findOneBy({ id: legacy.userId });
+        this.logger.log(
+          `[Auth] BhutanApp auth_method re-keyed to userId for user ${user?.id}`,
         );
-        phoneForMatch = dto.phoneNumber || null;
+      }
+    }
+
+    // (3) First-time for this BhutanApp identity — now we need the body CID to
+    // find/create the DK account. It is UNTRUSTED, so it may never take over a
+    // protected account without an OTP proving the DK-registered phone.
+    let cid = "";
+    if (!user) {
+      cid = (dto.username ?? "").toString().trim();
+      if (!/^\d{11}$/.test(cid)) {
+        throw new UnauthorizedException(
+          "A valid 11-digit CID is required to create your account",
+        );
       }
 
-      if (phoneForMatch) {
-        const phoneHash = this.telegramVerification.hashPhone(phoneForMatch);
-        const byPhone = await this.userRepo.findOneBy({
-          telegramPhoneHash: phoneHash,
+      // Resolve a candidate existing account by CID, then by DK-phone hash.
+      let candidate = await this.userRepo.findOneBy({ dkCid: cid });
+      let dkPhone: string | null = null;
+      try {
+        const account = await this.dkGateway.lookupAccountByCID(cid);
+        dkPhone = account.phoneNumber || null;
+      } catch (err) {
+        this.logger.debug(
+          `[Auth] BhutanApp login: DK lookup failed for CID ${cid} — ${(err as Error).message}`,
+        );
+        dkPhone = dto.phoneNumber || null;
+      }
+      if (!candidate && dkPhone) {
+        const phoneHash = this.telegramVerification.hashPhone(dkPhone);
+        candidate =
+          (await this.userRepo.findOneBy({ telegramPhoneHash: phoneHash })) ??
+          (await this.userRepo.findOneBy({ dkPhoneHash: phoneHash }));
+      }
+
+      if (candidate) {
+        // Protected = a verified account (telegram phone == DK phone) OR one
+        // already claimed by some BhutanApp identity. Binding this userId to a
+        // protected account requires proving the DK phone via OTP.
+        const verified =
+          !!candidate.telegramPhoneHash &&
+          !!candidate.dkPhoneHash &&
+          candidate.telegramPhoneHash === candidate.dkPhoneHash;
+        const claimedByBhutan = await this.authMethodRepo.findOne({
+          where: { provider: AuthProvider.BHUTANAPP, userId: candidate.id },
         });
-        // Only link if the matched user has no conflicting dkCid (i.e. they
-        // either have no CID, or already have THIS one). Different CID on the
-        // same phone means a collision we should not silently merge.
-        if (byPhone && (!byPhone.dkCid || byPhone.dkCid === cid)) {
-          if (!byPhone.dkCid) {
-            await this.userRepo.update(byPhone.id, { dkCid: cid });
+        const isProtected = verified || !!claimedByBhutan;
+
+        if (isProtected) {
+          if (!dkPhone) {
+            throw new BadRequestException(
+              "This CID is already linked to an account and ownership can't be " +
+                "verified — no phone on file. Please contact support.",
+            );
           }
-          user = await this.userRepo.findOneBy({ id: byPhone.id });
+          const otp = randomInt(100000, 1000000).toString();
+          const challengeId = randomUUID();
+          await this.redis.setJsonEx(`bhutan_merge:${challengeId}`, 300, {
+            otp,
+            bhutanUserId,
+            candidateUserId: candidate.id,
+            cid,
+            dkPhoneHash: this.telegramVerification.hashPhone(dkPhone),
+            profile: {
+              fullName: dto.fullName,
+              username: dto.username ?? null,
+              email: dto.email ?? null,
+              phoneNumber: dto.phoneNumber ?? null,
+            },
+            attempts: 0,
+          });
+          await this.smsService.sendOtp(dkPhone, otp);
           this.logger.log(
-            `[Auth] BhutanApp login auto-linked to TMA user ${user!.id} via phone hash`,
+            `[Auth] BhutanApp merge OTP sent for candidate ${candidate.id} (challenge ${challengeId})`,
           );
+          const local = dkPhone.replace(/[\s\-+]/g, "");
+          const maskedPhone =
+            local.length >= 4 ? `****${local.slice(-4)}` : "****";
+          return { requiresOtp: true, challengeId, maskedPhone } as any;
+        }
+
+        // Unverified orphan (e.g. a DK-import stub) — safe to bind directly.
+        user = candidate;
+        if (!user.dkCid) {
+          await this.userRepo.update(user.id, { dkCid: cid });
+          user = await this.userRepo.findOneBy({ id: user.id });
         }
       }
     }
@@ -1199,35 +1312,26 @@ export class AuthService {
       if (Object.keys(updates).length)
         await this.userRepo.update(user.id, updates);
 
-      // Ensure BhutanApp auth_method row exists (idempotent)
+      // Ensure the BhutanApp auth_method row exists, keyed on the VERIFIED
+      // userId (idempotent). Path (1)/(2) above already found/re-keyed it; this
+      // covers the orphan-bind case where no row exists yet.
       const existing = await this.authMethodRepo.findOne({
-        where: { provider: AuthProvider.BHUTANAPP, providerId: cid },
+        where: { provider: AuthProvider.BHUTANAPP, providerId: bhutanUserId },
       });
       if (!existing) {
         await this.authMethodRepo.save(
           this.authMethodRepo.create({
             provider: AuthProvider.BHUTANAPP,
-            providerId: cid,
+            providerId: bhutanUserId,
             metadata: {
               fullName: dto.fullName,
               username: dto.username,
-              externalUserId: dto.externalUserId,
+              externalUserId: bhutanUserId,
             },
             user,
             userId: user.id,
           }),
         );
-      } else if (
-        dto.externalUserId &&
-        dto.externalUserId !== cid &&
-        existing.metadata?.externalUserId !== dto.externalUserId
-      ) {
-        // Update externalUserId if it was previously stored as CID or missing
-        existing.metadata = {
-          ...(existing.metadata || {}),
-          externalUserId: dto.externalUserId,
-        };
-        await this.authMethodRepo.save(existing);
       }
 
       const fresh = await this.userRepo.findOneBy({ id: user.id });
@@ -1272,11 +1376,11 @@ export class AuthService {
     await this.authMethodRepo.save(
       this.authMethodRepo.create({
         provider: AuthProvider.BHUTANAPP,
-        providerId: cid,
+        providerId: bhutanUserId,
         metadata: {
           fullName: dto.fullName,
           username: dto.username,
-          externalUserId: dto.externalUserId,
+          externalUserId: bhutanUserId,
         },
         user,
         userId: user.id,
@@ -1284,7 +1388,7 @@ export class AuthService {
     );
 
     this.logger.log(
-      `[Auth] New user created via BhutanApp — CID ${cid}, id ${user.id}`,
+      `[Auth] New user created via BhutanApp — userId ${bhutanUserId}, id ${user.id}`,
     );
 
     const token = this.jwtService.sign({
@@ -1293,6 +1397,96 @@ export class AuthService {
       jti: randomUUID(),
     });
     return { token, user: stripSensitiveFields(user) };
+  }
+
+  /**
+   * Step 2 of a PROTECTED BhutanApp merge: the user proves control of the
+   * DK-registered phone by entering the OTP we sent in loginWithBhutanApp.
+   * Only on success do we bind their verified BhutanApp userId to the existing
+   * account — this is what lets a genuine cross-channel user reach their
+   * verified account without ever trusting a request-body CID.
+   */
+  async verifyBhutanAppMerge(challengeId: string, otp: string) {
+    const key = `bhutan_merge:${challengeId}`;
+    const stored = await this.redis.getJson<{
+      otp: string;
+      bhutanUserId: string;
+      candidateUserId: string;
+      cid: string;
+      dkPhoneHash: string;
+      profile: {
+        fullName?: string;
+        username?: string | null;
+        email?: string | null;
+        phoneNumber?: string | null;
+      };
+      attempts: number;
+    }>(key);
+
+    if (!stored) {
+      throw new UnauthorizedException(
+        "Verification expired or not found. Please log in again.",
+      );
+    }
+
+    if (stored.otp !== otp) {
+      stored.attempts++;
+      if (stored.attempts >= 3) {
+        await this.redis.del(key);
+        throw new UnauthorizedException(
+          "Too many failed attempts. Please log in again.",
+        );
+      }
+      await this.redis.setJsonEx(key, 300, stored);
+      throw new UnauthorizedException(
+        `Invalid OTP. ${3 - stored.attempts} attempts remaining.`,
+      );
+    }
+
+    await this.redis.del(key);
+
+    const target = await this.userRepo.findOneBy({ id: stored.candidateUserId });
+    if (!target) {
+      throw new UnauthorizedException("Account no longer exists.");
+    }
+
+    // Bind the verified BhutanApp identity to the now phone-proven account.
+    const existing = await this.authMethodRepo.findOne({
+      where: {
+        provider: AuthProvider.BHUTANAPP,
+        providerId: stored.bhutanUserId,
+      },
+    });
+    if (!existing) {
+      await this.authMethodRepo.save(
+        this.authMethodRepo.create({
+          provider: AuthProvider.BHUTANAPP,
+          providerId: stored.bhutanUserId,
+          metadata: {
+            fullName: stored.profile?.fullName,
+            username: stored.profile?.username ?? undefined,
+            externalUserId: stored.bhutanUserId,
+          },
+          user: target,
+          userId: target.id,
+        }),
+      );
+    }
+    // The OTP proved ownership of this CID's phone — safe to stamp the CID.
+    if (!target.dkCid) {
+      await this.userRepo.update(target.id, { dkCid: stored.cid });
+    }
+
+    const fresh = await this.userRepo.findOneBy({ id: target.id });
+    const token = this.jwtService.sign({
+      sub: fresh!.id,
+      isAdmin: fresh!.isAdmin,
+      jti: randomUUID(),
+    });
+    this.logger.log(
+      `[Auth] BhutanApp merge verified — userId ${stored.bhutanUserId} bound to ${target.id}`,
+    );
+    return { token, user: stripSensitiveFields(fresh!) };
   }
 
   // ── Link CID (PWA account merge) ─────────────────────────────────────────

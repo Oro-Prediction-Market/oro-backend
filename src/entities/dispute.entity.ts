@@ -22,6 +22,13 @@ export enum DisputeBondStatus {
   NOT_APPLICABLE = "not_applicable",
 }
 
+export enum DisputeSide {
+  /** Challenges the proposed outcome — claims the admin's proposal is wrong. */
+  OBJECT = "object",
+  /** Defends the proposed outcome against objectors — claims it is right. */
+  SUPPORT = "support",
+}
+
 @Index(["userId"])
 @Index(["bondStatus"])
 @Entity("disputes")
@@ -46,9 +53,21 @@ export class Dispute {
   upheld: boolean | null;
 
   /**
-   * The bond the objector locked when raising this objection.
-   * Calculated as max(10, 2% of their position in this market).
-   * Forfeited if wrong, returned + rewarded if right.
+   * Which side of the resolution contest this participant is on.
+   * OBJECT = challenges the proposal, SUPPORT = defends it against objectors.
+   */
+  @ApiProperty({
+    enum: DisputeSide,
+    description: "OBJECT challenges the proposal; SUPPORT defends it",
+  })
+  @Column({ type: "enum", enum: DisputeSide, default: DisputeSide.OBJECT })
+  side: DisputeSide;
+
+  /**
+   * The bond this participant locked. The first objector chooses the amount
+   * (minimum Nu 10); every later participant on either side must match it
+   * exactly, so all stakes in one contest are equal. Forfeited if their side
+   * loses, returned + rewarded (a share of the losing side's bonds) if it wins.
    */
   @ApiProperty({
     example: 50,
@@ -67,6 +86,19 @@ export class Dispute {
     default: DisputeBondStatus.LOCKED,
   })
   bondStatus: DisputeBondStatus;
+
+  /**
+   * Reward paid to this participant on top of the returned bond when their side
+   * won — a share of the losing side's forfeited bonds, or (when the admin was
+   * overturned with no defenders) a share of the house cut. Excludes the bond
+   * itself, which is returned separately. 0 for losing/pending/unrewarded rows.
+   */
+  @ApiProperty({
+    example: 25,
+    description: "BTN reward paid on top of the returned bond when this side won",
+  })
+  @Column({ type: "decimal", precision: 18, scale: 2, default: 0 })
+  rewardAmount: number;
 
   @ApiProperty()
   @CreateDateColumn()

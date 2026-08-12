@@ -1,11 +1,14 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { In, Repository } from "typeorm";
 import { ConfigService } from "@nestjs/config";
+import { Cron, CronExpression } from "@nestjs/schedule";
 import {
   RevenueDistribution,
   DistributionStatus,
 } from "../entities/revenue-distribution.entity";
+import { Settlement } from "../entities/settlement.entity";
+import { Market } from "../entities/market.entity";
 import { DKGatewayService } from "../payment/services/dk-gateway/dk-gateway.service";
 import { RedisService } from "../redis/redis.service";
 
@@ -30,6 +33,10 @@ export class RevenueDistributionService {
   constructor(
     @InjectRepository(RevenueDistribution)
     private distributionRepo: Repository<RevenueDistribution>,
+    @InjectRepository(Settlement)
+    private settlementRepo: Repository<Settlement>,
+    @InjectRepository(Market)
+    private marketRepo: Repository<Market>,
     private configService: ConfigService,
     private dkGateway: DKGatewayService,
     private redisService: RedisService,
@@ -129,6 +136,90 @@ export class RevenueDistributionService {
       `Revenue distribution recorded: ${houseAmount} Nu for market ${marketId} -> public account ${this.publicAccountNo}`,
     );
     return saved;
+  }
+
+  /**
+   * Safety net: every settled market with house revenue MUST have a
+   * distribution record. The primary path records it right after settlement,
+   * but if that write ever fails (a transient DB error), the market would be
+   * settled with its house revenue never booked — a silent hole in the books.
+   *
+   * This finds any settled-but-unbooked market and creates the missing PENDING
+   * record. recordDistribution() is idempotent (keyed by settlementId), so this
+   * is safe to run repeatedly and safe alongside the settlement-time write.
+   */
+  async reconcileMissingDistributions(
+    limit = 200,
+  ): Promise<{ created: number; scanned: number }> {
+    const missing = await this.settlementRepo
+      .createQueryBuilder("s")
+      .leftJoin(RevenueDistribution, "rd", 'rd."settlementId" = s.id')
+      .where("rd.id IS NULL")
+      .andWhere("s.houseAmount > 0")
+      .andWhere("s.cancelReason IS NULL")
+      .orderBy("s.settledAt", "ASC")
+      .limit(limit)
+      .getMany();
+
+    if (missing.length === 0) return { created: 0, scanned: 0 };
+
+    // House edge per market in one query (record-keeping field on the row).
+    const marketIds = [...new Set(missing.map((s) => s.marketId))];
+    const markets = await this.marketRepo.find({
+      where: { id: In(marketIds) },
+      select: ["id", "houseEdgePct"],
+    });
+    const edgeByMarket = new Map(
+      markets.map((m) => [m.id, Number(m.houseEdgePct)]),
+    );
+
+    let created = 0;
+    for (const s of missing) {
+      try {
+        const rec = await this.recordDistribution(
+          s.marketId,
+          s.id,
+          Number(s.houseAmount),
+          edgeByMarket.get(s.marketId) ?? 0,
+          Number(s.totalPool),
+        );
+        if (rec) created++;
+      } catch (err) {
+        this.logger.error(
+          `[Revenue] Reconcile could not book distribution for settlement ${s.id}: ${
+            (err as Error).message
+          }`,
+        );
+      }
+    }
+
+    // Loud: a non-zero count means the settlement-time write had failed.
+    this.logger.warn(
+      `[Revenue] Reconcile booked ${created} previously-missing revenue distribution(s) ` +
+        `out of ${missing.length} settled-but-unbooked market(s).`,
+    );
+    return { created, scanned: missing.length };
+  }
+
+  /** Cluster-locked so exactly one pod reconciles per tick. */
+  @Cron(CronExpression.EVERY_10_MINUTES)
+  async reconcileMissingDistributionsCron(): Promise<void> {
+    const LOCK = "oro:lock:revenue-reconcile";
+    const token = await this.redisService
+      .acquireLock(LOCK, 120)
+      .catch(() => null);
+    if (!token) return; // another pod owns the tick, or Redis down (safe: skip)
+    try {
+      await this.reconcileMissingDistributions();
+    } catch (err) {
+      this.logger.error(
+        `[Revenue] Reconcile cron failed: ${(err as Error).message}`,
+      );
+    } finally {
+      await this.redisService
+        .releaseLock(LOCK, token)
+        .catch(() => undefined);
+    }
   }
 
   /**

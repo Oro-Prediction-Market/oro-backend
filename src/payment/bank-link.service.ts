@@ -15,6 +15,7 @@ import { User } from "../entities/user.entity";
 import { RedisService } from "../redis/redis.service";
 import { SmsService } from "../shared/services/sms.service";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
+import { TelegramVerificationService } from "../telegram/telegram-verification.service";
 import { DKGatewayService } from "./services/dk-gateway/dk-gateway.service";
 
 const OTP_TTL_SEC = 300; // 5 minutes
@@ -39,6 +40,7 @@ export class BankLinkService {
     private readonly redis: RedisService,
     private readonly smsService: SmsService,
     private readonly telegramSimple: TelegramSimpleService,
+    private readonly telegramVerification: TelegramVerificationService,
   ) {}
 
   async linkBankAccount(
@@ -169,7 +171,9 @@ export class BankLinkService {
         `[BankLink] SMS failed for ${bankPhone}, sent via Telegram fallback`,
       );
     } else {
-      this.logger.log(`[BankLink] OTP sent via SMS to ${bankPhone}`);
+      this.logger.log(
+        `[BankLink] OTP sent via SMS to ${this.maskPhone(bankPhone)}`,
+      );
     }
 
     return {

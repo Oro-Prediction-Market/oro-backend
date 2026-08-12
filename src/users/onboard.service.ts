@@ -13,6 +13,7 @@ import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { User } from "../entities/user.entity";
 import { RedisService } from "../redis/redis.service";
 import { SmsService } from "../shared/services/sms.service";
+import { maskEmail, maskPhone } from "../shared/utils/redact.util";
 import { EmailService } from "../shared/services/email.service";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import { TelegramVerificationService } from "../telegram/telegram-verification.service";
@@ -73,10 +74,10 @@ export class OnboardService {
       const sent = await this.smsService.sendOtp(phone, otp);
       if (!sent)
         this.logger.warn(
-          `[Onboard] SMS delivery failed for ${phone}, falling back to Telegram`,
+          `[Onboard] SMS delivery failed for ${maskPhone(phone)}, falling back to Telegram`,
         );
       else {
-        this.logger.log(`[Onboard] OTP sent via SMS to ${phone}`);
+        this.logger.log(`[Onboard] OTP sent via SMS to ${maskPhone(phone)}`);
         return;
       }
     }
@@ -85,10 +86,10 @@ export class OnboardService {
       const sent = await this.emailService.sendOtp(email, otp);
       if (!sent)
         this.logger.warn(
-          `[Onboard] Email delivery failed for ${email}, falling back to Telegram`,
+          `[Onboard] Email delivery failed for ${maskEmail(email)}, falling back to Telegram`,
         );
       else {
-        this.logger.log(`[Onboard] OTP sent via email to ${email}`);
+        this.logger.log(`[Onboard] OTP sent via email to ${maskEmail(email)}`);
         return;
       }
     }

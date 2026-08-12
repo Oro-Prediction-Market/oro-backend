@@ -43,7 +43,7 @@ export interface DKBankPaymentRequest {
 export interface PaymentInitiateResponse {
   success: boolean;
   paymentId: string;
-  status: "pending" | "success" | "failed";
+  status: "pending" | "processing" | "success" | "failed";
   amount: number;
   currency: string;
   method: "dkbank";
@@ -394,15 +394,29 @@ export class DKBankPaymentService {
         payment.dkTxnStatusId = execResult.txnStatusId;
         await this.paymentRepo.save(payment);
       } catch (e: any) {
+        // A rejected OTP (or a failed debit request) must NOT kill the payment
+        // outright — the user is allowed up to MAX_OTP_ATTEMPTS tries. Count the
+        // failure and, unless the cap is now reached, revert the payment to
+        // PENDING so a fresh OTP can be submitted against the same payment.
+        // Only on the final permitted attempt (or when we cannot track attempts)
+        // is the payment marked terminally FAILED.
+        let attempts = MAX_OTP_ATTEMPTS; // no otpRecord ⇒ cannot retry safely
         if (otpRecord) {
           otpRecord.failedAttempts += 1;
+          attempts = otpRecord.failedAttempts;
           await this.otpRepo.save(otpRecord);
         }
-        payment.status = PaymentStatus.FAILED;
+        const exhausted = attempts >= MAX_OTP_ATTEMPTS;
+        payment.status = exhausted
+          ? PaymentStatus.FAILED
+          : PaymentStatus.PENDING;
         payment.failureReason = e?.message || "DK debit request failed";
         await this.paymentRepo.save(payment);
         throw new BadRequestException(
-          e?.message || "Invalid OTP or transaction failed. Please try again.",
+          exhausted
+            ? "Too many incorrect OTP attempts. Please initiate a new payment."
+            : e?.message ||
+              "Invalid OTP or transaction failed. Please try again.",
         );
       }
     }
@@ -893,15 +907,16 @@ export class DKBankPaymentService {
   }
 
   /**
-   * Step 2 — Withdrawal confirmation.
-   * Validates the Telegram OTP, then inside a single atomic DB transaction:
-   *   1. Re-checks balance under pessimistic_write lock (prevents TOCTOU)
-   *   2. Calls DK Gateway to push funds from merchant vault → user DK account
-   *   3. Only if DK transfer succeeds: writes the WITHDRAWAL debit ledger entry
-   *      and marks the payment SUCCESS
-   *
-   * If the DK transfer fails or throws, the transaction rolls back — no debit
-   * is written and the merchant vault balance is unchanged.
+   * Step 2 — Withdrawal confirmation. Validates the Telegram OTP, then runs a
+   * reserve-then-call flow so the bank is never paid without a matching debit:
+   *   Phase 1 (short txn): re-check balance under pessimistic_write lock, write
+   *     the WITHDRAWAL debit, and move the payment to PROCESSING. The debit is
+   *     committed BEFORE any bank call.
+   *   Phase 2 (no lock): call DK Gateway to push funds merchant vault → user.
+   *   Phase 3 (short txn): on success, finalise SUCCESS (debit already written);
+   *     on a definitive DK failure, write a REFUND credit reversing the debit and
+   *     mark FAILED; on an AMBIGUOUS outcome (the call threw — timeout/network),
+   *     keep the debit and leave the payment PROCESSING for reconciliation.
    */
   async confirmWithdrawal(
     userId: string,
@@ -959,21 +974,30 @@ export class DKBankPaymentService {
     // OTP is valid — delete it immediately to prevent replay
     await this.redis.del(`oro:tg-otp:${paymentId}`);
 
-    // ── Atomic: balance re-check + DK transfer + ledger debit ────────────────
+    // ── Reserve-then-call ─────────────────────────────────────────────────────
+    // The debit is written and COMMITTED before the DK network call, so we can
+    // never pay the bank without a matching Oro ledger debit. Three phases:
+    //   Phase 1 — short txn: lock, re-check balance, write debit, → PROCESSING.
+    //   Phase 2 — no lock/txn: call DK (can take ~60s).
+    //   Phase 3 — short txn: finalise SUCCESS, or reverse the debit on a
+    //             definitive failure. On an AMBIGUOUS outcome (the call threw —
+    //             timeout/network) we neither refund nor confirm: the debit
+    //             stays and the payment is left PROCESSING for reconciliation.
     const withdrawalAmount = Number(payment.amount);
 
-    const result: { status: "success" | "failed"; failureReason?: string } = {
-      status: "success",
-    };
+    const result: {
+      status: "success" | "failed" | "processing";
+      failureReason?: string;
+    } = { status: "success" };
 
+    // ── Phase 1: reserve funds (no external calls while holding the lock) ─────
     await this.dataSource.transaction(async (em) => {
       // Lock the USER row first so every balance-affecting operation for this
-      // user serializes. Locking only the payment row (below) is NOT enough:
-      // two *different* pending withdrawals are two different payment rows, so
-      // their locks never collide — both could read the same balance and both
-      // pay out, a double payout against a single balance. The user-row lock
-      // forces the second confirm to wait, then re-read the now-debited balance
-      // and correctly fail. Mirrors the lock pattern in ParimutuelEngine.
+      // user serializes. Locking only the payment row is NOT enough: two
+      // *different* pending withdrawals are two different payment rows, so their
+      // locks never collide — both could read the same balance and both pay out.
+      // The user-row lock forces the second confirm to wait, then re-read the
+      // now-debited balance and correctly fail.
       const lockedUser = await em
         .getRepository(User)
         .createQueryBuilder("u")
@@ -982,7 +1006,6 @@ export class DKBankPaymentService {
         .getOne();
       if (!lockedUser) throw new NotFoundException("User not found");
 
-      // Pessimistic lock: re-read payment to prevent concurrent withdrawal attempts
       const lockedPayment = await em
         .getRepository(Payment)
         .createQueryBuilder("p")
@@ -1014,7 +1037,6 @@ export class DKBankPaymentService {
 
       // Bonus credits are play money — they cannot be sent to DK Bank directly.
       // Only the real (non-bonus) portion of the balance is withdrawable.
-      // (lockedUser is the row we locked at the top of the transaction.)
       const bonusBalance = Number(lockedUser.bonusBalance ?? 0);
       const realWithdrawable = balanceBefore - bonusBalance;
 
@@ -1026,58 +1048,9 @@ export class DKBankPaymentService {
         );
       }
 
-      // ── Call DK Gateway: push funds from merchant vault to user account ───
-      // Uses /v1/initiate/transaction which works in both staging and production.
-      // No bypass needed — this endpoint is confirmed working in DK staging.
-      const isStagingWithdrawalBypass =
-        this.configService.get<string>("DK_STAGING_WITHDRAWAL_BYPASS") ===
-        "true";
-
-      let transferResult: {
-        txnId: string | null;
-        txnStatusId?: string | null;
-        inquiryId?: string | null;
-        status: string;
-        statusDesc: string;
-        raw?: unknown;
-      };
-      if (isStagingWithdrawalBypass) {
-        this.logger.warn(
-          `[STAGING] Skipping real DK transfer for payment ${lockedPayment.id} — DK_STAGING_WITHDRAWAL_BYPASS active`,
-        );
-        transferResult = {
-          txnId: `STAGING-${Date.now()}`,
-          status: "SUCCESS",
-          statusDesc: "Staging bypass — no real transfer",
-        };
-      } else {
-        transferResult = await this.dkGateway.transferToAccount({
-          accountNumber: lockedPayment.metadata?.dkAccountNumber,
-          accountName: lockedPayment.metadata?.dkAccountName ?? undefined,
-          amount: withdrawalAmount,
-          currency: "BTN",
-          reference: lockedPayment.id,
-          description: `oro withdrawal for user ${userId}`,
-        });
-      }
-
-      const transferSucceeded =
-        typeof transferResult?.status === "string" &&
-        transferResult.status.toUpperCase().includes("SUCCESS");
-
-      if (!transferSucceeded) {
-        // DK returned a failure response — mark payment FAILED, no debit written
-        lockedPayment.status = PaymentStatus.FAILED;
-        lockedPayment.failureReason =
-          transferResult?.statusDesc || "DK Bank transfer failed";
-        lockedPayment.confirmedAt = new Date();
-        await em.save(lockedPayment);
-        result.status = "failed";
-        result.failureReason = lockedPayment.failureReason ?? undefined;
-        return; // exit transaction without writing debit
-      }
-
-      // ── DK transfer succeeded — write the ledger debit ───────────────────
+      // Write the debit NOW — before any bank call. This is the invariant that
+      // makes the flow safe: the ledger is reduced first, so a later DK success
+      // can never leave the bank paid without a matching Oro debit.
       await em.save(
         Transaction,
         em.create(Transaction, {
@@ -1087,15 +1060,142 @@ export class DKBankPaymentService {
           balanceAfter: balanceBefore - withdrawalAmount,
           paymentId: lockedPayment.id,
           userId,
-          note: `DK Bank withdrawal confirmed`,
+          note: `DK Bank withdrawal reserved`,
         }),
       );
 
+      lockedPayment.status = PaymentStatus.PROCESSING;
+      await em.save(lockedPayment);
+    });
+
+    // Funds are reserved — reflect the hold in the UI immediately.
+    await this.redis.del(`oro:cache:balance:${userId}`);
+    this.sse.emit(userId, "balance:updated", { paymentId });
+
+    // ── Phase 2: call DK OUTSIDE any transaction or lock (may take ~60s) ───────
+    const isStagingWithdrawalBypass =
+      this.configService.get<string>("DK_STAGING_WITHDRAWAL_BYPASS") === "true";
+
+    let transferResult: {
+      txnId: string | null;
+      txnStatusId?: string | null;
+      inquiryId?: string | null;
+      status: string;
+      statusDesc: string;
+      raw?: unknown;
+    } | null = null;
+    let transferThrew = false;
+    let transferError = "";
+    if (isStagingWithdrawalBypass) {
+      this.logger.warn(
+        `[STAGING] Skipping real DK transfer for payment ${paymentId} — DK_STAGING_WITHDRAWAL_BYPASS active`,
+      );
+      transferResult = {
+        txnId: `STAGING-${Date.now()}`,
+        status: "SUCCESS",
+        statusDesc: "Staging bypass — no real transfer",
+      };
+    } else {
+      try {
+        transferResult = await this.dkGateway.transferToAccount({
+          accountNumber: payment.metadata?.dkAccountNumber,
+          accountName: payment.metadata?.dkAccountName ?? undefined,
+          amount: withdrawalAmount,
+          currency: "BTN",
+          reference: payment.id,
+          description: `oro withdrawal for user ${userId}`,
+        });
+      } catch (e: any) {
+        // AMBIGUOUS: we don't know whether DK moved the money. Do NOT refund
+        // (DK may have paid) and do NOT confirm. Handled in phase 3 below.
+        transferThrew = true;
+        transferError = e?.message || "DK Bank transfer error";
+      }
+    }
+
+    const transferStatus = (transferResult?.status ?? "").toUpperCase();
+    const transferSucceeded =
+      !transferThrew && transferStatus.includes("SUCCESS");
+    // DK replied, but with an indeterminate code (timeout / no-response /
+    // internal error): treat it exactly like a thrown call — money state
+    // unknown, so keep the debit and leave PROCESSING, never refund.
+    const transferAmbiguous =
+      !transferThrew && transferStatus === "AMBIGUOUS";
+
+    // ── Phase 3: finalise (short txn) ─────────────────────────────────────────
+    await this.dataSource.transaction(async (em) => {
+      const lockedPayment = await em
+        .getRepository(Payment)
+        .createQueryBuilder("p")
+        .setLock("pessimistic_write")
+        .where("p.id = :id", { id: paymentId })
+        .andWhere("p.userId = :userId", { userId })
+        .getOne();
+      if (!lockedPayment) throw new NotFoundException("Payment not found");
+      // Idempotency: only a PROCESSING withdrawal can be finalised here.
+      if (lockedPayment.status !== PaymentStatus.PROCESSING) {
+        result.status =
+          lockedPayment.status === PaymentStatus.SUCCESS ? "success" : "failed";
+        return;
+      }
+
+      if (transferThrew || transferAmbiguous) {
+        // Ambiguous — either the call threw (no reply at all) or DK replied with
+        // an indeterminate code (timeout / no-response / internal error). Either
+        // way we do NOT know whether the money moved, so keep the debit and
+        // leave PROCESSING for reconciliation. Never auto-refund: refunding a
+        // transfer that actually settled would double-pay the user.
+        const reason = transferThrew
+          ? transferError
+          : (transferResult?.statusDesc ??
+            "DK Bank returned an indeterminate status");
+        result.status = "processing";
+        result.failureReason = reason;
+        this.logger.warn(
+          `[Withdrawal] DK transfer ambiguous for payment ${paymentId} — left ` +
+            `PROCESSING with debit intact for reconciliation: ${reason}`,
+        );
+        return;
+      }
+
+      if (!transferSucceeded) {
+        // Definitive DK failure — reverse the reserved debit and fail cleanly.
+        const { balance: rawBal } = await em
+          .getRepository(Transaction)
+          .createQueryBuilder("t")
+          .select("COALESCE(SUM(t.amount), 0)", "balance")
+          .where("t.userId = :userId", { userId })
+          .getRawOne();
+        const balNow = Number(rawBal);
+        await em.save(
+          Transaction,
+          em.create(Transaction, {
+            type: TransactionType.REFUND,
+            amount: withdrawalAmount, // positive = return the reserved funds
+            balanceBefore: balNow,
+            balanceAfter: balNow + withdrawalAmount,
+            paymentId: lockedPayment.id,
+            userId,
+            note: `DK Bank withdrawal failed — reserved funds returned`,
+          }),
+        );
+        lockedPayment.status = PaymentStatus.FAILED;
+        lockedPayment.failureReason =
+          transferResult?.statusDesc || "DK Bank transfer failed";
+        lockedPayment.confirmedAt = new Date();
+        await em.save(lockedPayment);
+        result.status = "failed";
+        result.failureReason = lockedPayment.failureReason ?? undefined;
+        return;
+      }
+
+      // Definitive success — the debit already exists; just finalise the payment.
       lockedPayment.status = PaymentStatus.SUCCESS;
       lockedPayment.confirmedAt = new Date();
       lockedPayment.externalPaymentId = transferResult?.txnId ?? null;
       lockedPayment.failureReason = null;
       await em.save(lockedPayment);
+      result.status = "success";
     });
 
     // ── Cleanup ──────────────────────────────────────────────────────────────
@@ -1106,17 +1206,9 @@ export class DKBankPaymentService {
     }
     await this.redis.del(`oro:otp:${paymentId}`);
     await this.redis.del(`oro:cache:balance:${userId}`);
-    if (result.status !== "failed") {
-      this.sse.emit(userId, "balance:updated", { paymentId });
-    }
+    this.sse.emit(userId, "balance:updated", { paymentId });
 
     if (result.status === "failed") {
-      await this.paymentRepo.save(
-        Object.assign(payment, {
-          status: PaymentStatus.FAILED,
-          failureReason: result.failureReason,
-        }),
-      );
       return {
         success: false,
         paymentId: payment.id,
@@ -1125,6 +1217,21 @@ export class DKBankPaymentService {
         currency: payment.currency,
         method: "dkbank",
         message: result.failureReason ?? "Withdrawal failed",
+        timestamp: new Date().toISOString(),
+      };
+    }
+
+    if (result.status === "processing") {
+      return {
+        success: true,
+        paymentId: payment.id,
+        status: "processing",
+        amount: withdrawalAmount,
+        currency: payment.currency,
+        method: "dkbank",
+        message:
+          "Your withdrawal is being processed. We'll confirm once the bank " +
+          "completes the transfer.",
         timestamp: new Date().toISOString(),
       };
     }

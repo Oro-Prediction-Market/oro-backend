@@ -7,6 +7,7 @@ export const JobName = {
   STREAK_MILESTONE: "streak.milestone",
   DAILY_CREDIT: "daily.credit",
   SETTLEMENT_NOTIFY: "settlement.notify",
+  BHUTANAPP_NOTIFY: "bhutanapp.notify",
 } as const;
 
 export interface PaymentSuccessJobData {
@@ -52,4 +53,15 @@ export interface DailyCreditJobData {
 export interface SettlementNotifyJobData {
   telegramChatId: number;
   message: string;
+}
+
+/**
+ * Push notification for a PWA / BhutanApp user (no Telegram chat). Delivered via
+ * the BhutanApp notification service. Used for settlement win/lose results and
+ * any other user-facing alerts for non-Telegram users.
+ */
+export interface BhutanAppNotifyJobData {
+  externalUserId: string;
+  title: string;
+  body: string;
 }

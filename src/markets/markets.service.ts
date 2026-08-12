@@ -10,6 +10,7 @@ import { Repository, DataSource } from "typeorm";
 import { RedisService } from "../redis/redis.service";
 import { randomUUID } from "crypto";
 import { CreateMarketDto } from "./dto/create-market.dto";
+import { DEFAULT_HOUSE_EDGE_PCT } from "./fee.constants";
 import { CreateMarketGroupDto } from "./dto/create-market-group.dto";
 import { UpdateMarketDto } from "./dto/update-market.dto";
 import { OpenPositionDto } from "./dto/open-position.dto";
@@ -24,7 +25,7 @@ import {
 import { Settlement } from "../entities/settlement.entity";
 import { Outcome } from "../entities/outcome.entity";
 import { Dispute } from "../entities/dispute.entity";
-import { DisputeBondStatus } from "../entities/dispute.entity";
+import { DisputeBondStatus, DisputeSide } from "../entities/dispute.entity";
 import { Position, PositionStatus } from "../entities/position.entity";
 import { User } from "../entities/user.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
@@ -175,7 +176,7 @@ export class MarketsService implements OnModuleInit {
         resolutionCriteria: dto.resolutionCriteria ?? undefined,
         opensAt: dto.opensAt ? new Date(dto.opensAt) : undefined,
         closesAt: dto.closesAt ? new Date(dto.closesAt) : undefined,
-        houseEdgePct: dto.houseEdgePct ?? 10,
+        houseEdgePct: dto.houseEdgePct ?? DEFAULT_HOUSE_EDGE_PCT,
         mechanism: MarketMechanism.PARIMUTUEL,
         liquidityParam: liquidityParam,
         outcomes: outcomes,
@@ -689,24 +690,23 @@ export class MarketsService implements OnModuleInit {
   }
 
   // ─── Dispute / Objection System ─────────────────────────────────────────────
-  // Objectors must lock a bond equal to their full position in this market.
-  // ✓ Correct objection  → bond returned + pro-rata share of the forfeit pool
-  // ✗ Wrong objection    → bond forfeited to reward pool for correct objectors
-  // ○ Auto-settled (0 objections) → bonds irrelevant, no deductions ever
+  // A market's resolution is a two-sided contest. Participants lock an equal
+  // bond and pick a side:
+  //   OBJECT  → the admin's proposed outcome is wrong
+  //   SUPPORT → the proposed outcome is right (defends it against objectors)
+  // The FIRST participant must OBJECT and chooses the per-head bond (min Nu 10);
+  // everyone after matches that exact amount. On resolution the winning side
+  // gets its bonds back plus an equal split of the losing side's forfeited bonds.
 
-  // Fixed dispute bond — high enough to deter casual/abusive objections
-  // while still being accessible to bettors with genuine grievances.
-  private static readonly DISPUTE_BOND = 10;
-
-  private calcBond(_positionAmount: number): number {
-    return MarketsService.DISPUTE_BOND;
-  }
+  // Floor for the objector-chosen bond — high enough to deter casual/abusive
+  // objections while still being accessible to bettors with genuine grievances.
+  private static readonly MIN_DISPUTE_BOND = 10;
 
   /**
-   * File an objection against the proposed outcome.
-   * Only bettors with an active position can object.
-   * A bond of max(10, 2% of position) is locked immediately.
-   * Bond is forfeited if wrong, or returned + rewarded if right.
+   * Join a market's resolution contest during the objection window.
+   * Only bettors with an active position can participate. The first objector
+   * sets the per-head bond (≥ Nu 10); later participants must match it exactly.
+   * The bond is forfeited if your side loses, or returned + rewarded if it wins.
    */
   async submitDispute(
     userId: string,
@@ -725,7 +725,7 @@ export class MarketsService implements OnModuleInit {
         "The objection window for this market has closed",
       );
 
-    // Must hold an active position to object
+    // Must hold an active position to participate
     const position = await this.dataSource.getRepository(Position).findOne({
       where: { userId, marketId, status: PositionStatus.PENDING },
     });
@@ -734,7 +734,7 @@ export class MarketsService implements OnModuleInit {
         "You must have an active position in this market to raise an objection",
       );
 
-    // One objection per user per market
+    // One entry per user per market
     const alreadyObjected = await this.disputeRepo.findOne({
       where: { userId, marketId },
     });
@@ -743,73 +743,110 @@ export class MarketsService implements OnModuleInit {
         "You have already raised an objection for this market",
       );
 
-    const bondAmount = this.calcBond(Number(position.amount));
+    const side = dto.side ?? DisputeSide.OBJECT;
 
-    // Lock the bond in a single DB transaction
-    const saved = await this.dataSource.transaction(async (em) => {
-      const user = await em.findOne(User, { where: { id: userId } });
-      if (!user) throw new BadRequestException("User not found");
+    // Determine the contest bond + lock it in one DB transaction. The "first
+    // participant" check is re-evaluated inside the transaction so two racing
+    // objectors can't disagree on the amount.
+    const { saved, bondAmount } = await this.dataSource.transaction(
+      async (em) => {
+        const user = await em.findOne(User, { where: { id: userId } });
+        if (!user) throw new BadRequestException("User not found");
 
-      const { balance } = await em
-        .getRepository(Transaction)
-        .createQueryBuilder("t")
-        .select("COALESCE(SUM(t.amount), 0)", "balance")
-        .where("t.userId = :userId", { userId })
-        .getRawOne();
-      const currentBalance = Number(balance);
+        const existingCount = await em
+          .getRepository(Dispute)
+          .count({ where: { marketId } });
+        const isFirst = existingCount === 0;
 
-      if (currentBalance < bondAmount)
-        throw new BadRequestException(
-          `You need at least Nu ${bondAmount.toLocaleString()} available to raise an objection. ` +
-            `This bond is non-refundable if the admin upholds their decision. ` +
-            `Your current balance is Nu ${currentBalance.toFixed(0)}.`,
-        );
+        let bond: number;
+        if (isFirst) {
+          if (side !== DisputeSide.OBJECT)
+            throw new BadRequestException(
+              "You can only defend a proposal after someone has objected to it. Raise an objection instead.",
+            );
+          const requested =
+            dto.bondAmount ?? MarketsService.MIN_DISPUTE_BOND;
+          bond =
+            Math.round(
+              Math.max(MarketsService.MIN_DISPUTE_BOND, requested) * 100,
+            ) / 100;
+        } else {
+          const required = Number(
+            market.disputeBondAmount ?? MarketsService.MIN_DISPUTE_BOND,
+          );
+          if (
+            dto.bondAmount != null &&
+            Math.abs(Number(dto.bondAmount) - required) > 0.001
+          )
+            throw new BadRequestException(
+              `This contest's bond is fixed at Nu ${required.toLocaleString()}. ` +
+                `Everyone who joins — objecting or defending — must lock exactly that amount.`,
+            );
+          bond = required;
+        }
 
-      // Deduct the bond
-      const txn = em.getRepository(Transaction).create({
-        userId,
-        type: TransactionType.DISPUTE_BOND_LOCK,
-        amount: -bondAmount,
-        balanceBefore: currentBalance,
-        balanceAfter: currentBalance - bondAmount,
-        note: `Bond locked for objection on market "${market.title}"`,
-      });
-      await em.getRepository(Transaction).save(txn);
+        const { balance } = await em
+          .getRepository(Transaction)
+          .createQueryBuilder("t")
+          .select("COALESCE(SUM(t.amount), 0)", "balance")
+          .where("t.userId = :userId", { userId })
+          .getRawOne();
+        const currentBalance = Number(balance);
 
-      const dispute = em.getRepository(Dispute).create({
-        userId,
-        marketId,
-        reason: dto.reason,
-        upheld: null,
-        bondAmount,
-        bondStatus: DisputeBondStatus.LOCKED,
-      });
-      return em.getRepository(Dispute).save(dispute);
-    });
+        if (currentBalance < bond)
+          throw new BadRequestException(
+            `You need at least Nu ${bond.toLocaleString()} available to join this objection. ` +
+              `This bond is non-refundable if your side loses. ` +
+              `Your current balance is Nu ${currentBalance.toFixed(0)}.`,
+          );
+
+        // The first objector stamps the per-head bond onto the market so every
+        // later participant matches it.
+        if (isFirst) {
+          market.disputeBondAmount = bond;
+          await em.getRepository(Market).save(market);
+        }
+
+        // Deduct the bond
+        const verb =
+          side === DisputeSide.SUPPORT ? "defending" : "objecting to";
+        const txn = em.getRepository(Transaction).create({
+          userId,
+          type: TransactionType.DISPUTE_BOND_LOCK,
+          amount: -bond,
+          balanceBefore: currentBalance,
+          balanceAfter: currentBalance - bond,
+          note: `Bond locked for ${verb} the outcome of "${market.title}"`,
+        });
+        await em.getRepository(Transaction).save(txn);
+
+        const dispute = em.getRepository(Dispute).create({
+          userId,
+          marketId,
+          reason: dto.reason,
+          side,
+          upheld: null,
+          bondAmount: bond,
+          bondStatus: DisputeBondStatus.LOCKED,
+        });
+        const savedDispute = await em.getRepository(Dispute).save(dispute);
+        return { saved: savedDispute, bondAmount: bond };
+      },
+    );
 
     // Bust balance cache
     await this.redis.del(`oro:cache:balance:${userId}`);
 
-    // Channel notification for new objections was intentionally disabled to
-    // avoid spamming the Telegram channel — with many markets, members felt
-    // disturbed by the volume of objection alerts. Objections are still
-    // recorded and visible to admins in the admin panel.
-    // To re-enable, uncomment the block below:
-    // this.telegram
-    //   .postToChannel(
-    //     `⚠️ <b>New Objection — Bond Locked</b>\n` +
-    //       `Market: <i>${market.title}</i>\n` +
-    //       `User: ${userId}\n` +
-    //       `Bond: <b>Nu ${bondAmount}</b>\n` +
-    //       `Reason: ${dto.reason.slice(0, 200)}`,
-    //   )
-    //   .catch(() => undefined);
-
     await this.invalidateMarketCache(marketId);
+
+    const winCondition =
+      side === DisputeSide.SUPPORT
+        ? "the admin keeps the proposed outcome"
+        : "the admin agrees the outcome was wrong";
     return {
       ...saved,
       bondAmount,
-      bondNote: `Nu ${bondAmount.toLocaleString()} has been locked as a bond. You will get it back (plus a reward) if the admin agrees the outcome was wrong. If the admin upholds their decision, you lose the bond.`,
+      bondNote: `Nu ${bondAmount.toLocaleString()} has been locked as a bond. You get it back — plus a share of the other side's bonds — if ${winCondition}. If your side loses, you forfeit the bond.`,
     };
   }
 
@@ -842,7 +879,7 @@ export class MarketsService implements OnModuleInit {
       participantRows.map((r) => [r.marketId, Number(r.count)]),
     );
 
-    // Objection counts per market
+    // Objection counts per market (OBJECT side only — defenders aren't objections)
     const objectionRows: { marketId: string; count: string }[] =
       await this.dataSource
         .getRepository(Dispute)
@@ -850,6 +887,7 @@ export class MarketsService implements OnModuleInit {
         .select("d.marketId", "marketId")
         .addSelect("COUNT(*)", "count")
         .where("d.marketId IN (:...marketIds)", { marketIds })
+        .andWhere("d.side = :objectSide", { objectSide: DisputeSide.OBJECT })
         .groupBy("d.marketId")
         .getRawMany();
     const objectionMap = new Map(
@@ -923,7 +961,7 @@ export class MarketsService implements OnModuleInit {
       participantRows.map((r) => [r.marketId, Number(r.count)]),
     );
 
-    // Objection counts per market
+    // Objection counts per market (OBJECT side only — defenders don't count as objections)
     const objectionRows: { marketId: string; count: string }[] =
       await this.dataSource
         .getRepository(Dispute)
@@ -931,6 +969,7 @@ export class MarketsService implements OnModuleInit {
         .select("d.marketId", "marketId")
         .addSelect("COUNT(*)", "count")
         .where("d.marketId IN (:...marketIds)", { marketIds })
+        .andWhere("d.side = :objectSide", { objectSide: DisputeSide.OBJECT })
         .groupBy("d.marketId")
         .getRawMany();
     const objectionMap = new Map(
@@ -945,6 +984,7 @@ export class MarketsService implements OnModuleInit {
         .select("d.marketId", "marketId")
         .addSelect("COUNT(*)", "count")
         .where("d.marketId IN (:...marketIds)", { marketIds })
+        .andWhere("d.side = :objectSide", { objectSide: DisputeSide.OBJECT })
         .andWhere("d.upheld = true")
         .groupBy("d.marketId")
         .getRawMany();
@@ -1011,60 +1051,129 @@ export class MarketsService implements OnModuleInit {
     return disputes.map((d) => ({
       id: d.id,
       reason: d.reason,
+      side: d.side,
       upheld: d.upheld,
       bondAmount: d.bondAmount,
       bondStatus: d.bondStatus,
+      rewardAmount: d.rewardAmount,
       createdAt: d.createdAt,
     }));
   }
 
-  /** Returns objection count, window info, and the bond cost for this user to object. */
+  /**
+   * The authenticated caller's own dispute record for a market — used to show
+   * "you challenged this and won/lost" plus the exact bond and reward. Returns
+   * null when the user did not object. Only ever exposes the caller's own row,
+   * so (unlike the public list) it may safely include the settlement result.
+   */
+  async getMyDispute(marketId: string, userId: string) {
+    const d = await this.disputeRepo.findOne({
+      where: { marketId, userId },
+      order: { createdAt: "DESC" },
+    });
+    if (!d) return null;
+    return {
+      id: d.id,
+      reason: d.reason,
+      side: d.side,
+      upheld: d.upheld,
+      bondAmount: d.bondAmount,
+      bondStatus: d.bondStatus,
+      rewardAmount: d.rewardAmount,
+      createdAt: d.createdAt,
+    };
+  }
+
+  /**
+   * Every dispute the caller has raised, across all markets — used to flag which
+   * settled markets they disputed (and the result) in the results list. Only the
+   * caller's own rows, so it may include the settlement outcome + reward.
+   */
+  async getMyDisputes(userId: string) {
+    const disputes = await this.disputeRepo.find({
+      where: { userId },
+      relations: { market: true },
+      order: { createdAt: "DESC" },
+    });
+    return disputes.map((d) => ({
+      id: d.id,
+      marketId: d.marketId,
+      marketTitle: d.market?.title ?? null,
+      side: d.side,
+      upheld: d.upheld,
+      bondAmount: d.bondAmount,
+      bondStatus: d.bondStatus,
+      rewardAmount: d.rewardAmount,
+      createdAt: d.createdAt,
+    }));
+  }
+
+  /**
+   * Returns objection counts per side, window info, and the bond this user must
+   * lock to join the resolution contest. The first objector may choose any
+   * amount ≥ minBond; once set, everyone matches `bondRequired`.
+   */
   async getDisputeInfo(
     marketId: string,
     userId?: string,
   ): Promise<{
     objectionCount: number;
+    objectCount: number;
+    supportCount: number;
     windowOpen: boolean;
     windowClosesAt: Date | null;
     windowMinutes: number;
     canObject: boolean;
+    /** Fixed bond every participant must lock, once the first objector set it. Null until then. */
     bondRequired: number | null;
+    /** Whether the per-head bond is already locked in (true after the first objection). */
+    bondFixed: boolean;
+    /** Floor for the first objector's chosen bond. */
+    minBond: number;
     bondNote: string;
   }> {
     const market = await this.findOne(marketId);
-    const objectionCount = await this.disputeRepo.count({
-      where: { marketId },
-    });
+    const [objectCount, supportCount] = await Promise.all([
+      this.disputeRepo.count({ where: { marketId, side: DisputeSide.OBJECT } }),
+      this.disputeRepo.count({
+        where: { marketId, side: DisputeSide.SUPPORT },
+      }),
+    ]);
+    const objectionCount = objectCount + supportCount;
     const now = new Date();
     const windowOpen =
       market.status === MarketStatus.RESOLVING &&
       !!market.disputeDeadlineAt &&
       now < market.disputeDeadlineAt;
 
-    let bondRequired: number | null = null;
+    // Once the first objection is filed, the bond is fixed for everyone.
+    const bondFixed = market.disputeBondAmount != null;
+    const bondRequired = bondFixed ? Number(market.disputeBondAmount) : null;
+
+    let canObject = windowOpen;
     if (userId && windowOpen) {
       const position = await this.dataSource.getRepository(Position).findOne({
         where: { userId, marketId, status: PositionStatus.PENDING },
       });
-      if (position) {
-        bondRequired = this.calcBond(Number(position.amount));
-      }
+      canObject = !!position;
     }
 
     return {
       objectionCount,
+      objectCount,
+      supportCount,
       windowOpen,
       windowClosesAt: market.disputeDeadlineAt ?? null,
       windowMinutes: market.windowMinutes ?? 60,
-      canObject: windowOpen,
+      canObject,
       bondRequired,
-      bondNote:
-        bondRequired !== null
-          ? `Raising an objection requires a Nu ${bondRequired.toLocaleString()} bond. ` +
-            `You get it back + a reward share if the admin agrees with you. ` +
-            `You lose it if the admin upholds their original decision.`
-          : `Raising an objection requires a fixed Nu ${MarketsService.DISPUTE_BOND.toLocaleString()} bond. ` +
-            `Returned + rewarded if correct, forfeited if wrong.`,
+      bondFixed,
+      minBond: MarketsService.MIN_DISPUTE_BOND,
+      bondNote: bondFixed
+        ? `Joining this contest requires a Nu ${bondRequired!.toLocaleString()} bond (matching the first objector). ` +
+          `You get it back + a share of the losing side's bonds if your side wins, or forfeit it if it loses.`
+        : `The first objector sets the bond (minimum Nu ${MarketsService.MIN_DISPUTE_BOND}). ` +
+          `Returned + rewarded if your side wins, forfeited if it loses.`,
     };
   }
 

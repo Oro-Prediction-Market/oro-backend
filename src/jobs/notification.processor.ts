@@ -10,8 +10,10 @@ import {
   StreakMilestoneJobData,
   DailyCreditJobData,
   SettlementNotifyJobData,
+  BhutanAppNotifyJobData,
 } from "./notification.queue";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
+import { BhutanAppNotificationService } from "../shared/services/bhutanapp-notification.service";
 
 @Processor(NOTIFICATION_QUEUE, {
   // Drain jobs in parallel (was default 1 → hours of settlement-DM backlog at a
@@ -25,7 +27,10 @@ import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 export class NotificationProcessor extends WorkerHost {
   private readonly logger = new Logger(NotificationProcessor.name);
 
-  constructor(private readonly telegram: TelegramSimpleService) {
+  constructor(
+    private readonly telegram: TelegramSimpleService,
+    private readonly bhutanApp: BhutanAppNotificationService,
+  ) {
     super();
   }
 
@@ -112,6 +117,18 @@ export class NotificationProcessor extends WorkerHost {
         await this.telegram
           .sendMessage(data.telegramChatId, data.message)
           .catch(() => {});
+        break;
+      }
+
+      case JobName.BHUTANAPP_NOTIFY: {
+        // Push notification for a PWA / BhutanApp user. sendNotification never
+        // throws — it returns false on any failure — so no try/catch needed.
+        const data = job.data as BhutanAppNotifyJobData;
+        await this.bhutanApp.sendNotification(
+          data.externalUserId,
+          data.title,
+          data.body,
+        );
         break;
       }
 

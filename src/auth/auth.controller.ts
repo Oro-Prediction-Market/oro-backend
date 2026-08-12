@@ -99,6 +99,18 @@ class LinkCidDto {
   cid: string;
 }
 
+class VerifyBhutanAppMergeDto {
+  @ApiProperty({ description: "Challenge id returned by /auth/bhutanapp when OTP is required" })
+  @IsString()
+  @MinLengthValidator(8)
+  challengeId: string;
+
+  @ApiProperty({ description: "6-digit OTP sent to the DK-registered phone" })
+  @IsString()
+  @MinLengthValidator(4)
+  otp: string;
+}
+
 class SendPwaPhoneOtpDto {
   @ApiProperty({ description: "Phone number to send the OTP to", example: "+97517123456" })
   @IsString()
@@ -242,6 +254,31 @@ export class AuthController {
     @Response({ passthrough: true }) res: ExpressResponse,
   ) {
     const result = await this.authService.loginWithBhutanApp(dto);
+    // Protected-account merges return { requiresOtp, challengeId, maskedPhone }
+    // and NO token — don't set an auth cookie until the OTP is verified.
+    if ((result as any).token) {
+      this.setAuthCookie(res, (result as any).token);
+    }
+    return result;
+  }
+
+  @Post("bhutanapp/verify-merge")
+  @HttpCode(200)
+  @Public()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({
+    summary:
+      "Complete a protected BhutanApp merge by verifying the OTP sent to the DK-registered phone",
+  })
+  @ApiBody({ type: VerifyBhutanAppMergeDto })
+  async bhutanAppVerifyMerge(
+    @Body() dto: VerifyBhutanAppMergeDto,
+    @Response({ passthrough: true }) res: ExpressResponse,
+  ) {
+    const result = await this.authService.verifyBhutanAppMerge(
+      dto.challengeId,
+      dto.otp,
+    );
     this.setAuthCookie(res, result.token);
     return result;
   }

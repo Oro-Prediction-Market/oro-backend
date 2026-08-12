@@ -45,6 +45,13 @@ import {
   buildEplStatMarketDto,
   EplStatKey,
 } from "../epl/epl-stat-markets";
+import { UclService } from "../ucl/ucl.service";
+import {
+  UCL_STAT_MARKET_META,
+  UCL_STAT_SUBCATEGORIES,
+  buildUclStatMarketDto,
+  UclStatKey,
+} from "../ucl/ucl-stat-markets";
 import { DistributionStatus } from "../entities/revenue-distribution.entity";
 import { FixturesService } from "./fixtures.service";
 import { AuditService } from "./audit.service";
@@ -68,6 +75,7 @@ import { GetUsersQueryDto } from "./dto/get-users-query.dto";
 import { ToggleAdminDto } from "./dto/toggle-admin.dto";
 import { HealthCheckResponse } from "./dto/health-check.dto";
 import { csvCell } from "../shared/utils/csv.util";
+import { buildLateMoneyStats, LateMoneyStats } from "./late-money.util";
 
 class CreditUserDto {
   @ApiProperty({ example: 500, description: "Amount to credit (BTN)" })
@@ -104,7 +112,80 @@ export class AdminController {
     private transactionRepo: Repository<Transaction>,
     private revenueDistributionService: RevenueDistributionService,
     private eplService: EplService,
+    private uclService: UclService,
   ) {}
+
+  // ── Late-money monitor (REAL aggregation — no random/demo data) ────────────
+  @Get("markets/:id/late-money")
+  @ApiOperation({
+    summary:
+      "Real late-money stats for a market: share of bets (count & amount) in the final window before close",
+  })
+  @ApiQuery({ name: "windowMinutes", required: false, example: 1 })
+  async getLateMoney(
+    @Param("id") id: string,
+    @Query("windowMinutes") windowMinutesRaw?: string,
+  ): Promise<LateMoneyStats> {
+    const market = await this.dataSource
+      .getRepository(Market)
+      .findOne({ where: { id } });
+    if (!market) throw new NotFoundException("Market not found");
+
+    // Clamp the window to a sane 1–60 minutes.
+    const windowMinutes = Math.min(
+      60,
+      Math.max(1, Math.floor(Number(windowMinutesRaw)) || 1),
+    );
+    const closesAt = market.closesAt ? new Date(market.closesAt) : null;
+    // Final window = the last N minutes before close; a bet with createdAt at or
+    // after this boundary counts as "late". Null when the market has no close.
+    const windowStart = closesAt
+      ? new Date(closesAt.getTime() - windowMinutes * 60_000)
+      : null;
+
+    const qb = this.betRepo
+      .createQueryBuilder("p")
+      .select("COUNT(*)", "totalBets")
+      .addSelect("COALESCE(SUM(p.amount), 0)", "totalAmount")
+      .addSelect(
+        windowStart
+          ? "COUNT(*) FILTER (WHERE p.placedAt >= :windowStart)"
+          : "0",
+        "windowBets",
+      )
+      .addSelect(
+        windowStart
+          ? "COALESCE(SUM(p.amount) FILTER (WHERE p.placedAt >= :windowStart), 0)"
+          : "0",
+        "windowAmount",
+      )
+      .where("p.marketId = :id", { id });
+    if (windowStart) qb.setParameter("windowStart", windowStart.toISOString());
+
+    const row = await qb.getRawOne<{
+      totalBets: string;
+      totalAmount: string;
+      windowBets: string;
+      windowAmount: string;
+    }>();
+
+    return buildLateMoneyStats(
+      {
+        totalBets: Number(row?.totalBets ?? 0),
+        totalAmount: Number(row?.totalAmount ?? 0),
+        windowBets: Number(row?.windowBets ?? 0),
+        windowAmount: Number(row?.windowAmount ?? 0),
+      },
+      {
+        marketId: id,
+        status: market.status,
+        windowMinutes,
+        closesAt,
+        now: Date.now(),
+        alertThresholdPct: 40,
+      },
+    );
+  }
 
   // ── Health Check ──────────────────────────────────────────────────────────
   @Get("health")
@@ -469,6 +550,52 @@ export class AdminController {
   @ApiOperation({ summary: "List settled markets with zero pool volume" })
   getZeroPoolSettledMarkets() {
     return this.marketsService.getZeroPoolSettled();
+  }
+
+  @Get("markets/stats")
+  @ApiOperation({
+    summary:
+      "Dashboard KPIs aggregated over ALL markets (not a single page): open count, open pool volume, unsettled count",
+  })
+  async marketStats() {
+    const repo = this.dataSource.getRepository(Market);
+    // Exclude the algorithmic auto-markets (BTC / TER tickers). They open and
+    // settle on their own every few minutes, so counting them makes these KPIs
+    // noisy and makes them disagree with the market lists (which already hide
+    // them via externalSource=none). NOTE: a NULL externalSource is a real,
+    // admin-managed market and MUST be kept — so we can't use a bare NOT IN,
+    // because `NULL NOT IN (...)` evaluates to NULL and would drop those rows.
+    const AUTO_SOURCES = ["btc", "ter"];
+    const excludeAuto =
+      "(m.externalSource IS NULL OR m.externalSource NOT IN (:...auto))";
+
+    const [activeMarkets, unsettledMarkets, poolRow] = await Promise.all([
+      repo
+        .createQueryBuilder("m")
+        .where("m.status = :s", { s: MarketStatus.OPEN })
+        .andWhere(excludeAuto, { auto: AUTO_SOURCES })
+        .getCount(),
+      // "Unsettled" = betting has stopped but the result isn't in yet: markets
+      // waiting to be resolved. (Once resolved, payout runs in the same step.)
+      repo
+        .createQueryBuilder("m")
+        .where("m.status IN (:...st)", {
+          st: [MarketStatus.CLOSED, MarketStatus.RESOLVING],
+        })
+        .andWhere(excludeAuto, { auto: AUTO_SOURCES })
+        .getCount(),
+      repo
+        .createQueryBuilder("m")
+        .select("COALESCE(SUM(m.totalPool), 0)", "sum")
+        .where("m.status = :s", { s: MarketStatus.OPEN })
+        .andWhere(excludeAuto, { auto: AUTO_SOURCES })
+        .getRawOne<{ sum: string }>(),
+    ]);
+    return {
+      activeMarkets,
+      unsettledMarkets,
+      totalPoolVolume: Number(poolRow?.sum ?? 0),
+    };
   }
 
   @Delete("markets/cleanup/zero-pool-settled")
@@ -2198,6 +2325,94 @@ export class AdminController {
     }
 
     const dto = buildEplStatMarketDto(stat, players, body?.closesAt);
+    const market = await this.marketsService.create(dto);
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action: AuditAction.MARKET_CREATE,
+      entityType: "market",
+      entityId: market.id,
+      after: { title: market.title, subcategory: meta.subcategory, outcomes: players.length, closesAt: dto.closesAt },
+      ipAddress: req.ip,
+    });
+    return market;
+  }
+
+  // ── UCL stat markets ──────────────────────────────────────────────────────
+  // Champions League equivalent of the EPL stat markets above. Shares the same
+  // one-click flow and builder (ucl-stat-markets.ts). Note: only goals & assists
+  // have a free-tier CL data source, so the yellow/red boards come back empty and
+  // their buttons stay disabled until a data source exists.
+  @Get("ucl/stat-market/preview")
+  @ApiOperation({ summary: "Live UCL leaderboards + which stat markets already exist" })
+  async previewUclStatMarkets() {
+    const [stats, season] = await Promise.all([
+      this.uclService.getStats(),
+      this.uclService.getSeasonInfo(),
+    ]);
+    const existing = await this.dataSource.getRepository(Market).find({
+      where: {
+        subcategory: In(UCL_STAT_SUBCATEGORIES),
+        status: In([
+          MarketStatus.UPCOMING,
+          MarketStatus.OPEN,
+          MarketStatus.CLOSED,
+          MarketStatus.RESOLVING,
+        ]),
+      },
+      select: ["id", "title", "subcategory", "status"],
+    });
+    return { stats, existing, season };
+  }
+
+  @Post("ucl/stat-market")
+  @ApiOperation({ summary: "Create a season stat market from the live leaderboard" })
+  async createUclStatMarket(
+    @Body() body: { stat?: string; closesAt?: string; topN?: number },
+    @Request() req: any,
+  ) {
+    const stat = body?.stat as UclStatKey;
+    const meta = UCL_STAT_MARKET_META[stat];
+    if (!meta) {
+      throw new BadRequestException("stat must be one of: goals, assists, yellow, red");
+    }
+
+    // Safety: outside the season the boards show LAST season's data via the
+    // fallback. Refuse to bake a stale-season leaderboard into a new market.
+    if (!(await this.uclService.seasonHasStarted())) {
+      throw new BadRequestException(
+        "The Champions League season hasn't started yet — the leaderboard is still showing last season's data. Wait until the new season is live before creating this market.",
+      );
+    }
+
+    // Block a duplicate active market for the same stat.
+    const dup = await this.dataSource.getRepository(Market).findOne({
+      where: {
+        subcategory: meta.subcategory,
+        status: In([
+          MarketStatus.UPCOMING,
+          MarketStatus.OPEN,
+          MarketStatus.CLOSED,
+          MarketStatus.RESOLVING,
+        ]),
+      },
+    });
+    if (dup) {
+      throw new BadRequestException(
+        `An active "${meta.title}" market already exists (id ${dup.id}). Resolve or cancel it first.`,
+      );
+    }
+
+    const stats = await this.uclService.getStats();
+    const topN = Math.min(Math.max(Number(body?.topN ?? 15), 2), 25);
+    const players = (stats[meta.board] ?? []).slice(0, topN);
+    if (players.length < 2) {
+      throw new BadRequestException(
+        "The live leaderboard doesn't have enough players yet to open this market. (Champions League card data isn't available on the free tier.)",
+      );
+    }
+
+    const dto = buildUclStatMarketDto(stat, players, body?.closesAt);
     const market = await this.marketsService.create(dto);
     await this.auditService.log({
       adminId: req.user.userId,

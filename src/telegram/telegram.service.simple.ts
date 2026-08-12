@@ -7,6 +7,18 @@ import { Market } from "../entities/market.entity";
 import { Position, PositionStatus } from "../entities/position.entity";
 import { RedisService } from "../redis/redis.service";
 
+/**
+ * One inline-keyboard button. `url` renders a deep link (e.g.
+ * `https://t.me/<bot>?startapp=m_<id>`) that launches the Mini App at a
+ * specific place; `callbackData` renders a button that pings the bot back.
+ * Exactly one of the two should be set per button.
+ */
+export interface InlineButton {
+  text: string;
+  url?: string;
+  callbackData?: string;
+}
+
 @Injectable()
 export class TelegramSimpleService {
   private readonly logger = new Logger(TelegramSimpleService.name);
@@ -90,19 +102,40 @@ export class TelegramSimpleService {
     }
   }
 
-  /** Send a message using built-in fetch — no axios/HttpService dependency. */
-  async sendMessage(chatId: number, text: string): Promise<void> {
+  /**
+   * Send a message using built-in fetch — no axios/HttpService dependency.
+   *
+   * Pass `buttons` (rows of {@link InlineButton}) to attach an inline keyboard,
+   * e.g. a "Open market" URL button that deep-links back into the Mini App.
+   */
+  async sendMessage(
+    chatId: number,
+    text: string,
+    buttons?: InlineButton[][],
+  ): Promise<void> {
     try {
       const url = `https://api.telegram.org/bot${this.botToken}/sendMessage`;
+      const payload: Record<string, unknown> = {
+        chat_id: chatId,
+        text,
+        parse_mode: "HTML",
+        disable_web_page_preview: false,
+      };
+      if (buttons?.length) {
+        payload.reply_markup = {
+          inline_keyboard: buttons.map((row) =>
+            row.map((btn) => ({
+              text: btn.text,
+              ...(btn.url ? { url: btn.url } : {}),
+              ...(btn.callbackData ? { callback_data: btn.callbackData } : {}),
+            })),
+          ),
+        };
+      }
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text,
-          parse_mode: "HTML",
-          disable_web_page_preview: false,
-        }),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) {
         const body = await res.text();

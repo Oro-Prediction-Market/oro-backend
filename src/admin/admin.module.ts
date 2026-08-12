@@ -13,6 +13,7 @@ import { FixturesService } from "./fixtures.service";
 import { AuditService } from "./audit.service";
 import { TelegramModule } from "../telegram/telegram.module";
 import { EplModule } from "../epl/epl.module";
+import { UclModule } from "../ucl/ucl.module";
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { EplModule } from "../epl/epl.module";
     MarketsModule,
     TelegramModule,
     EplModule,
+    UclModule,
   ],
   controllers: [AdminController],
   providers: [FixturesService, AuditService],

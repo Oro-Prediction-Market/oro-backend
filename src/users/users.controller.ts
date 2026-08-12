@@ -4,12 +4,15 @@ import {
   Controller,
   Get,
   HttpCode,
+  NotFoundException,
   Param,
   Post,
   Request,
+  Res,
   UseGuards,
   Query,
 } from "@nestjs/common";
+import type { Response } from "express";
 import {
   ApiBearerAuth,
   ApiBody,
@@ -23,7 +26,7 @@ import {
 } from "@nestjs/swagger";
 import { IsOptional, IsString, Length, Matches } from "class-validator";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { In, Repository } from "typeorm";
 import { ConfigService } from "@nestjs/config";
 import { JwtAuthGuard, PreKycJwtAuthGuard, Public } from "../auth/guards";
 import { User } from "../entities/user.entity";
@@ -36,6 +39,7 @@ import { SeasonService } from "./season.service";
 import { OnboardService } from "./onboard.service";
 import { ParimutuelEngine } from "../markets/parimutuel.engine";
 import { DKGatewayService } from "../payment/services/dk-gateway/dk-gateway.service";
+import { UserNotificationService } from "./user-notification.service";
 
 class SendOnboardOtpDto {
   @ApiProperty({ description: "Phone number (E.164)", required: false })
@@ -185,7 +189,98 @@ export class UsersController {
     private readonly seasonService: SeasonService,
     private readonly onboardService: OnboardService,
     private readonly dkGateway: DKGatewayService,
+    private readonly userNotifications: UserNotificationService,
   ) {}
+
+  /** Unseen in-app notifications for the current user (popped on app open). */
+  @Get("me/notifications")
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "List the current user's unseen notifications" })
+  async myNotifications(@Request() req: any) {
+    return this.userNotifications.listUnseen(req.user.userId);
+  }
+
+  /** Mark notifications seen (by id, or all unseen when ids omitted). */
+  @Post("me/notifications/seen")
+  @HttpCode(200)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Mark the current user's notifications as seen" })
+  async markNotificationsSeen(
+    @Request() req: any,
+    @Body() body: { ids?: string[] },
+  ): Promise<{ ok: boolean }> {
+    await this.userNotifications.markSeen(req.user.userId, body?.ids);
+    return { ok: true };
+  }
+
+  /**
+   * Reconcile achievement-badge unlocks into notifications. The client computes
+   * its unlocked badges (single source of truth) and reports them; the backend
+   * creates a one-time notification per new badge. `seenIds` carries the
+   * client's existing localStorage "seen" set so pre-earned badges are
+   * baselined silently instead of all popping at once.
+   */
+  @Post("me/achievements/sync")
+  @HttpCode(200)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Sync unlocked achievement badges into notifications" })
+  async syncAchievements(
+    @Request() req: any,
+    @Body()
+    body: {
+      badges?: { id: string; name: string; requirement?: string }[];
+      seenIds?: string[];
+    },
+  ): Promise<{ ok: boolean }> {
+    await this.userNotifications.syncAchievements(
+      req.user.userId,
+      body?.badges ?? [],
+      body?.seenIds ?? [],
+    );
+    return { ok: true };
+  }
+
+  /**
+   * Public avatar proxy. Telegram's photo hosts (t.me/i/userpic and
+   * api.telegram.org/file) don't send CORS headers on the actual image, so a
+   * <canvas> can't draw them with crossOrigin without tainting (which breaks
+   * the share card's PNG export). We re-serve the user's stored photo from our
+   * own origin with `Access-Control-Allow-Origin: *` so the card can draw AND
+   * export it. Falls through to 404 when there's no photo.
+   */
+  @Get("avatar/:id")
+  @Public()
+  @ApiOperation({ summary: "Proxy a user's profile photo with CORS headers" })
+  async avatar(@Param("id") id: string, @Res() res: Response) {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    const user = await this.userRepo
+      .findOne({ where: { id }, select: ["photoUrl"] })
+      .catch(() => null);
+    const url = user?.photoUrl;
+    if (!url) {
+      res.status(404).end();
+      return;
+    }
+    try {
+      const upstream = await fetch(url); // follows t.me redirects to the real photo
+      if (!upstream.ok) {
+        res.status(404).end();
+        return;
+      }
+      const buf = Buffer.from(await upstream.arrayBuffer());
+      res.setHeader(
+        "Content-Type",
+        upstream.headers.get("content-type") || "image/jpeg",
+      );
+      res.setHeader("Cache-Control", "public, max-age=1800");
+      res.end(buf);
+    } catch {
+      res.status(502).end();
+    }
+  }
 
   // ── Onboarding ────────────────────────────────────────────────────────────
 
@@ -303,6 +398,7 @@ export class UsersController {
         // contrarian badge
         "contrarianBadge",
         "contrarianWins",
+        "featuredAchievementIds",
         "contrarianAttempts",
         // streak
         "telegramStreak",
@@ -352,6 +448,84 @@ export class UsersController {
       isPhoneVerified: verifiedByPhone || verifiedByAccountNumber,
       referralCount,
       ...streakInfo,
+    };
+  }
+
+  @Post("me/featured-achievements")
+  @HttpCode(200)
+  @ApiOperation({ summary: "Choose up to three achievements to display publicly" })
+  async setFeaturedAchievements(@Request() req: any, @Body() body: { achievementIds?: unknown }) {
+    const ids = Array.isArray(body?.achievementIds) ? body.achievementIds : [];
+    if (ids.length > 3 || ids.some((id) => typeof id !== "string" || id.length > 80)) {
+      throw new BadRequestException("Choose up to three valid achievements");
+    }
+    const unique = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
+    if (unique.length > 3) throw new BadRequestException("Choose up to three achievements");
+    await this.userRepo.update(req.user.userId, { featuredAchievementIds: unique });
+    return { featuredAchievementIds: unique };
+  }
+
+  @Get("profiles/:id")
+  @ApiOperation({ summary: "Public predictor profile (safe leaderboard data only)" })
+  async getPublicProfile(@Param("id") id: string) {
+    const user = await this.userRepo.findOne({
+      where: { id },
+      select: [
+        "id", "firstName", "lastName", "username", "photoUrl", "createdAt",
+        "reputationScore", "reputationTier", "totalPredictions", "correctPredictions",
+        "telegramStreak", "contrarianBadge", "contrarianWins",
+        "featuredAchievementIds",
+      ],
+    });
+    if (!user) throw new NotFoundException("Predictor not found");
+
+    const rank =
+      (await this.userRepo
+        .createQueryBuilder("u")
+        .where("u.totalPredictions >= 10")
+        .andWhere("(u.reputationScore > :score OR (u.reputationScore = :score AND u.correctPredictions > :wins))", {
+          score: user.reputationScore ?? 0,
+          wins: user.correctPredictions,
+        })
+        .getCount()) + 1;
+
+    const recentCalls = await this.betRepo.find({
+      where: {
+        userId: id,
+        status: In([PositionStatus.WON, PositionStatus.LOST, PositionStatus.REFUNDED]),
+      },
+      relations: ["market", "outcome"],
+      order: { placedAt: "DESC" },
+      take: 3,
+    });
+
+    return {
+      id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      username: user.username,
+      photoUrl: user.photoUrl,
+      reputationTier: user.reputationTier,
+      reputationScore: user.reputationScore,
+      totalPredictions: user.totalPredictions,
+      correctPredictions: user.correctPredictions,
+      winRate: user.totalPredictions
+        ? Math.round((user.correctPredictions / user.totalPredictions) * 100)
+        : 0,
+      rank: user.totalPredictions >= 10 ? rank : null,
+      streak: user.telegramStreak ?? 0,
+      contrarianBadge: user.contrarianBadge,
+      contrarianWins: user.contrarianWins ?? 0,
+      featuredAchievementIds: user.featuredAchievementIds ?? [],
+      recentCalls: recentCalls.map((call) => ({
+        id: call.id,
+        marketTitle: call.market?.title ?? "Prediction market",
+        outcomeLabel: call.outcome?.label ?? "Selected outcome",
+        status: call.status,
+        payout: call.payout,
+        placedAt: call.placedAt,
+      })),
+      joinedAt: user.createdAt,
     };
   }
 

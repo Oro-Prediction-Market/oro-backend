@@ -603,7 +603,10 @@ describe("Settlement wallet credit — no DK transfer on market settle", () => {
       return qb;
     };
     const mockEm = {
-      getRepository: jest.fn().mockReturnValue({ createQueryBuilder: jest.fn(makeQb) }),
+      getRepository: jest.fn().mockReturnValue({
+        createQueryBuilder: jest.fn(makeQb),
+        update: jest.fn().mockResolvedValue(undefined),
+      }),
       createQueryBuilder: jest.fn(makeQb),
       find: jest.fn().mockResolvedValue(positions),
       // Must be null: settleMarket's idempotency guard returns early if findOne
@@ -756,6 +759,47 @@ describe("Settlement wallet credit — no DK transfer on market settle", () => {
       (t) => t.type === TransactionType.POSITION_PAYOUT && t.userId === "u2",
     );
     expect(loserPayouts).toHaveLength(0);
+  });
+
+  it("rewards a correct objector from 20% of the house cut when the admin is overturned with no defenders — and the pool still balances", async () => {
+    const savedTransactions: any[] = [];
+    const { engine } = buildSettlementEngine(savedTransactions);
+
+    const market = {
+      id: "m1",
+      status: "resolved",
+      title: "Test market",
+      totalPool: 300,
+      // house cut = Nu 24 → challenger reward = 20% = Nu 4.80 (default fraction)
+      houseEdgePct: 8,
+      outcomes: [
+        { id: "o-win", label: "Yes", totalBetAmount: 200, isWinner: true },
+        { id: "o-lose", label: "No", totalBetAmount: 100, isWinner: false },
+      ],
+    };
+    const winner = market.outcomes[0];
+
+    // One winning objector, bond Nu 50, no defenders → funded from house cut.
+    const settlement = await (engine as any).settleMarket(market, winner, 0, [
+      { userId: "u3", bondAmount: 50 },
+    ]);
+
+    // Challenger got 20% of the Nu 24 house cut = Nu 4.80.
+    const rewards = savedTransactions.filter(
+      (t) => t.type === TransactionType.DISPUTE_BOND_REWARD,
+    );
+    expect(rewards).toHaveLength(1);
+    expect(rewards[0].userId).toBe("u3");
+    expect(rewards[0].amount).toBeCloseTo(4.8);
+
+    // House revenue is reduced by exactly the reward: 24 − 4.8 = 19.2.
+    expect(settlement.houseAmount).toBeCloseTo(19.2);
+
+    // Conservation: pool = winner payout + challenger reward + house revenue.
+    const winnerPayout = savedTransactions
+      .filter((t) => t.type === TransactionType.POSITION_PAYOUT)
+      .reduce((s, t) => s + t.amount, 0);
+    expect(winnerPayout + 4.8 + Number(settlement.houseAmount)).toBeCloseTo(300);
   });
 });
 
@@ -991,7 +1035,10 @@ describe("Batch payment — NOT triggered on market settlement", () => {
       return qb;
     };
     const mockEm = {
-      getRepository: jest.fn().mockReturnValue({ createQueryBuilder: jest.fn(makeQb) }),
+      getRepository: jest.fn().mockReturnValue({
+        createQueryBuilder: jest.fn(makeQb),
+        update: jest.fn().mockResolvedValue(undefined),
+      }),
       createQueryBuilder: jest.fn(makeQb),
       find: jest.fn().mockResolvedValue(positions),
       findOne: jest.fn().mockResolvedValue(null), // no existing settlement
@@ -1108,6 +1155,7 @@ describe("ParimutuelEngine.resolveMarket — atomic concurrency claim", () => {
     market: any;
     disputes?: number;
     onClaimExecute?: () => void;
+    existingSettlement?: any;
   }) {
     const claimExecute = jest.fn(async () => {
       opts.onClaimExecute?.();
@@ -1132,6 +1180,9 @@ describe("ParimutuelEngine.resolveMarket — atomic concurrency claim", () => {
       find: jest.fn().mockResolvedValue([]),
       save: jest.fn(),
     };
+    const settlementRepo = {
+      findOne: jest.fn().mockResolvedValue(opts.existingSettlement ?? null),
+    };
 
     const engine = new ParimutuelEngine(
       marketRepo as any, // marketRepo
@@ -1139,7 +1190,7 @@ describe("ParimutuelEngine.resolveMarket — atomic concurrency claim", () => {
       null as any, // betRepo
       null as any, // paymentRepo
       null as any, // transactionRepo
-      null as any, // settlementRepo
+      settlementRepo as any, // settlementRepo
       disputeRepo as any, // disputeRepo
       null as any, // dataSource
       null as any, // lmsrService
@@ -1235,10 +1286,10 @@ describe("ParimutuelEngine.resolveMarket — atomic concurrency claim", () => {
     expect(outcomeRepo.save).not.toHaveBeenCalled();
   });
 
-  it("rejects with 'must be in Resolving state' when status is not RESOLVING (does not reach claim)", async () => {
+  it("rejects with 'must be in Resolving state' when status is neither RESOLVING nor recoverable (does not reach claim)", async () => {
     const market = {
-      id: "m-resolved",
-      status: "resolved", // already past resolving
+      id: "m-closed",
+      status: "closed", // not resolving, not a recoverable resolved-market
       outcomes: [{ id: "o-win", label: "Yes" }],
     };
     const { engine, claimExecute } = buildEngine({
@@ -1247,9 +1298,59 @@ describe("ParimutuelEngine.resolveMarket — atomic concurrency claim", () => {
     });
 
     await expect(
-      engine.resolveMarket("m-resolved", "o-win", "admin-1"),
+      engine.resolveMarket("m-closed", "o-win", "admin-1"),
     ).rejects.toThrow(/must be in Resolving state/);
 
+    expect(claimExecute).not.toHaveBeenCalled();
+  });
+
+  it("rejects a RESOLVED market that already has a Settlement (already resolved and settled)", async () => {
+    const market = {
+      id: "m-settled",
+      status: "resolved",
+      resolvedOutcomeId: "o-win",
+      outcomes: [{ id: "o-win", label: "Yes" }],
+    };
+    const { engine, claimExecute } = buildEngine({
+      claimAffected: 1,
+      market,
+      existingSettlement: { id: "s-1", marketId: "m-settled" },
+    });
+
+    await expect(
+      engine.resolveMarket("m-settled", "o-win", "admin-1"),
+    ).rejects.toThrow(/already resolved and settled/);
+
+    // Never re-claims an already-settled market.
+    expect(claimExecute).not.toHaveBeenCalled();
+  });
+
+  it("[RECOVERY] a RESOLVED-but-unsettled market does NOT re-run the atomic claim, and refuses a different outcome", async () => {
+    // A prior resolution claimed RESOLVING → RESOLVED but failed before writing a
+    // Settlement. Re-entry is allowed to finish the job — but it must settle the
+    // SAME winner, never silently switch it, and must not re-claim (which would
+    // match zero rows and wrongly abort).
+    const market = {
+      id: "m-stuck",
+      status: "resolved",
+      resolvedOutcomeId: "o-win",
+      outcomes: [
+        { id: "o-win", label: "Yes" },
+        { id: "o-lose", label: "No" },
+      ],
+    };
+    const { engine, claimExecute } = buildEngine({
+      claimAffected: 1,
+      market,
+      existingSettlement: null, // stuck: no settlement row yet
+    });
+
+    // Passing a DIFFERENT outcome during recovery is rejected outright.
+    await expect(
+      engine.resolveMarket("m-stuck", "o-lose", "admin-1"),
+    ).rejects.toThrow(/cannot change it during recovery/);
+
+    // The recovery guard runs before (and instead of) the atomic claim.
     expect(claimExecute).not.toHaveBeenCalled();
   });
 });

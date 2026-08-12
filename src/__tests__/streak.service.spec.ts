@@ -214,6 +214,28 @@ describe("StreakService.getStreakInfo", () => {
 
     expect(result.boostReady).toBe(false);
   });
+
+  it("still reports the streak when the last bet was yesterday (not yet missed)", async () => {
+    const user = { betStreakCount: 4, betStreakLastAt: yesterdayUtc(), streakBoostUsed: false };
+    const svc = makeService(makeUserRepo(user));
+
+    const result = await svc.getStreakInfo("u1");
+
+    expect(result.betStreakCount).toBe(4);
+  });
+
+  it("hides the streak (reports 0) once a full day is missed", async () => {
+    // Stored count is stale — user hasn't bet since two days ago, so the streak
+    // is broken even though betStreakCount hasn't been reset in the DB yet.
+    const user = { betStreakCount: 5, betStreakLastAt: twoDaysAgoUtc(), streakBoostUsed: false };
+    const svc = makeService(makeUserRepo(user));
+
+    const result = await svc.getStreakInfo("u1");
+
+    expect(result.betStreakCount).toBe(0);
+    expect(result.dayInCycle).toBe(0);
+    expect(result.boostReady).toBe(false);
+  });
 });
 
 // ── creditStreakBonus ─────────────────────────────────────────────────────────

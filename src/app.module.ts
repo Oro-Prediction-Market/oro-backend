@@ -50,6 +50,7 @@ import { EplModule } from "./epl/epl.module";
 import { UclModule } from "./ucl/ucl.module";
 import { AmlAlert } from "./aml/entities/aml-alert.entity";
 import { AmlReport } from "./aml/entities/aml-report.entity";
+import { UserNotification } from "./entities/user-notification.entity";
 
 @Module({
   imports: [
