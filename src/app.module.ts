@@ -43,6 +43,9 @@ import { RevenueDistribution } from "./entities/revenue-distribution.entity";
 import { TerModule } from "./ter/ter.module";
 import { BtcModule } from "./btc/btc.module";
 import { AmlModule } from "./aml/aml.module";
+import { SuggestionsModule } from "./suggestions/suggestions.module";
+import { MarketSuggestion } from "./entities/market-suggestion.entity";
+import { MarketSuggestionVote } from "./entities/market-suggestion-vote.entity";
 import { EplModule } from "./epl/epl.module";
 import { UclModule } from "./ucl/ucl.module";
 import { AmlAlert } from "./aml/entities/aml-alert.entity";
@@ -113,6 +116,8 @@ import { AmlReport } from "./aml/entities/aml-report.entity";
           RevenueDistribution,
           AmlAlert,
           AmlReport,
+          MarketSuggestion,
+          MarketSuggestionVote,
         ],
         // Schema changes ship as migrations ONLY. synchronize silently DROPs a
         // column when an entity property is renamed — irrecoverable financial
@@ -151,6 +156,7 @@ import { AmlReport } from "./aml/entities/aml-report.entity";
     TerModule,
     BtcModule,
     AmlModule,
+    SuggestionsModule,
     EplModule,
     UclModule,
   ],

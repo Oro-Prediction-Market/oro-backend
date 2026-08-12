@@ -16,6 +16,7 @@ import { BotPollingService } from "../bot/bot-polling.service";
 import { DKGatewayService } from "../payment/services/dk-gateway/dk-gateway.service";
 import { TelegramChannelController } from "./telegram-channel.controller";
 import { LeaguesModule } from "../leagues/leagues.module";
+import { SuggestionsModule } from "../suggestions/suggestions.module";
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { LeaguesModule } from "../leagues/leagues.module";
       DKGatewayAuthToken,
     ]),
     forwardRef(() => LeaguesModule),
+    forwardRef(() => SuggestionsModule),
   ],
   controllers: [BotController, TelegramChannelController],
   providers: [

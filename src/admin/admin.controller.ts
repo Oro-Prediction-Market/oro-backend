@@ -14,6 +14,7 @@ import {
   Res,
   NotFoundException,
   BadRequestException,
+  ParseUUIDPipe,
 } from "@nestjs/common";
 import type { Response } from "express";
 import {
@@ -486,9 +487,41 @@ export class AdminController {
     return { deleted: count };
   }
 
+  // Must stay above `markets/:id` — Nest matches in declaration order, so a
+  // literal segment declared after the param route is swallowed by it.
+  @Get("markets/stats")
+  @ApiOperation({ summary: "Dashboard counters: active, unsettled, pool volume" })
+  async getMarketStats() {
+    const marketRepo = this.dataSource.getRepository(Market);
+    const [activeMarkets, unsettledMarkets, poolRow] = await Promise.all([
+      marketRepo.count({ where: { status: MarketStatus.OPEN } }),
+      // Trading is over but money hasn't been paid out yet.
+      marketRepo.count({
+        where: [
+          { status: MarketStatus.CLOSED },
+          { status: MarketStatus.RESOLVING },
+          { status: MarketStatus.RESOLVED },
+        ],
+      }),
+      marketRepo
+        .createQueryBuilder("m")
+        .select("COALESCE(SUM(m.totalPool), 0)", "total")
+        .where("m.status != :cancelled", {
+          cancelled: MarketStatus.CANCELLED,
+        })
+        .getRawOne<{ total: string }>(),
+    ]);
+
+    return {
+      activeMarkets,
+      unsettledMarkets,
+      totalPoolVolume: Number(poolRow?.total ?? 0),
+    };
+  }
+
   @Get("markets/:id")
   @ApiOperation({ summary: "Get market details" })
-  getMarket(@Param("id") id: string) {
+  getMarket(@Param("id", ParseUUIDPipe) id: string) {
     return this.marketsService.findOne(id);
   }
 
