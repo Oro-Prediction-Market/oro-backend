@@ -6,6 +6,7 @@ import { User } from "../entities/user.entity";
 import { TelegramModule } from "../telegram/telegram.module";
 import { SuggestionsController } from "./suggestions.controller";
 import { SuggestionsService } from "./suggestions.service";
+import { SuggestionsGateway } from "./suggestions.gateway";
 
 @Module({
   imports: [
@@ -15,7 +16,7 @@ import { SuggestionsService } from "./suggestions.service";
     forwardRef(() => TelegramModule),
   ],
   controllers: [SuggestionsController],
-  providers: [SuggestionsService],
+  providers: [SuggestionsService, SuggestionsGateway],
   exports: [SuggestionsService],
 })
 export class SuggestionsModule {}

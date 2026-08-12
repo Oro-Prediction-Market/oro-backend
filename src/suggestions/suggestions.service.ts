@@ -15,6 +15,7 @@ import { MarketSuggestionVote } from "../entities/market-suggestion-vote.entity"
 import { MarketCategory } from "../entities/market.entity";
 import { User } from "../entities/user.entity";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
+import { SuggestionsGateway } from "./suggestions.gateway";
 
 /** How many suggestions a user may submit per calendar month. */
 export const SUGGESTIONS_PER_MONTH = 1;
@@ -49,6 +50,7 @@ export class SuggestionsService {
     private readonly dataSource: DataSource,
     private readonly config: ConfigService,
     private readonly telegram: TelegramSimpleService,
+    private readonly gateway: SuggestionsGateway,
   ) {}
 
   // ── Reads ──────────────────────────────────────────────────────────────────
@@ -187,6 +189,7 @@ export class SuggestionsService {
       throw new BadRequestException("This suggestion is not open for votes");
     }
 
+    let counted = true;
     try {
       await this.dataSource.transaction(async (em) => {
         await em
@@ -199,13 +202,22 @@ export class SuggestionsService {
     } catch (err: any) {
       if (err?.code !== PG_UNIQUE_VIOLATION) throw err;
       // Already voted — fall through and return the current count.
+      counted = false;
     }
 
     const fresh = await this.suggestionRepo.findOne({
       where: { id: suggestionId },
       select: ["voteCount"],
     });
-    return { votes: fresh?.voteCount ?? suggestion.voteCount, votedByMe: true };
+    const votes = fresh?.voteCount ?? suggestion.voteCount;
+
+    // Only a vote that actually changed the count is worth a broadcast — a
+    // double-tap must not make every other orbit re-render for nothing.
+    if (counted) {
+      this.gateway.emitVoted({ id: suggestionId, votes });
+    }
+
+    return { votes, votedByMe: true };
   }
 
   // ── Admin review (driven from Telegram) ────────────────────────────────────
@@ -238,6 +250,19 @@ export class SuggestionsService {
     suggestion.reviewedByTelegramId = reviewerTelegramId;
     suggestion.reviewedAt = new Date();
     const saved = await this.suggestionRepo.save(suggestion);
+
+    if (saved.status === SuggestionStatus.APPROVED) {
+      this.gateway.emitAdded({
+        id: saved.id,
+        title: saved.title,
+        description: saved.description,
+        category: saved.category,
+        votes: saved.voteCount,
+        creator: this.displayName(saved.user),
+        createdAt: saved.createdAt.toISOString(),
+        marketId: saved.marketId,
+      });
+    }
 
     this.notifyProposer(saved).catch(() => {});
     return saved;
