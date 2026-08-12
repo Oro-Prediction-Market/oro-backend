@@ -4,8 +4,11 @@ import { InjectRepository, InjectDataSource } from "@nestjs/typeorm";
 import { Repository, DataSource, LessThan } from "typeorm";
 import { Season, SeasonStatus } from "../entities/season.entity";
 import { User } from "../entities/user.entity";
+import { AuthMethod, AuthProvider } from "../entities/auth-method.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
+import { BhutanAppNotificationService } from "../shared/services/bhutanapp-notification.service";
+import { UserNotificationService } from "./user-notification.service";
 import { RedisService } from "../redis/redis.service";
 
 // Real-money prizes paid every month to the top-3 finishers.
@@ -34,8 +37,12 @@ export class SeasonService implements OnApplicationBootstrap {
   constructor(
     @InjectRepository(Season) private seasonRepo: Repository<Season>,
     @InjectRepository(User) private userRepo: Repository<User>,
+    @InjectRepository(AuthMethod)
+    private authMethodRepo: Repository<AuthMethod>,
     @InjectDataSource() private dataSource: DataSource,
     private readonly telegram: TelegramSimpleService,
+    private readonly bhutanApp: BhutanAppNotificationService,
+    private readonly userNotifications: UserNotificationService,
     private readonly redis: RedisService,
   ) {}
 
@@ -242,7 +249,7 @@ export class SeasonService implements OnApplicationBootstrap {
       const user = winners[i];
       const prizeNote = `${medals[i]} Season prize — ${currentMonthLabel} #${rank}`;
 
-      await this.dataSource.transaction(async (em) => {
+      const newlyCredited = await this.dataSource.transaction(async (em) => {
         // Idempotency guard — never double-credit the same rank in the same month
         const alreadyCredited = await em.getRepository(Transaction).count({
           where: {
@@ -255,7 +262,7 @@ export class SeasonService implements OnApplicationBootstrap {
           this.logger.warn(
             `Season prize already credited for user ${user.id} — skipping`,
           );
-          return;
+          return false;
         }
 
         const { balance: rawBefore } = await em
@@ -280,9 +287,26 @@ export class SeasonService implements OnApplicationBootstrap {
         this.logger.log(
           `Season prize: Nu ${prize} → user ${user.id} (#${rank} in ${currentMonthLabel})`,
         );
+        return true;
       });
 
-      // DM the winner
+      // Only notify on a fresh credit so a re-run doesn't spam the winner.
+      if (!newlyCredited) continue;
+
+      const notifTitle = `${medals[i]} You finished #${rank} in ${currentMonthLabel}!`;
+      const notifBody =
+        `Nu ${prize} has been added to your Oro wallet as a real-money prize. ` +
+        `You can withdraw it anytime — keep predicting to defend your rank next month!`;
+
+      // In-app popup for EVERY winner (Telegram, PWA and BhutanApp alike).
+      await this.userNotifications.create(user.id, {
+        type: "season_prize",
+        title: notifTitle,
+        body: notifBody,
+        metadata: { rank, prize, month: currentMonthLabel },
+      });
+
+      // Telegram DM (Telegram users only).
       if (user.telegramId) {
         const chatId = Number(user.telegramId);
         const msg =
@@ -297,6 +321,26 @@ export class SeasonService implements OnApplicationBootstrap {
               `Season DM failed for user ${user.id}: ${err.message}`,
             ),
           );
+      }
+
+      // BhutanApp push for winners who logged in via BhutanApp (e.g. PWA users
+      // with no Telegram). sendNotification never throws — returns false on
+      // failure — so it can't break the payout loop.
+      const bhutanAuth = await this.authMethodRepo
+        .findOne({
+          where: { userId: user.id, provider: AuthProvider.BHUTANAPP },
+        })
+        .catch(() => null);
+      if (bhutanAuth) {
+        const externalUserId =
+          (bhutanAuth.metadata as any)?.externalUserId ?? bhutanAuth.providerId;
+        if (externalUserId) {
+          await this.bhutanApp.sendNotification(
+            externalUserId,
+            notifTitle,
+            notifBody,
+          );
+        }
       }
     }
   }

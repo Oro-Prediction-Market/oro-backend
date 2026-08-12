@@ -47,6 +47,7 @@ import { EplModule } from "./epl/epl.module";
 import { UclModule } from "./ucl/ucl.module";
 import { AmlAlert } from "./aml/entities/aml-alert.entity";
 import { AmlReport } from "./aml/entities/aml-report.entity";
+import { UserNotification } from "./entities/user-notification.entity";
 
 @Module({
   imports: [
@@ -113,6 +114,7 @@ import { AmlReport } from "./aml/entities/aml-report.entity";
           RevenueDistribution,
           AmlAlert,
           AmlReport,
+          UserNotification,
         ],
         // Never let the app auto-rewrite the schema in production — a stray
         // rename or removed field would silently drop a live column and its

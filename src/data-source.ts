@@ -19,6 +19,7 @@ import { GroupMembership } from "./entities/group-membership.entity";
 import { UserEvent } from "./entities/user-event.entity";
 import { LinkedBankAccount } from "./entities/linked-bank-account.entity";
 import { RevenueDistribution } from "./entities/revenue-distribution.entity";
+import { UserNotification } from "./entities/user-notification.entity";
 
 dotenv.config();
 
@@ -57,6 +58,7 @@ export const AppDataSource = new DataSource({
     UserEvent,
     LinkedBankAccount,
     RevenueDistribution,
+    UserNotification,
   ],
   migrations: [__dirname + "/migrations/*{.ts,.js}"],
   subscribers: [],

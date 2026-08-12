@@ -39,6 +39,7 @@ import { SeasonService } from "./season.service";
 import { OnboardService } from "./onboard.service";
 import { ParimutuelEngine } from "../markets/parimutuel.engine";
 import { DKGatewayService } from "../payment/services/dk-gateway/dk-gateway.service";
+import { UserNotificationService } from "./user-notification.service";
 
 class SendOnboardOtpDto {
   @ApiProperty({ description: "Phone number (E.164)", required: false })
@@ -188,7 +189,59 @@ export class UsersController {
     private readonly seasonService: SeasonService,
     private readonly onboardService: OnboardService,
     private readonly dkGateway: DKGatewayService,
+    private readonly userNotifications: UserNotificationService,
   ) {}
+
+  /** Unseen in-app notifications for the current user (popped on app open). */
+  @Get("me/notifications")
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "List the current user's unseen notifications" })
+  async myNotifications(@Request() req: any) {
+    return this.userNotifications.listUnseen(req.user.userId);
+  }
+
+  /** Mark notifications seen (by id, or all unseen when ids omitted). */
+  @Post("me/notifications/seen")
+  @HttpCode(200)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Mark the current user's notifications as seen" })
+  async markNotificationsSeen(
+    @Request() req: any,
+    @Body() body: { ids?: string[] },
+  ): Promise<{ ok: boolean }> {
+    await this.userNotifications.markSeen(req.user.userId, body?.ids);
+    return { ok: true };
+  }
+
+  /**
+   * Reconcile achievement-badge unlocks into notifications. The client computes
+   * its unlocked badges (single source of truth) and reports them; the backend
+   * creates a one-time notification per new badge. `seenIds` carries the
+   * client's existing localStorage "seen" set so pre-earned badges are
+   * baselined silently instead of all popping at once.
+   */
+  @Post("me/achievements/sync")
+  @HttpCode(200)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Sync unlocked achievement badges into notifications" })
+  async syncAchievements(
+    @Request() req: any,
+    @Body()
+    body: {
+      badges?: { id: string; name: string; requirement?: string }[];
+      seenIds?: string[];
+    },
+  ): Promise<{ ok: boolean }> {
+    await this.userNotifications.syncAchievements(
+      req.user.userId,
+      body?.badges ?? [],
+      body?.seenIds ?? [],
+    );
+    return { ok: true };
+  }
 
   /**
    * Public avatar proxy. Telegram's photo hosts (t.me/i/userpic and
