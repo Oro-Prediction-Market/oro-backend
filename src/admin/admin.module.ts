@@ -14,6 +14,7 @@ import { AuditService } from "./audit.service";
 import { TelegramModule } from "../telegram/telegram.module";
 import { EplModule } from "../epl/epl.module";
 import { UclModule } from "../ucl/ucl.module";
+import { SuggestionsModule } from "../suggestions/suggestions.module";
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { UclModule } from "../ucl/ucl.module";
     TelegramModule,
     EplModule,
     UclModule,
+    SuggestionsModule,
   ],
   controllers: [AdminController],
   providers: [FixturesService, AuditService],

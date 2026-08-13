@@ -56,4 +56,11 @@ export class SuggestionsGateway implements OnGatewayInit {
     if (!this.server) return;
     this.server.emit("suggestion_added", payload);
   }
+
+  /** A suggestion left the orbit — rejected by an admin, or published as a
+   *  real market. Open orbits remove it in place. */
+  emitRemoved(id: string): void {
+    if (!this.server) return;
+    this.server.emit("suggestion_removed", { id });
+  }
 }

@@ -37,6 +37,20 @@ export interface SuggestionView {
   marketId: string | null;
 }
 
+/** Admin-panel view: every suggestion regardless of status, with review info. */
+export interface AdminSuggestionView {
+  id: string;
+  title: string;
+  description: string | null;
+  category: MarketCategory;
+  status: SuggestionStatus;
+  votes: number;
+  proposer: string;
+  marketId: string | null;
+  createdAt: string;
+  reviewedAt: string | null;
+}
+
 @Injectable()
 export class SuggestionsService {
   private readonly logger = new Logger(SuggestionsService.name);
@@ -55,11 +69,12 @@ export class SuggestionsService {
 
   // ── Reads ──────────────────────────────────────────────────────────────────
 
-  /** The orbit: approved (and already-created) suggestions, most-wanted first. */
+  /** The orbit: approved suggestions, most-wanted first. Once an admin publishes
+   *  one as a real market (status CREATED) it leaves the orbit. */
   async listVisible(viewerId?: string): Promise<SuggestionView[]> {
     const suggestions = await this.suggestionRepo.find({
       where: {
-        status: In([SuggestionStatus.APPROVED, SuggestionStatus.CREATED]),
+        status: SuggestionStatus.APPROVED,
       },
       relations: ["user"],
       order: { voteCount: "DESC", createdAt: "DESC" },
@@ -182,10 +197,7 @@ export class SuggestionsService {
       where: { id: suggestionId },
     });
     if (!suggestion) throw new NotFoundException("Suggestion not found");
-    if (
-      suggestion.status !== SuggestionStatus.APPROVED &&
-      suggestion.status !== SuggestionStatus.CREATED
-    ) {
+    if (suggestion.status !== SuggestionStatus.APPROVED) {
       throw new BadRequestException("This suggestion is not open for votes");
     }
 
@@ -270,6 +282,115 @@ export class SuggestionsService {
 
   async findById(id: string): Promise<MarketSuggestion | null> {
     return this.suggestionRepo.findOne({ where: { id }, relations: ["user"] });
+  }
+
+  // ── Admin dashboard (HTTP, alongside the Telegram flow) ─────────────────────
+
+  /** Every suggestion (optionally filtered by status), sorted by votes (default)
+   *  or by newest first. */
+  async listForAdmin(
+    status?: SuggestionStatus,
+    sort: "votes" | "latest" = "votes",
+  ): Promise<AdminSuggestionView[]> {
+    const order =
+      sort === "latest"
+        ? ({ createdAt: "DESC" } as const)
+        : ({ voteCount: "DESC", createdAt: "DESC" } as const);
+    const rows = await this.suggestionRepo.find({
+      where: status ? { status } : {},
+      relations: ["user"],
+      order,
+      take: 200,
+    });
+    return rows.map((s) => ({
+      id: s.id,
+      title: s.title,
+      description: s.description,
+      category: s.category,
+      status: s.status,
+      votes: s.voteCount,
+      proposer: this.displayName(s.user),
+      marketId: s.marketId,
+      createdAt: s.createdAt.toISOString(),
+      reviewedAt: s.reviewedAt ? s.reviewedAt.toISOString() : null,
+    }));
+  }
+
+  /**
+   * Approve or reject from the dashboard. Approve works on PENDING only; reject
+   * works on PENDING or APPROVED (rejecting an approved one pulls it from the
+   * orbit). Mirrors the Telegram flow but also emits the live orbit removal.
+   */
+  async reviewByAdmin(
+    id: string,
+    approve: boolean,
+  ): Promise<MarketSuggestion> {
+    const suggestion = await this.suggestionRepo.findOne({
+      where: { id },
+      relations: ["user"],
+    });
+    if (!suggestion) throw new NotFoundException("Suggestion not found");
+
+    if (approve) {
+      if (suggestion.status !== SuggestionStatus.PENDING) {
+        throw new BadRequestException(
+          `Already ${suggestion.status} — nothing to approve`,
+        );
+      }
+      suggestion.status = SuggestionStatus.APPROVED;
+    } else {
+      if (
+        suggestion.status !== SuggestionStatus.PENDING &&
+        suggestion.status !== SuggestionStatus.APPROVED
+      ) {
+        throw new BadRequestException(
+          `Cannot reject a ${suggestion.status} suggestion`,
+        );
+      }
+      suggestion.status = SuggestionStatus.REJECTED;
+    }
+    suggestion.reviewedByTelegramId = this.approverId() ?? "admin-dashboard";
+    suggestion.reviewedAt = new Date();
+    const saved = await this.suggestionRepo.save(suggestion);
+
+    if (saved.status === SuggestionStatus.APPROVED) {
+      this.gateway.emitAdded({
+        id: saved.id,
+        title: saved.title,
+        description: saved.description,
+        category: saved.category,
+        votes: saved.voteCount,
+        creator: this.displayName(saved.user),
+        createdAt: saved.createdAt.toISOString(),
+        marketId: saved.marketId,
+      });
+    } else {
+      // rejected — if it had been in the orbit, drop it from open orbits live
+      this.gateway.emitRemoved(saved.id);
+    }
+    this.notifyProposer(saved).catch(() => {});
+    return saved;
+  }
+
+  /**
+   * Mark a suggestion as published — an admin turned it into a real market.
+   * Sets status CREATED, links the market, and removes it from the orbit.
+   */
+  async markPublished(
+    id: string,
+    marketId: string,
+  ): Promise<MarketSuggestion> {
+    const suggestion = await this.suggestionRepo.findOne({ where: { id } });
+    if (!suggestion) throw new NotFoundException("Suggestion not found");
+    if (suggestion.status === SuggestionStatus.CREATED) {
+      throw new BadRequestException("This suggestion is already published");
+    }
+    suggestion.status = SuggestionStatus.CREATED;
+    suggestion.marketId = marketId;
+    if (!suggestion.reviewedAt) suggestion.reviewedAt = new Date();
+    const saved = await this.suggestionRepo.save(suggestion);
+    this.gateway.emitRemoved(saved.id);
+    return saved;
   }
 
   // ── Internals ──────────────────────────────────────────────────────────────

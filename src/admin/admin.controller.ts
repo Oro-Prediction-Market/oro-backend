@@ -37,6 +37,8 @@ import {
 } from "../markets/markets.service";
 import { CreateMarketGroupDto } from "../markets/dto/create-market-group.dto";
 import { UpdateMarketGroupDto } from "../markets/dto/update-market-group.dto";
+import { SuggestionsService } from "../suggestions/suggestions.service";
+import { SuggestionStatus } from "../entities/market-suggestion.entity";
 import { KeeperService } from "../markets/keeper.service";
 import { RevenueDistributionService } from "../markets/revenue-distribution.service";
 import { EplService } from "../epl/epl.service";
@@ -97,6 +99,7 @@ class CreditUserDto {
 export class AdminController {
   constructor(
     private marketsService: MarketsService,
+    private suggestionsService: SuggestionsService,
     private keeperService: KeeperService,
     private fixturesService: FixturesService,
     private auditService: AuditService,
@@ -475,6 +478,79 @@ export class AdminController {
       ipAddress: req.ip,
     });
     return markets;
+  }
+
+  // ── Market suggestions (Oracle Orbit review + publish) ──────────────────────
+
+  @Get("suggestions")
+  @ApiOperation({
+    summary:
+      "List market suggestions with vote counts (optional ?status= and ?sort=votes|latest)",
+  })
+  async listSuggestions(
+    @Query("status") status?: string,
+    @Query("sort") sort?: string,
+  ) {
+    const valid = status
+      ? (Object.values(SuggestionStatus) as string[]).includes(status)
+        ? (status as SuggestionStatus)
+        : undefined
+      : undefined;
+    const validSort = sort === "latest" ? "latest" : "votes";
+    return this.suggestionsService.listForAdmin(valid, validSort);
+  }
+
+  @Patch("suggestions/:id/review")
+  @ApiOperation({
+    summary: "Approve or reject a market suggestion from the dashboard",
+  })
+  async reviewSuggestion(
+    @Param("id") id: string,
+    @Body("approve") approve: boolean,
+    @Request() req: any,
+  ) {
+    const result = await this.suggestionsService.reviewByAdmin(id, !!approve);
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action: AuditAction.MARKET_TRANSITION,
+      entityType: "market-suggestion",
+      entityId: id,
+      after: { status: result.status, title: result.title },
+      ipAddress: req.ip,
+    });
+    return result;
+  }
+
+  @Post("suggestions/:id/publish")
+  @ApiOperation({
+    summary:
+      "Create a real market from a suggestion and mark the suggestion published",
+  })
+  async publishSuggestion(
+    @Param("id") id: string,
+    @Body() dto: CreateMarketDto,
+    @Request() req: any,
+  ) {
+    const market = await this.marketsService.create(dto);
+    const suggestion = await this.suggestionsService.markPublished(
+      id,
+      market.id,
+    );
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action: AuditAction.MARKET_CREATE,
+      entityType: "market-suggestion",
+      entityId: id,
+      after: {
+        marketId: market.id,
+        title: market.title,
+        suggestionStatus: suggestion.status,
+      },
+      ipAddress: req.ip,
+    });
+    return market;
   }
 
   // ⚠️ DO NOT DELETE THIS ENDPOINT.
