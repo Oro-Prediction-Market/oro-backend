@@ -400,8 +400,6 @@ export class UsersController {
         "contrarianWins",
         "featuredAchievementIds",
         "contrarianAttempts",
-        // streak
-        "telegramStreak",
         // hashes loaded only for boolean derivation — never forwarded to client
         "dkPhoneHash",
         "telegramPhoneHash",
@@ -473,7 +471,8 @@ export class UsersController {
       select: [
         "id", "firstName", "lastName", "username", "photoUrl", "createdAt",
         "reputationScore", "reputationTier", "totalPredictions", "correctPredictions",
-        "telegramStreak", "contrarianBadge", "contrarianWins",
+        "contrarianBadge", "contrarianWins",
+        "betStreakCount", "betStreakLastAt",
         "featuredAchievementIds",
       ],
     });
@@ -513,7 +512,10 @@ export class UsersController {
         ? Math.round((user.correctPredictions / user.totalPredictions) * 100)
         : 0,
       rank: user.totalPredictions >= 10 ? rank : null,
-      streak: user.telegramStreak ?? 0,
+      betStreak: this.effectiveBetStreak(
+        user.betStreakCount,
+        user.betStreakLastAt,
+      ),
       contrarianBadge: user.contrarianBadge,
       contrarianWins: user.contrarianWins ?? 0,
       featuredAchievementIds: user.featuredAchievementIds ?? [],
@@ -671,6 +673,26 @@ export class UsersController {
 
   // ── Leaderboard ───────────────────────────────────────────────────────────
 
+  // Effective daily-bet streak for the board: the stored betStreakCount goes
+  // stale (it isn't reset until the user's next bet), so mirror getStreakInfo —
+  // a streak only counts while the last bet was today or yesterday (UTC),
+  // otherwise report 0 so the board hides a broken streak like the profile does.
+  private effectiveBetStreak(
+    count: number,
+    lastAt: string | Date | null,
+  ): number {
+    if (!count || !lastAt) return 0;
+    const last =
+      typeof lastAt === "string"
+        ? lastAt.slice(0, 10)
+        : new Date(lastAt).toISOString().slice(0, 10);
+    const todayUtc = new Date().toISOString().slice(0, 10);
+    const y = new Date();
+    y.setUTCDate(y.getUTCDate() - 1);
+    const yesterdayUtc = y.toISOString().slice(0, 10);
+    return last === todayUtc || last === yesterdayUtc ? count : 0;
+  }
+
   @Get("leaderboard")
   @Public()
   @ApiOperation({ summary: "Global leaderboard — top 50 predictors" })
@@ -698,6 +720,8 @@ export class UsersController {
         .addSelect("u.reputationTier", "reputationTier")
         .addSelect("u.totalPredictions", "totalPredictions")
         .addSelect("u.correctPredictions", "correctPredictions")
+        .addSelect("u.betStreakCount", "betStreakCount")
+        .addSelect("u.betStreakLastAt", "betStreakLastAt")
         .addSelect("COUNT(p.id)", "weeklyPredictions")
         .addSelect(
           "SUM(CASE WHEN p.status = 'won' THEN 1 ELSE 0 END)",
@@ -734,6 +758,10 @@ export class UsersController {
           correctPredictions: Number(r.correctPredictions),
           winRate: wp > 0 ? Math.round((ww / wp) * 100) : 0,
           totalBetAmount: Math.round(Number(r.weeklyBetAmount)),
+          betStreak: this.effectiveBetStreak(
+            Number(r.betStreakCount),
+            r.betStreakLastAt,
+          ),
           weeklyPredictions: wp,
           weeklyWins: ww,
           isMe: myId != null && r.id === myId,
@@ -775,6 +803,8 @@ export class UsersController {
         "u.reputationTier",
         "u.totalPredictions",
         "u.correctPredictions",
+        "u.betStreakCount",
+        "u.betStreakLastAt",
       ])
       .addSelect(
         `(SELECT COALESCE(SUM(p.amount), 0) FROM positions p WHERE p."userId" = u.id)`,
@@ -802,6 +832,7 @@ export class UsersController {
           ? Math.round((u.correctPredictions / u.totalPredictions) * 100)
           : 0,
       totalBetAmount: Math.round(Number(rows.raw[i]?.totalBetAmount ?? 0)),
+      betStreak: this.effectiveBetStreak(u.betStreakCount, u.betStreakLastAt),
       isMe: myId != null && u.id === myId,
     }));
 

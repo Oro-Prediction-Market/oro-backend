@@ -145,9 +145,6 @@ export class TelegramService {
     const message = this.formatPositionResult(bet, market);
     await this.sendMessage(Number(user.telegramId), message);
 
-    // Update user streak
-    await this.updateUserStreak(user.id, bet.status === PositionStatus.WON);
-
     this.logger.log(`Position result sent to user ${user.id}: ${bet.status}`);
   }
 
@@ -258,29 +255,6 @@ export class TelegramService {
     await this.sendMessage(chatId, message);
   }
 
-  private async updateUserStreak(userId: string, won: boolean): Promise<void> {
-    const user = await this.userRepository.findOne({ where: { id: userId } });
-    if (!user) return;
-
-    const currentStreak = user.telegramStreak || 0;
-    const newStreak = won ? currentStreak + 1 : 0;
-
-    await this.userRepository.update(userId, { telegramStreak: newStreak });
-
-    if (newStreak > currentStreak && newStreak >= 3) {
-      // Send streak notification
-      const userWithChat = await this.userRepository.findOne({
-        where: { id: userId },
-      });
-      if (userWithChat?.telegramId) {
-        await this.sendMessage(
-          Number(userWithChat.telegramId),
-          `🔥 ${newStreak} wins in a row! You're on fire! 🔥`,
-        );
-      }
-    }
-  }
-
   private formatMarketAnnouncement(market: Market): string {
     const closesAt = new Date(market.closesAt).toLocaleString();
     const outcomes = market.outcomes.map((o) => o.label).join(" vs ");
@@ -313,11 +287,9 @@ export class TelegramService {
     const wonPositions = bets.filter((b) => b.status === PositionStatus.WON).length;
     const winRate =
       totalPositions > 0 ? ((wonPositions / totalPositions) * 100).toFixed(1) : "0";
-    const streak = user.telegramStreak || 0;
 
     return (
       `📊 <b>Your Portfolio</b>\n\n` +
-      `🔥 Current Streak: ${streak} 🔥\n` +
       `📈 Win Rate: ${winRate}%\n` +
       `💰 Total Positions: ${totalPositions}\n` +
       `✅ Won: ${wonPositions}\n\n` +

@@ -21,7 +21,7 @@ export enum ChallengeStatus {
 
 export enum CardType {
   DOUBLE_DOWN = "doubleDown", // platform waives 10% fee — winner gets full 2× pot
-  SHIELD = "shield",          // loss doesn't reset bet streak
+  SHIELD = "shield",          // passive: auto-spent to save the daily bet streak after a missed day
   GHOST = "ghost",            // wager hidden as "???" until opponent accepts
 }
 

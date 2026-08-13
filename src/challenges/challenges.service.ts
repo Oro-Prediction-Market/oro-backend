@@ -140,6 +140,14 @@ export class ChallengesService {
     if (wagerAmount < 0)
       throw new BadRequestException("Wager cannot be negative");
 
+    // Shield is a passive card that auto-saves the daily bet streak after a
+    // missed day — it is not equippable on a duel (that would just burn it).
+    if (equippedCard === CardType.SHIELD) {
+      throw new BadRequestException(
+        "Shield cards protect your daily streak automatically and can't be equipped on a duel",
+      );
+    }
+
     // 1. Eligibility — must have ≥ 5 predictions
     const totalBets = await this.positionRepo.count({
       where: { userId: creatorId },
@@ -530,23 +538,6 @@ export class ChallengesService {
       .orderBy("c.createdAt", "DESC")
       .limit(20)
       .getMany();
-  }
-
-  // ── Shield check ──────────────────────────────────────────────────────────
-  // Called by ParimutuelEngine before resetting telegramStreak on a market loss.
-  // Returns true if the user is the creator of an ACTIVE duel on this market
-  // with a Shield card equipped — meaning their streak should be preserved.
-
-  async hasShieldActive(userId: string, marketId: string): Promise<boolean> {
-    const ch = await this.challengeRepo.findOne({
-      where: {
-        creatorId: userId,
-        marketId,
-        status: ChallengeStatus.ACTIVE,
-        equippedCard: CardType.SHIELD,
-      },
-    });
-    return ch !== null;
   }
 
   // ── Weekly leaderboard (most duel wins this week) ─────────────────────────

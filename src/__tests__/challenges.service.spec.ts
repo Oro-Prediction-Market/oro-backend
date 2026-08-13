@@ -531,15 +531,28 @@ describe("ChallengesService — Power Cards", () => {
     challengeRepo.findOne.mockResolvedValueOnce(null);
 
     const user = makeUser({
+      cardInventory: { doubleDown: 0, shield: 0, ghost: 1 },
+    });
+    const dataSource = makeDataSource(user);
+
+    const { service } = makeService({ challengeRepo, dataSource });
+    await service.create("user-1", "market-1", "outcome-1", 0, CardType.GHOST);
+
+    const created = challengeRepo.create.mock.calls[0][0];
+    expect(created.equippedCard).toBe(CardType.GHOST);
+  });
+
+  it("rejects equipping a Shield on a duel (Shield protects the daily streak)", async () => {
+    const challengeRepo = makeChallengeRepo();
+    const user = makeUser({
       cardInventory: { doubleDown: 0, shield: 1, ghost: 0 },
     });
     const dataSource = makeDataSource(user);
 
     const { service } = makeService({ challengeRepo, dataSource });
-    await service.create("user-1", "market-1", "outcome-1", 0, CardType.SHIELD);
-
-    const created = challengeRepo.create.mock.calls[0][0];
-    expect(created.equippedCard).toBe(CardType.SHIELD);
+    await expect(
+      service.create("user-1", "market-1", "outcome-1", 0, CardType.SHIELD),
+    ).rejects.toThrow(BadRequestException);
   });
 
   // ── settleByMarket: Double Down fee waiver ────────────────────────────────
@@ -691,32 +704,6 @@ describe("ChallengesService — Power Cards", () => {
       savedUser.cardInventory.shield +
       savedUser.cardInventory.ghost;
     expect(totalCards).toBe(1);
-  });
-
-  // ── hasShieldActive ───────────────────────────────────────────────────────
-
-  it("hasShieldActive returns true when creator has ACTIVE Shield duel on market", async () => {
-    const challenge = makeChallenge({
-      status: ChallengeStatus.ACTIVE,
-      equippedCard: CardType.SHIELD,
-      creatorId: "user-1",
-      marketId: "market-1",
-    });
-    const challengeRepo = makeChallengeRepo(challenge);
-    challengeRepo.findOne.mockResolvedValue(challenge);
-
-    const { service } = makeService({ challengeRepo });
-    const result = await service.hasShieldActive("user-1", "market-1");
-    expect(result).toBe(true);
-  });
-
-  it("hasShieldActive returns false when no matching Shield duel exists", async () => {
-    const challengeRepo = makeChallengeRepo(null);
-    challengeRepo.findOne.mockResolvedValue(null);
-
-    const { service } = makeService({ challengeRepo });
-    const result = await service.hasShieldActive("user-1", "market-1");
-    expect(result).toBe(false);
   });
 
   it("does not award a card at non-milestone wins (e.g. win #5)", async () => {

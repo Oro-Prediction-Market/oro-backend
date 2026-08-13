@@ -124,6 +124,53 @@ describe("StreakService.updateStreak", () => {
     expect(result.boostActive).toBe(false);
   });
 
+  it("spends a Shield to save the streak when exactly one day was missed", async () => {
+    const user = {
+      id: "u1",
+      betStreakCount: 5,
+      betStreakLastAt: twoDaysAgoUtc(),
+      streakBoostUsed: false,
+      cardInventory: { doubleDown: 0, shield: 1, ghost: 0 },
+    };
+    const userRepo = makeUserRepo(user);
+    const svc = makeService(userRepo);
+
+    const result = await svc.updateStreak("u1");
+
+    expect(result.newStreak).toBe(6); // continued, not reset
+    expect(result.shieldSaved).toBe(true);
+    // Shield decremented and persisted alongside the streak.
+    expect(userRepo.update).toHaveBeenCalledWith(
+      "u1",
+      expect.objectContaining({
+        betStreakCount: 6,
+        cardInventory: { doubleDown: 0, shield: 0, ghost: 0 },
+      }),
+    );
+  });
+
+  it("does NOT spend a Shield (streak resets) when two or more days were missed", async () => {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() - 3);
+    const threeDaysAgo = d.toISOString().slice(0, 10);
+    const user = {
+      id: "u1",
+      betStreakCount: 5,
+      betStreakLastAt: threeDaysAgo,
+      streakBoostUsed: false,
+      cardInventory: { doubleDown: 0, shield: 1, ghost: 0 },
+    };
+    const userRepo = makeUserRepo(user);
+    const svc = makeService(userRepo);
+
+    const result = await svc.updateStreak("u1");
+
+    expect(result.newStreak).toBe(1);
+    expect(result.shieldSaved).toBeFalsy();
+    // Shield left untouched (no cardInventory in the persisted update).
+    expect(userRepo.update.mock.calls[0]?.[1]?.cardInventory).toBeUndefined();
+  });
+
   it("activates boost on day 7 (first time) when consecutive and not already used", async () => {
     // betStreakCount = 6 → after increment = 7 → day 7 → boost fires
     const user = { id: "u1", betStreakCount: 6, betStreakLastAt: yesterdayUtc(), streakBoostUsed: false };

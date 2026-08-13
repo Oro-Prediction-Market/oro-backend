@@ -1250,7 +1250,7 @@ export class AdminController {
         "u.isAdmin",
         "u.telegramId",
         "u.telegramChatId",
-        "u.telegramStreak",
+        "u.betStreakCount",
         "u.telegramLinkedAt",
         "u.reputationTier",
         "u.totalPredictions",
@@ -1317,7 +1317,7 @@ export class AdminController {
         dir,
       );
     } else if (sortField === "streak") {
-      qb.orderBy("COALESCE(u.telegramStreak, 0)", dir);
+      qb.orderBy("COALESCE(u.betStreakCount, 0)", dir);
     } else {
       // joined (default)
       qb.orderBy("u.createdAt", dir);

@@ -14,6 +14,23 @@ export interface StreakUpdateResult {
   boostActive: boolean;
   /** Day number within the current cycle (1–7) */
   dayInCycle: number;
+  /** True when a Shield card was auto-spent to forgive a single missed day. */
+  shieldSaved?: boolean;
+}
+
+type CardInventory = { doubleDown: number; shield: number; ghost: number };
+
+/**
+ * Normalize raw cardInventory. The original migration defaulted to '[]' (an
+ * array) rather than an object, so old rows may hold [] — treat both as zeros.
+ */
+function normalizeInventory(raw: CardInventory | null): CardInventory {
+  if (!raw || Array.isArray(raw)) return { doubleDown: 0, shield: 0, ghost: 0 };
+  return {
+    doubleDown: raw.doubleDown ?? 0,
+    shield: raw.shield ?? 0,
+    ghost: raw.ghost ?? 0,
+  };
 }
 
 @Injectable()
@@ -39,7 +56,13 @@ export class StreakService {
 
       const user = await userRepo.findOne({
         where: { id: userId },
-        select: ["id", "betStreakCount", "betStreakLastAt", "streakBoostUsed"],
+        select: [
+          "id",
+          "betStreakCount",
+          "betStreakLastAt",
+          "streakBoostUsed",
+          "cardInventory",
+        ],
         lock: { mode: "pessimistic_write" },
       });
 
@@ -52,6 +75,9 @@ export class StreakService {
 
       let newStreak: number;
       let streakBoostUsed = user.streakBoostUsed;
+      let shieldSaved = false;
+      const inventory = normalizeInventory(user.cardInventory);
+      let inventoryChanged = false;
 
       if (!lastDate) {
         // First ever bet
@@ -64,11 +90,23 @@ export class StreakService {
         const yesterday = new Date();
         yesterday.setUTCDate(yesterday.getUTCDate() - 1);
         const yesterdayUtc = yesterday.toISOString().slice(0, 10);
+        const twoDaysAgo = new Date();
+        twoDaysAgo.setUTCDate(twoDaysAgo.getUTCDate() - 2);
+        const twoDaysAgoUtc = twoDaysAgo.toISOString().slice(0, 10);
 
         if (lastDate === yesterdayUtc) {
           // Consecutive day
           newStreak = (user.betStreakCount || 0) + 1;
           // If we just crossed a new cycle (streak reset to 1 after boost), reset flag
+          if (newStreak % STREAK_BONUS_DAY === 1) streakBoostUsed = false;
+        } else if (lastDate === twoDaysAgoUtc && inventory.shield >= 1) {
+          // Exactly one day missed and the user holds a Shield card — auto-spend
+          // it to bridge the gap and keep the streak alive. Only a single missed
+          // day is forgivable; miss two+ days and the streak resets regardless.
+          inventory.shield -= 1;
+          inventoryChanged = true;
+          shieldSaved = true;
+          newStreak = (user.betStreakCount || 0) + 1;
           if (newStreak % STREAK_BONUS_DAY === 1) streakBoostUsed = false;
         } else {
           // Gap — reset
@@ -87,20 +125,22 @@ export class StreakService {
       if (
         user.betStreakCount !== newStreak ||
         user.betStreakLastAt !== todayUtc ||
-        user.streakBoostUsed !== streakBoostUsed
+        user.streakBoostUsed !== streakBoostUsed ||
+        inventoryChanged
       ) {
         await userRepo.update(userId, {
           betStreakCount: newStreak,
           betStreakLastAt: todayUtc,
           streakBoostUsed,
+          ...(inventoryChanged ? { cardInventory: inventory } : {}),
         });
       }
 
       this.logger.log(
-        `Streak update user=${userId} streak=${newStreak} day=${dayInCycle} boost=${boostActive}`,
+        `Streak update user=${userId} streak=${newStreak} day=${dayInCycle} boost=${boostActive}${shieldSaved ? " shieldSaved" : ""}`,
       );
 
-      return { newStreak, boostActive, dayInCycle };
+      return { newStreak, boostActive, dayInCycle, shieldSaved };
     });
   }
 

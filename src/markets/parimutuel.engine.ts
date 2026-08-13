@@ -383,8 +383,10 @@ export class ParimutuelEngine implements OnModuleInit {
       // ── Streak milestone push notification (non-blocking) ─────────────────
       const streakChatId = betUserTelegramId ? Number(betUserTelegramId) : null;
       if (streakResult && streakChatId) {
-        const { dayInCycle, boostActive } = streakResult;
+        const { dayInCycle, boostActive, shieldSaved, newStreak } =
+          streakResult;
         const shouldNotify =
+          shieldSaved ||
           boostActive ||
           dayInCycle === 5 ||
           dayInCycle === 3 ||
@@ -392,7 +394,9 @@ export class ParimutuelEngine implements OnModuleInit {
         if (shouldNotify) {
           const sendStreak = async () => {
             let msg: string;
-            if (boostActive) {
+            if (shieldSaved) {
+              msg = `🛡️ <b>Shield used!</b> A Shield card saved your <b>${newStreak}-day</b> bet streak after a missed day. Keep it going!`;
+            } else if (boostActive) {
               msg = `🔥 <b>Day 7 streak!</b> Your next winning payout gets a <b>1.2× boost</b>. Keep it going!`;
             } else if (dayInCycle === 5) {
               msg = `🔥 <b>5-day streak!</b> Just 2 more days to unlock your <b>1.2× payout boost</b>. Predict tomorrow to keep it alive.`;
@@ -1796,7 +1800,6 @@ Good luck! 🍀
       const externalUserId = bhutanExternalIdByUser[userId] ?? null;
       // No reachable channel (neither Telegram nor BhutanApp) — skip.
       if (chatId == null && !externalUserId) continue;
-      const firstName = user.firstName?.trim() || "there";
       const tierNow = user.reputationTier ?? "rookie";
       const tierBefore = tiersBefore[userId] ?? "rookie";
       const totalPredictions = user.totalPredictions ?? 0;
@@ -1855,21 +1858,6 @@ Good luck! 🍀
         }
 
         notifyUser(chatId, externalUserId, msg, "🎉 You won!");
-
-        // Streak update (DB write — keep here, not a channel call)
-        const currentStreak = (user.telegramStreak ?? 0) + 1;
-        await this.dataSource
-          .getRepository(User)
-          .update(user.id, { telegramStreak: currentStreak })
-          .catch(() => {});
-        if (currentStreak >= 3) {
-          notifyUser(
-            chatId,
-            externalUserId,
-            `🔥 <b>${currentStreak} correct in a row, ${firstName}!</b> You're on fire.`,
-            "🔥 You're on a streak!",
-          );
-        }
       } else {
         const outcome = market.outcomes.find(
           (o) => o.id === userBets[0].outcomeId,
@@ -1884,22 +1872,6 @@ Good luck! 🍀
           msg += `⭐ Insight: <b>${accuracy}</b> over ${totalPredictions} ${totalPredictions === 1 ? "prediction" : "predictions"}\n`;
 
         notifyUser(chatId, externalUserId, msg, "Market settled");
-
-        // Shield card check
-        const shielded = await this.challengesService
-          .hasShieldActive(user.id, market.id)
-          .catch(() => false);
-
-        if (!shielded) {
-          await this.dataSource
-            .getRepository(User)
-            .update(user.id, { telegramStreak: 0 })
-            .catch(() => {});
-        } else {
-          this.logger.log(
-            `[Shield] Streak reset skipped for user ${user.id} on market ${market.id}`,
-          );
-        }
       }
     }
 
