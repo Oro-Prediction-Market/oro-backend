@@ -1,8 +1,10 @@
 import {
+  Inject,
   Injectable,
   Logger,
   OnApplicationBootstrap,
   OnApplicationShutdown,
+  forwardRef,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
@@ -10,6 +12,7 @@ import { ConfigService } from "@nestjs/config";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import { TelegramVerificationService } from "../telegram/telegram-verification.service";
 import { LeaguesService } from "../leagues/leagues.service";
+import { SuggestionsService } from "../suggestions/suggestions.service";
 import { RedisService } from "../redis/redis.service";
 import { User } from "../entities/user.entity";
 import { Market, MarketStatus } from "../entities/market.entity";
@@ -47,6 +50,8 @@ export class BotPollingService
     private readonly telegramSimple: TelegramSimpleService,
     private readonly telegramVerification: TelegramVerificationService,
     private readonly leaguesService: LeaguesService,
+    @Inject(forwardRef(() => SuggestionsService))
+    private readonly suggestionsService: SuggestionsService,
     private readonly redis: RedisService,
     @InjectRepository(User) private readonly userRepo: Repository<User>,
     @InjectRepository(Market) private readonly marketRepo: Repository<Market>,
@@ -710,10 +715,64 @@ export class BotPollingService
     }
   }
 
+  /**
+   * Approve/reject a market suggestion from the admin's DM.
+   * `data` is `sg:a:<uuid>` or `sg:r:<uuid>`.
+   */
+  private async handleSuggestionReview(
+    data: string,
+    callback: any,
+    callbackQueryId: string,
+    chatId: number,
+  ): Promise<void> {
+    const [, action, suggestionId] = data.split(":");
+    const approve = action === "a";
+
+    // Answer immediately — Telegram allows exactly one answer per query id.
+    await this.telegramSimple.answerCallbackQuery(
+      callbackQueryId,
+      approve ? "Approving…" : "Rejecting…",
+    );
+
+    // Only ADMIN_TELEGRAM_ID may review, whoever the button reaches.
+    if (!this.suggestionsService.isApprover(callback.from?.id)) {
+      this.logger.warn(
+        `[Bot] Unauthorised suggestion review — from=${callback.from?.id}`,
+      );
+      await this.telegramSimple.sendMessage(chatId, "⛔ <b>Not authorised.</b>");
+      return;
+    }
+
+    try {
+      const reviewed = await this.suggestionsService.review(
+        suggestionId,
+        approve,
+        String(callback.from.id),
+      );
+      await this.telegramSimple.sendMessage(
+        chatId,
+        approve
+          ? `✅ <b>Approved</b> — "${reviewed.title}" is now live in Ask the Crowd.`
+          : `❌ <b>Rejected</b> — "${reviewed.title}" stays hidden.`,
+      );
+    } catch (err: any) {
+      await this.telegramSimple.sendMessage(
+        chatId,
+        `⚠️ ${err?.message ?? "Could not review that suggestion."}`,
+      );
+    }
+  }
+
   async handleCallbackQuery(callback: any) {
     const chatId: number = callback.message?.chat?.id;
     const data: string = callback.data ?? "";
     const callbackQueryId: string = callback.id;
+
+    // ── sg:<a|r>:<id> — admin approving/rejecting a market suggestion ───────
+    if (data.startsWith("sg:")) {
+      await this.handleSuggestionReview(data, callback, callbackQueryId, chatId);
+      return;
+    }
 
     // ── p:<key>  — short propose key registered by KeeperService ─────────
     if (data.startsWith("p:")) {

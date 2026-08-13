@@ -43,6 +43,9 @@ import { RevenueDistribution } from "./entities/revenue-distribution.entity";
 import { TerModule } from "./ter/ter.module";
 import { BtcModule } from "./btc/btc.module";
 import { AmlModule } from "./aml/aml.module";
+import { SuggestionsModule } from "./suggestions/suggestions.module";
+import { MarketSuggestion } from "./entities/market-suggestion.entity";
+import { MarketSuggestionVote } from "./entities/market-suggestion-vote.entity";
 import { EplModule } from "./epl/epl.module";
 import { UclModule } from "./ucl/ucl.module";
 import { AmlAlert } from "./aml/entities/aml-alert.entity";
@@ -114,17 +117,17 @@ import { UserNotification } from "./entities/user-notification.entity";
           RevenueDistribution,
           AmlAlert,
           AmlReport,
-          UserNotification,
+          MarketSuggestion,
+          MarketSuggestionVote,
         ],
-        // Never let the app auto-rewrite the schema in production — a stray
-        // rename or removed field would silently drop a live column and its
-        // data. Production schema changes go through reviewed migrations only.
-        // Opt in for local dev with DB_SYNCHRONIZE=true; it is force-disabled
-        // whenever NODE_ENV=production so a misplaced flag can't touch prod.
+        // Schema changes ship as migrations ONLY. synchronize silently DROPs a
+        // column when an entity property is renamed — irrecoverable financial
+        // history on a money DB. Off by default, impossible to enable in prod.
         synchronize:
           config.get("NODE_ENV") !== "production" &&
-          config.get("DB_SYNCHRONIZE") === "true",
-        migrationsRun: false,
+          config.get("DB_SYNCHRONIZE", "false") === "true",
+        migrations: [__dirname + "/migrations/*{.ts,.js}"],
+        migrationsRun: config.get("DB_MIGRATIONS_RUN", "false") === "true",
         logging: false,
         extra: {
           // App connects DIRECTLY to the CNPG primary (no pooler in path).
@@ -154,6 +157,7 @@ import { UserNotification } from "./entities/user-notification.entity";
     TerModule,
     BtcModule,
     AmlModule,
+    SuggestionsModule,
     EplModule,
     UclModule,
   ],

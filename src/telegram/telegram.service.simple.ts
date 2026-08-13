@@ -249,7 +249,11 @@ export class TelegramSimpleService {
     telegramId: number,
     marketTitle: string,
     amount: number,
-    reason: "market_cancelled" | "thin_pool" | "settlement_source_failure",
+    reason:
+      | "market_cancelled"
+      | "thin_pool"
+      | "payout_floor_underfunded"
+      | "settlement_source_failure",
   ): Promise<void> {
     let text: string;
     if (reason === "market_cancelled") {
@@ -266,6 +270,12 @@ export class TelegramSimpleService {
         `📊 <b>${marketTitle}</b>\n\n` +
         `This market didn't get enough participation to settle fairly. ` +
         `Your <b>Nu ${amount.toLocaleString()}</b> is back in your wallet.`;
+    } else if (reason === "payout_floor_underfunded") {
+      text =
+        `⚠️ <b>Market Refunded</b>\n\n` +
+        `📊 <b>${marketTitle}</b>\n\n` +
+        `The pool could not fund Oro's 1.05× minimum winning payout for every winner. ` +
+        `No house edge was deducted, and your <b>Nu ${amount.toLocaleString()}</b> is back in your wallet.`;
     } else {
       text =
         `⚠️ <b>Market Refunded</b>\n\n` +

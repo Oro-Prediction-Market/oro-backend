@@ -128,45 +128,7 @@ export class BankLinkService {
     account.linkAttempts = 0;
     await this.lbaRepo.save(account);
 
-    // Eagerly save CID + account name on user so wallet/profile shows linked info even before OTP
-    await this.userRepo.update(userId, {
-      dkCid: cleanCid,
-      dkAccountNumber: accountNumber,
-      dkAccountName: accountName,
-    });
 
-    // Decide whether an OTP is needed — SERVER-SIDE, never from a client flag.
-    // The bank OTP proves the caller controls the DK-registered phone. We can
-    // safely skip it only when the server already holds that proof: the user
-    // has a phone they verified earlier (telegramPhoneHash, set at onboarding
-    // OTP / phone-verification) AND it hashes to the same number DK Bank has on
-    // file for this CID. An attacker who verified their own phone and then tries
-    // a victim's CID won't match, so they get an OTP sent to the victim's phone
-    // — which they can't read. This closes the old request-body `skipOtp` hole.
-    const verifier = await this.userRepo.findOne({
-      where: { id: userId },
-      select: ["id", "telegramPhoneHash"],
-    });
-    const canSkipOtp =
-      !!verifier?.telegramPhoneHash &&
-      this.telegramVerification.hashPhone(bankPhone) ===
-        verifier.telegramPhoneHash;
-
-    if (canSkipOtp) {
-      account.isVerified = true;
-      account.verifiedAt = new Date();
-      account.isDefault = true;
-      await this.lbaRepo.save(account);
-      this.logger.log(
-        `[BankLink] OTP skipped — DK phone matches the user's already-verified ` +
-          `phone. Auto-verified for user ${userId}, CID=${cleanCid}`,
-      );
-      return {
-        accountName,
-        maskedPhone: this.maskPhone(bankPhone),
-        requiresOtp: false,
-      };
-    }
 
     // Generate and send OTP to the DK-registered phone
     const otp = randomInt(100000, 1000000).toString();
