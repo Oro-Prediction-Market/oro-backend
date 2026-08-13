@@ -449,29 +449,47 @@ describe("MarketsService.createGroup — grouped Yes/No candidate markets", () =
 
 describe("MarketsService.updateGroup — group-wide edits", () => {
   function makeUpdateService() {
+    const base = {
+      groupId: "g1",
+      groupTitle: "Who will win?",
+      status: "upcoming",
+      category: "political",
+      liquidityParam: 1000,
+      houseEdgePct: 10,
+    };
     const store: any[] = [
       {
+        ...base,
         id: "m1",
-        groupId: "g1",
-        groupTitle: "Who will win?",
         title: "Who will win? — Sonam",
         imageUrl: null,
         metadata: { candidate: "Sonam" },
       },
       {
+        ...base,
         id: "m2",
-        groupId: "g1",
-        groupTitle: "Who will win?",
         title: "Who will win? — Tenzin",
         imageUrl: null,
         metadata: { candidate: "Tenzin" },
       },
     ];
+    let nextId = 3;
     const mockMarketRepo = {
       find: jest.fn(({ where: { groupId } }: any) =>
         Promise.resolve(store.filter((m) => m.groupId === groupId)),
       ),
-      save: jest.fn((d: any) => Promise.resolve(d)),
+      create: jest.fn((d: any) => d),
+      save: jest.fn((d: any) => {
+        if (!d.id) {
+          d.id = `m${nextId++}`;
+          store.push(d);
+        }
+        return Promise.resolve(d);
+      }),
+      findOne: jest.fn(({ where: { id } }: any) =>
+        Promise.resolve(store.find((m) => m.id === id) ?? null),
+      ),
+      update: jest.fn(() => Promise.resolve({})),
     };
     const mockRedis = {
       getJson: jest.fn().mockResolvedValue(null),
@@ -480,7 +498,7 @@ describe("MarketsService.updateGroup — group-wide edits", () => {
     };
     const svc = new MarketsService(
       mockMarketRepo as any,
-      { create: jest.fn(), save: jest.fn() } as any,
+      { create: jest.fn((d: any) => d), save: jest.fn() } as any,
       null as any,
       null as any,
       null as any,
@@ -538,6 +556,27 @@ describe("MarketsService.updateGroup — group-wide edits", () => {
   it("throws when the group has no markets", async () => {
     const { svc } = makeUpdateService();
     await expect(svc.updateGroup("nope", {} as any)).rejects.toThrow();
+  });
+
+  it("adds a brand-new candidate (no id) as a fresh Yes/No sibling", async () => {
+    const { svc } = makeUpdateService();
+    const markets = await svc.updateGroup("g1", {
+      candidates: [{ name: "Karma" }],
+    } as any);
+    expect(markets).toHaveLength(3);
+    const added = markets.find((m) => m.metadata?.candidate === "Karma");
+    expect(added).toBeTruthy();
+    expect(added!.title).toBe("Who will win? — Karma");
+    expect(added!.groupId).toBe("g1");
+    expect(added!.outcomes.map((o: any) => o.label)).toEqual(["Yes", "No"]);
+  });
+
+  it("ignores blank new-candidate rows (no id and no name)", async () => {
+    const { svc } = makeUpdateService();
+    const markets = await svc.updateGroup("g1", {
+      candidates: [{ name: "   " }, {}],
+    } as any);
+    expect(markets).toHaveLength(2);
   });
 });
 

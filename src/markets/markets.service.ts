@@ -298,6 +298,47 @@ export class MarketsService implements OnModuleInit {
       await this.marketRepo.save(m);
     }
 
+    // ── add brand-new candidates (entries with no id) as fresh Yes/No siblings ──
+    const template = markets[0];
+    const newCandidates = (dto.candidates ?? []).filter(
+      (c) => !c.id && c.name?.trim(),
+    );
+    for (const nc of newCandidates) {
+      const name = nc.name!.trim();
+      const created = await this.create({
+        title: `${newGroupTitle} — ${name}`,
+        description: dto.description ?? template.description ?? undefined,
+        imageUrl: nc.imageUrl ?? undefined,
+        resolutionCriteria:
+          dto.resolutionCriteria ?? template.resolutionCriteria ?? undefined,
+        opensAt: dto.opensAt ?? template.opensAt?.toISOString(),
+        closesAt: dto.closesAt ?? template.closesAt?.toISOString(),
+        houseEdgePct: dto.houseEdgePct ?? Number(template.houseEdgePct),
+        liquidityParam: Number(template.liquidityParam),
+        category: template.category,
+        subcategory: template.subcategory ?? undefined,
+        settlementSource:
+          dto.settlementSource ?? template.settlementSource ?? undefined,
+        outcomes: [
+          { label: "Yes", imageUrl: null },
+          { label: "No", imageUrl: null },
+        ],
+        groupId,
+        groupTitle: newGroupTitle,
+        candidate: name,
+      });
+      // A new candidate defaults to UPCOMING; if the race is already live, open
+      // it too so it's immediately bettable alongside its siblings.
+      if (
+        template.status === MarketStatus.OPEN &&
+        created.status !== MarketStatus.OPEN
+      ) {
+        await this.marketRepo.update(created.id, {
+          status: MarketStatus.OPEN,
+        });
+      }
+    }
+
     await this.invalidateMarketCache();
     return this.findGroup(groupId);
   }

@@ -17,10 +17,14 @@ import { Type } from "class-transformer";
  * candidate is a separate Yes/No market sharing the group's groupId).
  */
 export class CandidateUpdateDto {
-  @ApiPropertyOptional({ description: "Candidate market id" })
+  @ApiPropertyOptional({
+    description:
+      "Candidate market id. Omit to ADD a new candidate to the group (name required then).",
+  })
+  @IsOptional()
   @IsString()
   @IsNotEmpty()
-  id: string;
+  id?: string;
 
   @ApiPropertyOptional({ description: "Candidate display name, e.g. 'Sonam'" })
   @IsOptional()
