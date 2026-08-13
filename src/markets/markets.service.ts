@@ -13,6 +13,7 @@ import { CreateMarketDto } from "./dto/create-market.dto";
 import { DEFAULT_HOUSE_EDGE_PCT } from "./fee.constants";
 import { CreateMarketGroupDto } from "./dto/create-market-group.dto";
 import { UpdateMarketDto } from "./dto/update-market.dto";
+import { UpdateMarketGroupDto } from "./dto/update-market-group.dto";
 import { OpenPositionDto } from "./dto/open-position.dto";
 import { SubmitDisputeDto } from "./dto/submit-dispute.dto";
 import { ReopenMarketDto } from "./dto/reopen-market.dto";
@@ -230,6 +231,75 @@ export class MarketsService implements OnModuleInit {
       markets.push(market);
     }
     return markets;
+  }
+
+  /** All sibling candidate markets in a group, oldest first. */
+  async findGroup(groupId: string): Promise<Market[]> {
+    const markets = await this.marketRepo.find({
+      where: { groupId },
+      order: { createdAt: "ASC" },
+    });
+    if (!markets.length) {
+      throw new NotFoundException(`No market group with id "${groupId}"`);
+    }
+    return markets;
+  }
+
+  /**
+   * Edit a whole grouped event at once. Shared fields fan out to every sibling;
+   * per-candidate name/image are applied individually. Renaming the umbrella
+   * title also rewrites each sibling's "{group} — {candidate}" title so the
+   * stored titles never drift from the displayed group title.
+   */
+  async updateGroup(
+    groupId: string,
+    dto: UpdateMarketGroupDto,
+  ): Promise<Market[]> {
+    const markets = await this.findGroup(groupId);
+    const newGroupTitle =
+      dto.title?.trim() || markets[0].groupTitle || markets[0].title;
+    const overrides = new Map(
+      (dto.candidates ?? []).map((c) => [c.id, c]),
+    );
+
+    for (const m of markets) {
+      // ── shared fields (applied to every candidate market) ──
+      if (dto.description !== undefined) m.description = dto.description;
+      if (dto.resolutionCriteria !== undefined)
+        m.resolutionCriteria = dto.resolutionCriteria;
+      if (dto.category !== undefined)
+        m.category = dto.category as MarketCategory;
+      if (dto.subcategory !== undefined)
+        m.subcategory = dto.subcategory || null;
+      if (dto.settlementSource !== undefined)
+        m.settlementSource = dto.settlementSource ?? null;
+      if (dto.opensAt) m.opensAt = new Date(dto.opensAt);
+      if (dto.closesAt) m.closesAt = new Date(dto.closesAt);
+      if (dto.houseEdgePct !== undefined) m.houseEdgePct = dto.houseEdgePct;
+      if (dto.liquidityParam !== undefined)
+        m.liquidityParam = dto.liquidityParam;
+
+      // ── per-candidate name + avatar image ──
+      const override = overrides.get(m.id);
+      const candidateName =
+        override?.name?.trim() ||
+        (m.metadata?.candidate as string | undefined) ||
+        m.title.split("—").pop()?.trim() ||
+        m.title;
+      if (override && "imageUrl" in override)
+        // entity column is nullable; the TS type omits null (pre-existing)
+        m.imageUrl = (override.imageUrl ?? null) as unknown as string;
+
+      // ── keep groupTitle, candidate metadata and title prefix in sync ──
+      m.groupTitle = newGroupTitle;
+      m.metadata = { ...(m.metadata ?? {}), candidate: candidateName };
+      m.title = `${newGroupTitle} — ${candidateName}`;
+
+      await this.marketRepo.save(m);
+    }
+
+    await this.invalidateMarketCache();
+    return this.findGroup(groupId);
   }
 
   async findAll(q?: string): Promise<Market[]> {

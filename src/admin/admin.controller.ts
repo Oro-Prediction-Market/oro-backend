@@ -36,6 +36,7 @@ import {
   ReopenMarketDto,
 } from "../markets/markets.service";
 import { CreateMarketGroupDto } from "../markets/dto/create-market-group.dto";
+import { UpdateMarketGroupDto } from "../markets/dto/update-market-group.dto";
 import { KeeperService } from "../markets/keeper.service";
 import { RevenueDistributionService } from "../markets/revenue-distribution.service";
 import { EplService } from "../epl/epl.service";
@@ -428,6 +429,48 @@ export class AdminController {
         candidates: dto.candidates.map((c) => c.name),
         closesAt: dto.closesAt,
         marketIds: markets.map((m) => m.id),
+      },
+      ipAddress: req.ip,
+    });
+    return markets;
+  }
+
+  @Get("markets/group/:groupId")
+  @ApiOperation({
+    summary: "Fetch all sibling candidate markets in a grouped event",
+  })
+  async getMarketGroup(@Param("groupId") groupId: string) {
+    return this.marketsService.findGroup(groupId);
+  }
+
+  @Patch("markets/group/:groupId")
+  @ApiOperation({
+    summary:
+      "Edit a grouped event at once: shared fields fan out to every candidate; per-candidate name/image applied individually",
+  })
+  async updateMarketGroup(
+    @Param("groupId") groupId: string,
+    @Body() dto: UpdateMarketGroupDto,
+    @Request() req: any,
+  ) {
+    const before = await this.marketsService.findGroup(groupId);
+    const markets = await this.marketsService.updateGroup(groupId, dto);
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action: AuditAction.MARKET_TRANSITION, // reuse closest action; no MARKET_UPDATE exists
+      entityType: "market-group",
+      entityId: groupId,
+      before: {
+        title: before[0]?.groupTitle,
+        candidates: before.map((m) => m.title),
+      },
+      after: {
+        title: markets[0]?.groupTitle,
+        candidates: markets.map((m) => m.title),
+      },
+      meta: {
+        fields: Object.keys(dto).filter((k) => (dto as any)[k] !== undefined),
       },
       ipAddress: req.ip,
     });

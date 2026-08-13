@@ -445,6 +445,102 @@ describe("MarketsService.createGroup — grouped Yes/No candidate markets", () =
   });
 });
 
+// ─── updateGroup: edit a whole grouped event at once ────────────────────────
+
+describe("MarketsService.updateGroup — group-wide edits", () => {
+  function makeUpdateService() {
+    const store: any[] = [
+      {
+        id: "m1",
+        groupId: "g1",
+        groupTitle: "Who will win?",
+        title: "Who will win? — Sonam",
+        imageUrl: null,
+        metadata: { candidate: "Sonam" },
+      },
+      {
+        id: "m2",
+        groupId: "g1",
+        groupTitle: "Who will win?",
+        title: "Who will win? — Tenzin",
+        imageUrl: null,
+        metadata: { candidate: "Tenzin" },
+      },
+    ];
+    const mockMarketRepo = {
+      find: jest.fn(({ where: { groupId } }: any) =>
+        Promise.resolve(store.filter((m) => m.groupId === groupId)),
+      ),
+      save: jest.fn((d: any) => Promise.resolve(d)),
+    };
+    const mockRedis = {
+      getJson: jest.fn().mockResolvedValue(null),
+      setJsonEx: jest.fn().mockResolvedValue(undefined),
+      del: jest.fn().mockResolvedValue(undefined),
+    };
+    const svc = new MarketsService(
+      mockMarketRepo as any,
+      { create: jest.fn(), save: jest.fn() } as any,
+      null as any,
+      null as any,
+      null as any,
+      new LMSRService(),
+      null as any,
+      mockRedis as any,
+      {} as any,
+      { postToChannel: jest.fn() } as any,
+    );
+    return { svc, store };
+  }
+
+  it("fans a shared field (houseEdgePct) out to every candidate", async () => {
+    const { svc } = makeUpdateService();
+    const markets = await svc.updateGroup("g1", { houseEdgePct: 8 } as any);
+    expect(markets.map((m) => m.houseEdgePct)).toEqual([8, 8]);
+  });
+
+  it("renaming the umbrella title rewrites every sibling's title prefix", async () => {
+    const { svc } = makeUpdateService();
+    const markets = await svc.updateGroup("g1", {
+      title: "Who becomes PM?",
+    } as any);
+    expect(markets.map((m) => m.groupTitle)).toEqual([
+      "Who becomes PM?",
+      "Who becomes PM?",
+    ]);
+    expect(markets.map((m) => m.title)).toEqual([
+      "Who becomes PM? — Sonam",
+      "Who becomes PM? — Tenzin",
+    ]);
+  });
+
+  it("applies a per-candidate image without touching siblings", async () => {
+    const { svc } = makeUpdateService();
+    const markets = await svc.updateGroup("g1", {
+      candidates: [{ id: "m2", imageUrl: "https://img/tenzin.png" }],
+    } as any);
+    expect(markets.find((m) => m.id === "m1")!.imageUrl).toBeNull();
+    expect(markets.find((m) => m.id === "m2")!.imageUrl).toBe(
+      "https://img/tenzin.png",
+    );
+  });
+
+  it("renaming a candidate updates its title suffix and metadata", async () => {
+    const { svc } = makeUpdateService();
+    const markets = await svc.updateGroup("g1", {
+      candidates: [{ id: "m1", name: "Sonam Wangchuk" }],
+    } as any);
+    const m1 = markets.find((m) => m.id === "m1")!;
+    expect(m1.title).toBe("Who will win? — Sonam Wangchuk");
+    expect(m1.metadata).toEqual({ candidate: "Sonam Wangchuk" });
+  });
+
+  it("throws when the group has no markets", async () => {
+    const { svc } = makeUpdateService();
+    await expect(svc.updateGroup("nope", {} as any)).rejects.toThrow();
+  });
+});
+
 // ─── create: category assignment ─────────────────────────────────────────────
 
 describe("MarketsService.create — category assignment", () => {
