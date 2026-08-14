@@ -157,6 +157,16 @@ export class AuthService {
     return !!url && !/\.svg(\?|$)/i.test(url);
   }
 
+  /**
+   * A temporary Telegram Bot API file link (`api.telegram.org/file/bot.../*.jpg`),
+   * which Telegram only guarantees for ~1 hour before it 404s. Every OTHER real
+   * photo (t.me / telegram.me CDN links, etc.) is long-lived and safe to keep;
+   * only these must be re-resolved each login or the avatar eventually breaks.
+   */
+  private isEphemeralPhoto(url?: string | null): boolean {
+    return !!url && /api\.telegram\.org\/file\/bot/i.test(url);
+  }
+
   // ── Login / Register via Telegram ─────────────────────────────────────────
   async loginWithTelegram(rawInitData: string, referralCode?: string) {
     const tgUser = this.validateTelegramInitData(rawInitData);
@@ -253,10 +263,19 @@ export class AuthService {
     // already-resolved real photo with a placeholder, and only hit the Bot API
     // when we don't already have a real photo stored.
     if (this.isRealPhoto(tgUser.photo_url)) {
+      // Best case: initData carried the real photo (usually the long-lived
+      // t.me/i/userpic CDN link). Always take it — it upgrades a user who was
+      // previously stuck on a temporary Bot API link.
       updateFields.photoUrl = tgUser.photo_url;
-    } else if (this.isRealPhoto(existingUser.photoUrl)) {
-      // Keep the real photo resolved on a previous login — no API call needed.
+    } else if (
+      this.isRealPhoto(existingUser.photoUrl) &&
+      !this.isEphemeralPhoto(existingUser.photoUrl)
+    ) {
+      // We already have a long-lived photo (t.me/telegram.me/etc) — keep it,
+      // no API call needed. Only the temporary Bot API link is refreshed below.
     } else {
+      // Either nothing stored, or a temporary Bot API link that will expire.
+      // Re-resolve every login so the avatar never rots to a dead link.
       const fetched = await this.telegramSimple
         .getUserProfilePhotoUrl(Number(providerId))
         .catch(() => null);

@@ -1106,3 +1106,83 @@ describe("AuthService.loginWithBhutanApp — userId anchoring", () => {
     );
   });
 });
+
+// ─── Avatar link refresh (Telegram getFile links expire ~1h) ──────────────────
+
+describe("AuthService.loginWithTelegram — avatar link refresh", () => {
+  let service: AuthService;
+  let userRepo: ReturnType<typeof makeUserRepo>;
+  let authMethodRepo: ReturnType<typeof makeAuthMethodRepo>;
+  let telegramSimple: ReturnType<typeof makeTelegramSimple>;
+
+  beforeEach(() => {
+    process.env.TELEGRAM_BOT_TOKEN = BOT_TOKEN;
+    process.env.NODE_ENV = "test";
+    userRepo = makeUserRepo();
+    authMethodRepo = makeAuthMethodRepo();
+    telegramSimple = makeTelegramSimple();
+    service = new AuthService(
+      userRepo as any,
+      authMethodRepo as any,
+      makeTransactionRepo() as any,
+      makeMarketRepo() as any,
+      makePositionRepo() as any,
+      makeJwtService(),
+      makeDkGateway() as any,
+      makeTelegramVerification() as any,
+      telegramSimple as any,
+      makeAuditService() as any,
+      makeAuditLogRepo() as any,
+      makeRedis() as any,
+      { sendSms: jest.fn().mockResolvedValue(true) } as any,
+    );
+  });
+
+  afterEach(() => {
+    delete process.env.TELEGRAM_BOT_TOKEN;
+  });
+
+  const loginWith = (photoUrl: string) => {
+    const existingUser = {
+      id: "user-1",
+      telegramId: "99999",
+      isAdmin: false,
+      photoUrl,
+    };
+    authMethodRepo.findOne.mockResolvedValue({
+      user: existingUser,
+      userId: "user-1",
+      id: "m-1",
+    });
+    userRepo.findOneBy.mockResolvedValue(existingUser);
+    return service.loginWithTelegram(buildValidInitData({ id: 99999 }));
+  };
+
+  it("refreshes a temporary Bot-API avatar link on login", async () => {
+    telegramSimple.getUserProfilePhotoUrl.mockResolvedValue(
+      "https://api.telegram.org/file/botX/photos/fresh.jpg",
+    );
+    await loginWith("https://api.telegram.org/file/botX/photos/old.jpg");
+    expect(telegramSimple.getUserProfilePhotoUrl).toHaveBeenCalled();
+    expect(userRepo.update).toHaveBeenCalledWith(
+      "user-1",
+      expect.objectContaining({
+        photoUrl: "https://api.telegram.org/file/botX/photos/fresh.jpg",
+      }),
+    );
+  });
+
+  it("keeps a long-lived t.me/i/userpic avatar without an API call", async () => {
+    await loginWith("https://t.me/i/userpic/320/abcDEF.jpg");
+    expect(telegramSimple.getUserProfilePhotoUrl).not.toHaveBeenCalled();
+    const updateArg = userRepo.update.mock.calls[0]?.[1] ?? {};
+    expect(updateArg).not.toHaveProperty("photoUrl");
+  });
+
+  it("keeps a telegram.me CDN avatar (does not treat it as temporary)", async () => {
+    await loginWith("https://telegram.me/i/userpic/320/xyz.jpg");
+    expect(telegramSimple.getUserProfilePhotoUrl).not.toHaveBeenCalled();
+    const updateArg = userRepo.update.mock.calls[0]?.[1] ?? {};
+    expect(updateArg).not.toHaveProperty("photoUrl");
+  });
+});
