@@ -378,11 +378,11 @@ export class KeeperService {
   }
 
   // ── Cron: auto-create the EPL stat markets once the season is underway ──────
-  // Runs daily. Waits until the current PL season has played a few gameweeks
-  // (so the leaderboard is a meaningful field, not 3 players), then creates the
-  // four season stat markets from the live board. Fires ONCE per season (Redis
-  // flag keyed by season year) so it never spams or re-creates a market an admin
-  // deliberately cancelled. Notifies the admin on Telegram when it does.
+  // Runs daily. Fires as soon as the current PL season has played its first
+  // gameweek (tunable via EPL_AUTO_MARKET_MIN_GW), then creates the four season
+  // stat markets from the live board. Fires ONCE per season (Redis flag keyed by
+  // season year) so it never spams or re-creates a market an admin deliberately
+  // cancelled. Notifies the admin on Telegram when it does.
   @Cron("0 7 * * *")
   async handleEplSeasonAutoMarkets() {
     if (!this.isActive) return;
@@ -405,13 +405,17 @@ export class KeeperService {
     const flagKey = `oro:epl:auto-markets:${seasonKey}`;
     if (await this.redis.getJson(flagKey)) return; // already handled this season
 
-    // Maturity gate: don't bake a gameweek-1 field into a season-long market.
-    const minGw = Number(this.config.get<string>("EPL_AUTO_MARKET_MIN_GW") ?? 3);
+    // Maturity gate: create the season-long stat markets as soon as the first
+    // gameweek has been played. Override with EPL_AUTO_MARKET_MIN_GW to wait for
+    // a more settled leaderboard before opening them.
+    const minGw = Number(this.config.get<string>("EPL_AUTO_MARKET_MIN_GW") ?? 1);
     if (info.maxPlayed < minGw) return;
 
+    const allStats = Object.keys(EPL_STAT_MARKET_META) as EplStatKey[];
     const stats = await this.epl.getStats();
     const created: string[] = [];
-    for (const stat of Object.keys(EPL_STAT_MARKET_META) as EplStatKey[]) {
+    let covered = 0; // stat markets that now exist (already there or created)
+    for (const stat of allStats) {
       const meta = EPL_STAT_MARKET_META[stat];
       // Skip if an active market for this stat already exists.
       const existing = await this.marketRepo.findOne({
@@ -425,7 +429,10 @@ export class KeeperService {
           ]),
         },
       });
-      if (existing) continue;
+      if (existing) {
+        covered++;
+        continue;
+      }
 
       const players = stats[meta.board];
       if (players.length < 2) continue; // board not populated enough yet
@@ -433,18 +440,24 @@ export class KeeperService {
         const dto = buildEplStatMarketDto(stat, players);
         const market = await this.marketsService.create(dto);
         created.push(meta.title);
+        covered++;
         this.addLog("success", `Auto-created EPL market: ${meta.title} (${market.id}).`);
       } catch (e) {
         this.logger.error(`[Keeper] auto-create ${meta.subcategory} failed: ${(e as Error).message}`);
       }
     }
 
-    // Mark this season handled so we never re-create (respects admin cancels).
-    await this.redis.setJsonEx(flagKey, 400 * 24 * 3600, {
-      done: true,
-      at: new Date().toISOString(),
-      created,
-    });
+    // Only lock the season once EVERY stat market exists. Firing at gameweek 1
+    // can catch a board too thin to build (e.g. a goalless opener), so if any
+    // are still missing we leave the flag unset and let a later daily run fill
+    // them in — the existing-market check above keeps that from duplicating.
+    if (covered >= allStats.length) {
+      await this.redis.setJsonEx(flagKey, 400 * 24 * 3600, {
+        done: true,
+        at: new Date().toISOString(),
+        created,
+      });
+    }
 
     if (created.length) {
       const adminId = Number(this.config.get<string>("ADMIN_TELEGRAM_ID"));

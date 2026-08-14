@@ -982,7 +982,7 @@ describe("KeeperService — EPL auto stat markets", () => {
     expect(marketsService.create).not.toHaveBeenCalled();
   });
 
-  it("waits until the maturity gate (min gameweeks) is met", async () => {
+  it("creates at gameweek 1 by default", async () => {
     const marketsService = marketsWith();
     const redis = redisWith(null);
     const { svc } = makeService({
@@ -994,8 +994,48 @@ describe("KeeperService — EPL auto stat markets", () => {
       }),
     });
     await svc.handleEplSeasonAutoMarkets();
+    expect(marketsService.create).toHaveBeenCalled();
+  });
+
+  it("respects a higher EPL_AUTO_MARKET_MIN_GW override before creating", async () => {
+    const marketsService = marketsWith();
+    const redis = redisWith(null);
+    const { svc } = makeService({
+      marketsService,
+      redis,
+      marketRepo: repoWith(null),
+      config: makeConfig({ EPL_AUTO_MARKET_MIN_GW: "3" }),
+      epl: liveEpl({
+        getSeasonInfo: jest.fn().mockResolvedValue({ started: true, seasonStart: "2026-08-15", maxPlayed: 1 }),
+      }),
+    });
+    await svc.handleEplSeasonAutoMarkets();
     expect(marketsService.create).not.toHaveBeenCalled();
     // did NOT set the flag → will retry on a later day
+    expect(redis.setJsonEx).not.toHaveBeenCalled();
+  });
+
+  it("does not lock the season when a board is too thin to create every market", async () => {
+    const marketsService = marketsWith();
+    const redis = redisWith(null);
+    const { svc } = makeService({
+      marketsService,
+      redis,
+      marketRepo: repoWith(null),
+      epl: liveEpl({
+        // red-cards board empty (a common early-season case) → only 3 create
+        getStats: jest.fn().mockResolvedValue({
+          updatedAt: "x",
+          goals: board(),
+          assists: board(),
+          yellow: board(),
+          red: [],
+        }),
+      }),
+    });
+    await svc.handleEplSeasonAutoMarkets();
+    expect(marketsService.create).toHaveBeenCalledTimes(3);
+    // flag left UNSET so a later run creates the missing red-cards market
     expect(redis.setJsonEx).not.toHaveBeenCalled();
   });
 
