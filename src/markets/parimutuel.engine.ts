@@ -1783,9 +1783,12 @@ Good luck! 🍀
       const tierNow = user.reputationTier ?? "rookie";
       const tierBefore = tiersBefore[userId] ?? "rookie";
       const totalPredictions = user.totalPredictions ?? 0;
-      const accuracy =
-        totalPredictions > 0 && user.reputationScore != null
-          ? `${Math.round(user.reputationScore * 100)}%`
+      // This is the literal resolved record — unlike reputationScore it is not
+      // confidence-smoothed, so it must always agree with the count a user sees.
+      const correctPredictions = user.correctPredictions ?? 0;
+      const record =
+        totalPredictions > 0
+          ? `${correctPredictions}/${totalPredictions} correct`
           : null;
 
       const tierOrder = ["rookie", "sharpshooter", "hot_hand", "legend"];
@@ -1815,8 +1818,7 @@ Good luck! 🍀
           `🎯 Your pick: <b>${winner.label}</b>\n` +
           `💰 Payout: <b>Nu ${totalPayout.toLocaleString()}</b> (${profitLabel} Nu ${Math.abs(profitRaw).toLocaleString()})\n`;
 
-        if (accuracy)
-          msg += `⭐ Insight: <b>${accuracy}</b> over ${totalPredictions} ${totalPredictions === 1 ? "prediction" : "predictions"}\n`;
+        if (record) msg += `⭐ Record: <b>${record}</b>\n`;
         if (tierUpgraded)
           msg += `\n🏆 <b>Tier upgrade! You are now ${tierNow.charAt(0).toUpperCase() + tierNow.slice(1)}.</b>`;
 
@@ -1848,8 +1850,7 @@ Good luck! 🍀
           `📊 ${market.title}\n` +
           `🎯 Your pick: ${outcome?.label ?? "unknown"} · Winner: <b>${winner.label}</b>\n`;
 
-        if (accuracy)
-          msg += `⭐ Insight: <b>${accuracy}</b> over ${totalPredictions} ${totalPredictions === 1 ? "prediction" : "predictions"}\n`;
+        if (record) msg += `⭐ Record: <b>${record}</b>\n`;
 
         notifyUser(chatId, externalUserId, msg, "Market settled");
       }

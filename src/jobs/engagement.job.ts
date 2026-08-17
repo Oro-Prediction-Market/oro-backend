@@ -10,7 +10,6 @@ import {
   Between,
 } from "typeorm";
 import { User } from "../entities/user.entity";
-import { Market, MarketStatus } from "../entities/market.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { Challenge, ChallengeStatus } from "../entities/challenge.entity";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
@@ -22,7 +21,6 @@ export class EngagementJob {
 
   constructor(
     @InjectRepository(User) private userRepo: Repository<User>,
-    @InjectRepository(Market) private marketRepo: Repository<Market>,
     @InjectRepository(Challenge) private challengeRepo: Repository<Challenge>,
     @InjectDataSource() private dataSource: DataSource,
     private readonly telegram: TelegramSimpleService,
@@ -78,14 +76,6 @@ export class EngagementJob {
 
     this.logger.log(`[StreakAtRisk] Notifying ${users.length} users`);
 
-    const topMarket = await this.marketRepo
-      .createQueryBuilder("m")
-      .where("m.status = :s", { s: MarketStatus.OPEN })
-      .andWhere("m.totalPool > 0")
-      .orderBy("m.totalPool", "DESC")
-      .limit(1)
-      .getOne();
-
     for (const user of users) {
       try {
         const chatId = Number(user.telegramChatId);
@@ -94,11 +84,9 @@ export class EngagementJob {
         const name = user.firstName?.trim() || "Predictor";
         const streak = user.betStreakCount;
 
-        const msg = topMarket
-          ? `${name}, your <b>${streak}-day streak</b> breaks at midnight. ` +
-            `Open Oro and predict on <b>${topMarket.title}</b> to save it.`
-          : `${name}, your <b>${streak}-day streak</b> breaks at midnight. ` +
-            `One prediction keeps it alive — open Oro now.`;
+        const msg =
+          `${name}, your <b>${streak}-day streak</b> breaks at midnight. ` +
+          `One prediction keeps it alive — open Oro when you are ready.`;
 
         await this.telegram.sendMessage(chatId, msg);
       } catch (err: any) {
@@ -144,21 +132,13 @@ export class EngagementJob {
       `[ReEngagement] ${daysMissed}d lapsed — messaging ${users.length} users`,
     );
 
-    const topMarket = await this.marketRepo
-      .createQueryBuilder("m")
-      .where("m.status = :s", { s: MarketStatus.OPEN })
-      .andWhere("m.totalPool > 0")
-      .orderBy("m.totalPool", "DESC")
-      .limit(1)
-      .getOne();
-
     for (const user of users) {
       try {
         const chatId = Number(user.telegramChatId);
         if (!chatId) continue;
 
         const name = user.firstName ?? "Predictor";
-        const msg = this.buildMessage(name, daysMissed, user.reputationTier ?? null, topMarket);
+        const msg = this.buildMessage(name, daysMissed, user.reputationTier ?? null);
 
         await this.telegram.sendMessage(chatId, msg);
       } catch (err: any) {
@@ -173,7 +153,6 @@ export class EngagementJob {
     name: string,
     daysMissed: number,
     tier: string | null,
-    topMarket: Market | null,
   ): string {
     const tierLabel: Record<string, string> = {
       legend: "Legend",
@@ -182,9 +161,7 @@ export class EngagementJob {
       rookie: "Rookie",
     };
     const tierName = tierLabel[tier ?? ""] ?? null;
-    const marketLine = topMarket
-      ? `\n\nRight now: <b>${topMarket.title}</b> is live. Open Oro and call it.`
-      : "\n\nOpen Oro — there are live markets waiting for your call.";
+    const marketLine = "\n\nOpen Oro whenever you want to make your next call.";
 
     if (daysMissed === 14) {
       const lines = [

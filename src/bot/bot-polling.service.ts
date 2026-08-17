@@ -502,25 +502,15 @@ export class BotPollingService
           : user.reputationTier === "sharpshooter"
             ? "Sharpshooter"
             : "Rookie";
-    const score =
-      user.reputationScore != null
-        ? `${Math.round(user.reputationScore * 100)}%`
-        : "—";
-    const winRate =
-      (user.totalPredictions ?? 0) > 0
-        ? Math.round(
-            ((user.correctPredictions ?? 0) / (user.totalPredictions ?? 1)) *
-              100,
-          )
-        : 0;
+    // Show the literal resolved record — not the confidence-smoothed
+    // reputationScore, which prints a % that can't be reconciled with the count.
+    const record = `${user.correctPredictions ?? 0}/${user.totalPredictions ?? 0} correct`;
 
     await this.telegramSimple.sendMessage(
       chatId,
       `🎯 <b>Your group rank: #${rank}</b>\n\n` +
         `Tier: ${tierLabel}\n` +
-        `Accuracy: ${score}\n` +
-        `Win rate: ${winRate}%\n` +
-        `Predictions: ${user.totalPredictions}`,
+        `Record: ${record}`,
     );
   }
 
@@ -607,7 +597,12 @@ export class BotPollingService
     if (telegramUserId) {
       const user = await this.userRepo.findOne({
         where: { telegramId: String(telegramUserId) },
-        select: ["reputationTier", "totalPredictions", "reputationScore"],
+        select: [
+          "reputationTier",
+          "totalPredictions",
+          "correctPredictions",
+          "reputationScore",
+        ],
       });
       if (!user || (user.totalPredictions ?? 0) === 0) {
         reputationLine =
@@ -621,11 +616,10 @@ export class BotPollingService
               : user.reputationTier === "sharpshooter"
                 ? "Sharpshooter"
                 : "Rookie";
-        const pct =
-          user.reputationScore != null
-            ? ` · ${Math.round(user.reputationScore * 100)}% accuracy`
-            : "";
-        reputationLine = `\n\n⭐ Your tier: <b>${tierLabel}</b>${pct} (${user.totalPredictions} predictions)`;
+        // Literal record, not the smoothed reputationScore % — a percentage next
+        // to a count invites a check the smoothed number fails.
+        const record = ` · ${user.correctPredictions ?? 0}/${user.totalPredictions} correct`;
+        reputationLine = `\n\n⭐ Your tier: <b>${tierLabel}</b>${record}`;
       }
     }
 
