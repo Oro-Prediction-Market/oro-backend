@@ -155,46 +155,26 @@ export class EplService {
     return result;
   }
 
-  /** football-data.org standings TOTAL table. In the summer gap the "current"
-   *  season exists but no games are played yet, so fall back to the just-
-   *  finished season (or honour an explicit EPL_SEASON override). */
+  /** football-data.org standings TOTAL table for the CURRENT season (or an
+   *  explicit EPL_SEASON override). No summer-gap fallback: before kickoff this
+   *  is the new campaign's table with every club on zero, and it fills in as
+   *  games are played — we never carry last season's numbers over. */
   private async fetchStandingsTable(): Promise<any[]> {
     const override = this.config.get<string>("EPL_SEASON");
-    const q = (s?: string | number) =>
-      `competitions/PL/standings${s ? `?season=${s}` : ""}`;
-    const totalTable = (d: any): any[] =>
-      d?.standings?.find((x: any) => x.type === "TOTAL")?.table ?? [];
-
-    let data = await this.footballData<any>(q(override));
+    const path = `competitions/PL/standings${override ? `?season=${override}` : ""}`;
+    const data = await this.footballData<any>(path);
     if (!data) return [];
-    let table = totalTable(data);
-    const started = table.some((r) => num(r.playedGames) > 0);
-    if (!started && !override) {
-      const startYear = parseInt(String(data.season?.startDate ?? "").slice(0, 4), 10);
-      if (Number.isFinite(startYear)) {
-        const prev = await this.footballData<any>(q(startYear - 1));
-        if (prev) table = totalTable(prev);
-      }
-    }
-    return table;
+    return data?.standings?.find((x: any) => x.type === "TOTAL")?.table ?? [];
   }
 
-  /** football-data.org top-scorers (goal-ranked, carries assists too). Same
-   *  summer-gap fallback as standings. */
+  /** football-data.org top-scorers (goal-ranked, carries assists too) for the
+   *  CURRENT season only — no summer-gap fallback, so the board is empty until
+   *  the season is underway. */
   private async fetchScorers(): Promise<any[]> {
     const override = this.config.get<string>("EPL_SEASON");
-    const q = (s?: string | number) =>
-      `competitions/PL/scorers?limit=100${s ? `&season=${s}` : ""}`;
-
-    let data = await this.footballData<any>(q(override));
-    if (!data) return [];
-    if ((data.scorers?.length ?? 0) === 0 && !override) {
-      const startYear = parseInt(String(data.season?.startDate ?? "").slice(0, 4), 10);
-      if (Number.isFinite(startYear)) {
-        data = (await this.footballData<any>(q(startYear - 1))) ?? data;
-      }
-    }
-    return data.scorers ?? [];
+    const path = `competitions/PL/scorers?limit=100${override ? `&season=${override}` : ""}`;
+    const data = await this.footballData<any>(path);
+    return data?.scorers ?? [];
   }
 
   /** Status of the CURRENT Premier League season (no fallback). `started` is
@@ -281,6 +261,19 @@ export class EplService {
     const cacheKey = "oro:epl:stats";
     const cached = await this.redis.getJson<EplStats>(cacheKey);
     if (cached) return cached;
+
+    // Summer gap: the season hasn't kicked off, so there are no current-season
+    // stats. Show nothing rather than carrying last season's boards over. (Not
+    // cached — flips to real data on the first call once the season is live.)
+    if (!(await this.seasonHasStarted())) {
+      return {
+        updatedAt: new Date().toISOString(),
+        goals: [],
+        assists: [],
+        yellow: [],
+        red: [],
+      };
+    }
 
     // Goals & assists → football-data.org (official). The /scorers list is
     // goal-ranked but carries each scorer's assists, so the assists board is
