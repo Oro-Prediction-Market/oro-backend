@@ -5,7 +5,16 @@
 #   docker build -t harbor.oro.fun/oro/backend:0.1.0 .
 
 # ── deps + build with Bun ───────────────────────────────────────────────────
-FROM oven/bun:1.3-alpine AS builder
+# Pinned, not floating.
+#
+# `oven/bun:1.3-alpine` moved to bun 1.3.14, which fails to extract typeorm's
+# tarball — "error: Fail extracting tarball for typeorm" — killing both local
+# and CI builds with no change on our side. Reproduced in a clean container on
+# 1.3.14 and confirmed working on 1.2.
+#
+# Before bumping this, run: bun install against this package.json in a clean
+# container and check typeorm actually lands in node_modules.
+FROM oven/bun:1.2-alpine AS builder
 WORKDIR /app
 RUN apk add --no-cache python3 make g++
 

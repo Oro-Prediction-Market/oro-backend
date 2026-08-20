@@ -41,6 +41,26 @@ services:
       - oro_redis_data:/data
     command: redis-server --appendonly yes
 
+  minio:
+    image: minio/minio:latest
+    container_name: oro_minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    ports:
+      - "19000:9000"   # API — matches MINIO_ENDPOINT in .env.example
+      - "19001:9001"   # Web console
+    volumes:
+      - oro_minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   oro_postgres_data:
   oro_redis_data:
+  oro_minio_data:
