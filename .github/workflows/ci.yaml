@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # Segregation guard for the USDT rail.
+  #
+  # Balances in Oro are derived — SUM(amount) over `transactions`, with no
+  # balance column. An unfiltered sum folds the USDT book into the BTN book,
+  # so a crypto deposit becomes spendable ngultrum and is withdrawable through
+  # DK Bank. That is a mint-money bug and it is invisible until the first USDT
+  # row exists, which means no runtime test catches it before it is too late.
+  #
+  # EXPECTED RED until Stage B (C4) lands: 48 known offenders. Once green it
+  # must stay green — a new unscoped ledger sum fails the build.
+  # See docs/usdt-oro/STAGE-B-LEDGER-SEGREGATION.md.
+  ledger-currency-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Every SUM over the ledger must be currency-scoped
+        run: npx jest ledger-currency-guard --ci
+
