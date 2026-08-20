@@ -89,6 +89,11 @@ function makeService({
     null as any, // outcomeRepo
     null as any, // disputeRepo
     null as any, // userRepo
+    // marketBookRepo / outcomeBookRepo — the market payload now carries its
+    // currency books and each outcome's pool per currency, so a client can
+    // tell a USDT market from a BTN-only one and quote the right odds.
+    { find: jest.fn().mockResolvedValue([]) } as any,
+    { find: jest.fn().mockResolvedValue([]) } as any,
     null as any, // engine
     new LMSRService(),
     null as any, // dataSource
@@ -317,13 +322,14 @@ describe("MarketsService channel auto-posts", () => {
       mockOutcomeRepo as any,
       null as any, // disputeRepo
       null as any, // userRepo
+      { find: jest.fn().mockResolvedValue([]) } as any,
+      { find: jest.fn().mockResolvedValue([]) } as any /* outcomeBookRepo */, // marketBookRepo
       null as any, // engine
       new LMSRService(),
       null as any, // dataSource
       mockRedis as any,
       mockReputationService as any,
-      mockTelegram as any,
-    );
+      mockTelegram as any);
     return { svc, mockTelegram };
   }
 
@@ -382,13 +388,14 @@ describe("MarketsService.createGroup — grouped Yes/No candidate markets", () =
       mockOutcomeRepo as any,
       null as any, // disputeRepo
       null as any, // userRepo
+      { find: jest.fn().mockResolvedValue([]) } as any,
+      { find: jest.fn().mockResolvedValue([]) } as any /* outcomeBookRepo */, // marketBookRepo
       null as any, // engine
       new LMSRService(),
       null as any, // dataSource
       mockRedis as any,
       mockReputationService as any,
-      { postToChannel: jest.fn().mockResolvedValue(undefined) } as any,
-    );
+      { postToChannel: jest.fn().mockResolvedValue(undefined) } as any);
     return { svc, savedMarkets };
   }
 
@@ -499,15 +506,16 @@ describe("MarketsService.updateGroup — group-wide edits", () => {
     const svc = new MarketsService(
       mockMarketRepo as any,
       { create: jest.fn((d: any) => d), save: jest.fn() } as any,
-      null as any,
-      null as any,
-      null as any,
+      null as any, // disputeRepo
+      null as any, // userRepo
+      { find: jest.fn().mockResolvedValue([]) } as any,
+      { find: jest.fn().mockResolvedValue([]) } as any /* outcomeBookRepo */, // marketBookRepo
+      null as any, // engine
       new LMSRService(),
       null as any,
       mockRedis as any,
       {} as any,
-      { postToChannel: jest.fn() } as any,
-    );
+      { postToChannel: jest.fn() } as any);
     return { svc, store };
   }
 
@@ -601,6 +609,8 @@ describe("MarketsService.create — category assignment", () => {
       { create: jest.fn((d: any) => d), save: jest.fn() } as any,
       null as any,
       null as any,
+      { find: jest.fn().mockResolvedValue([]) } as any /* marketBookRepo */,
+      { find: jest.fn().mockResolvedValue([]) } as any /* outcomeBookRepo */,
       null as any,
       new LMSRService(),
       null as any,
@@ -615,8 +625,7 @@ describe("MarketsService.create — category assignment", () => {
         }),
         computeReputationWeightedShares: jest.fn().mockResolvedValue({}),
       } as any,
-      { postToChannel: jest.fn().mockResolvedValue(undefined) } as any,
-    );
+      { postToChannel: jest.fn().mockResolvedValue(undefined) } as any);
     return { svc, mockMarketRepo };
   }
 

@@ -87,6 +87,10 @@ function makeHarness(opts: { existingAccount?: any; cidConflict?: any } = {}) {
     redis,
     smsService,
     telegramSimple,
+    // The service gained a seventh dependency and this call was never
+    // updated. It compiled nowhere: `npm run build` exits 2, so the Docker
+    // image could not be built at all.
+    { requestVerification: jest.fn() } as any,
   );
 
   return {

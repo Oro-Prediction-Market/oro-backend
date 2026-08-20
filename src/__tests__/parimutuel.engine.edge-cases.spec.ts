@@ -3,6 +3,37 @@ import { TransactionType } from "../entities/transaction.entity";
 import { PositionStatus } from "../entities/position.entity";
 import { MarketStatus } from "../entities/market.entity";
 
+/**
+ * Settlement now runs once per currency book, so `em.find` is asked for the
+ * market's MarketBook rows. These mocks answer `find` with whatever the test
+ * set up for positions, which would hand settlement a list of non-books.
+ *
+ * The book has to mirror the test's market — pool and edge drive every number
+ * settlement produces — so it is built from the same values rather than being
+ * a generic stub.
+ */
+function withMarketBooks(find: jest.Mock, market: any) {
+  const read = () => (typeof market === "function" ? market() : market);
+  return jest.fn().mockImplementation((entity: any, ...rest: any[]) => {
+    if (entity?.name === "MarketBook") {
+      const m = read();
+      return Promise.resolve([
+        {
+          id: "book-btn",
+          marketId: m?.id ?? "m1",
+          currency: "BTN",
+          totalPool: m?.totalPool ?? 0,
+          houseEdgePct: m?.houseEdgePct ?? 10,
+          minStake: 50,
+          isEnabled: true,
+        },
+      ]);
+    }
+    if (entity?.name === "OutcomeBook") return Promise.resolve([]);
+    return find(entity, ...rest);
+  });
+}
+
 // ─── Mock factories ───────────────────────────────────────────────────────────
 
 function makeEm(positions: any[]) {
@@ -32,9 +63,14 @@ function makeEm(positions: any[]) {
         return Promise.resolve({});
       }),
       getRawOne: jest.fn().mockResolvedValue({ balance: "100" }),
+      // Balances are grouped by (user, currency) now: a payout or refund row
+      // must carry the balance of the book it is written in, not of whatever
+      // currency the account happens to be native to.
       getRawMany: jest.fn().mockResolvedValue(
         [...new Set(positions.map((p) => p.userId))].map((userId) => ({
           userId,
+          currency:
+            positions.find((p) => p.userId === userId)?.currency ?? "BTN",
           balance: "100",
         })),
       ),
@@ -44,6 +80,11 @@ function makeEm(positions: any[]) {
 
   return {
     find: jest.fn().mockImplementation((Entity: any, opts: any) => {
+      // Settlement resolves the market's currency books first. Without this
+      // branch the positions array below is returned instead, and the market
+      // settles once per position.
+      if (Entity?.name === "MarketBook") return Promise.resolve([]);
+      if (Entity?.name === "OutcomeBook") return Promise.resolve([]);
       if (Entity?.name === "User") {
         const ids = opts?.where?.id?._value ?? opts?.where?.id ?? [];
         const userIds = Array.isArray(ids) ? ids : [ids];
@@ -167,7 +208,7 @@ describe("ParimutuelEngine — thin-pool guard (settleMarket)", () => {
     const em = makeEm(positions);
     const { engine } = makeEngine(em);
 
-    const settlement = await (engine as any).settleMarket(mkMarket(), YES, 0);
+    const [settlement] = await (engine as any).settleMarket(mkMarket(), YES, 0);
 
     const refundTxs = em._saved.filter(([, d]: any) => d?.type === TransactionType.REFUND);
     expect(refundTxs).toHaveLength(2);
@@ -186,7 +227,7 @@ describe("ParimutuelEngine — thin-pool guard (settleMarket)", () => {
     const em = makeEm(positions);
     const { engine } = makeEngine(em);
 
-    const settlement = await (engine as any).settleMarket(mkMarket(), YES, 0);
+    const [settlement] = await (engine as any).settleMarket(mkMarket(), YES, 0);
 
     const refundTxs = em._saved.filter(([, d]: any) => d?.type === TransactionType.REFUND);
     expect(refundTxs).toHaveLength(2);
@@ -207,7 +248,7 @@ describe("ParimutuelEngine — thin-pool guard (settleMarket)", () => {
     const em = makeEm(positions);
     const { engine } = makeEngine(em);
 
-    const settlement = await (engine as any).settleMarket(mkMarket(100), YES, 0);
+    const [settlement] = await (engine as any).settleMarket(mkMarket(100), YES, 0);
 
     const refundTxs = em._saved.filter(([, d]: any) => d?.type === TransactionType.REFUND);
     expect(refundTxs).toHaveLength(1);
@@ -218,7 +259,7 @@ describe("ParimutuelEngine — thin-pool guard (settleMarket)", () => {
     const em = makeEm([]);
     const { engine, telegramSimple } = makeEngine(em);
 
-    const settlement = await (engine as any).settleMarket(mkMarket(0), YES, 0);
+    const [settlement] = await (engine as any).settleMarket(mkMarket(0), YES, 0);
 
     // No DMs sent — nobody to notify
     expect(telegramSimple.sendRefundNotification).not.toHaveBeenCalled();
@@ -254,7 +295,7 @@ describe("ParimutuelEngine — thin-pool guard (settleMarket)", () => {
     const em = makeEm(positions);
     const { engine } = makeEngine(em);
 
-    const settlement = await (engine as any).settleMarket(mkMarket(100), YES, 0);
+    const [settlement] = await (engine as any).settleMarket(mkMarket(100), YES, 0);
 
     expect(settlement.cancelReason).toBe("thin_pool");
 
@@ -268,7 +309,7 @@ describe("ParimutuelEngine — thin-pool guard (settleMarket)", () => {
     const em = makeEm(positions);
     const { engine } = makeEngine(em, 3); // requires 3 unique bettors
 
-    const settlement = await (engine as any).settleMarket(mkMarket(200), YES, 0);
+    const [settlement] = await (engine as any).settleMarket(mkMarket(200), YES, 0);
 
     expect(settlement.cancelReason).toBe("thin_pool");
     const refundTxs = em._saved.filter(([, d]: any) => d?.type === TransactionType.REFUND);
@@ -281,7 +322,7 @@ describe("ParimutuelEngine — thin-pool guard (settleMarket)", () => {
     const { engine, telegramSimple } = makeEngine(em);
     const market = { ...mkMarket(100), title: "TER 15m BTC/USD", externalSource: "ter" };
 
-    const settlement = await (engine as any).settleMarket(market, YES, 0);
+    const [settlement] = await (engine as any).settleMarket(market, YES, 0);
 
     expect(settlement.cancelReason).toBe("thin_pool");
     expect(settlement.totalPaidOut).toBe(0);
@@ -307,7 +348,7 @@ describe("ParimutuelEngine — thin-pool guard (settleMarket)", () => {
     const market = { ...mkMarket(1000), houseEdgePct: "8" };
     const winner = { ...YES, totalBetAmount: "900" };
 
-    const settlement = await (engine as any).settleMarket(market, winner, 0);
+    const [settlement] = await (engine as any).settleMarket(market, winner, 0);
 
     expect(settlement.cancelReason).toBe("payout_floor_underfunded");
     expect(settlement.houseAmount).toBe(0);
@@ -346,7 +387,7 @@ describe("ParimutuelEngine — healthy 50/50 pool (guard regression)", () => {
 
     // totalBetAmount on winner outcome must reflect the actual winning-side pool
     const winner50 = { ...YES, totalBetAmount: "100" };
-    const settlement = await (engine as any).settleMarket(mkMarket(200), winner50, 0);
+    const [settlement] = await (engine as any).settleMarket(mkMarket(200), winner50, 0);
 
     // Guard did NOT fire
     expect(settlement.cancelReason).toBeUndefined();
@@ -399,7 +440,7 @@ describe("ParimutuelEngine — payout-floor funding guard (settleMarket)", () =>
       ],
     };
     const winner = { id: "o-yes", label: "YES", totalBetAmount: "950" };
-    const settlement = await (engine as any).settleMarket(market, winner, 0);
+    const [settlement] = await (engine as any).settleMarket(market, winner, 0);
 
     expect(settlement.cancelReason).toBeUndefined();
     // Winner gets the full 1.05x floor…
@@ -432,7 +473,7 @@ describe("ParimutuelEngine — payout-floor funding guard (settleMarket)", () =>
       ],
     };
     const winner = { id: "o-yes", label: "YES", totalBetAmount: "990" };
-    const settlement = await (engine as any).settleMarket(market, winner, 0);
+    const [settlement] = await (engine as any).settleMarket(market, winner, 0);
 
     expect(settlement.cancelReason).toBeUndefined();
     // House edge fully absorbed, payout capped at the pool.
@@ -479,7 +520,7 @@ describe("ParimutuelEngine — exact revenue-residual conservation", () => {
       ],
     };
     const winner = { id: "o-yes", label: "YES", totalBetAmount: "300" };
-    const settlement = await (engine as any).settleMarket(market, winner, 0);
+    const [settlement] = await (engine as any).settleMarket(market, winner, 0);
 
     // Exact conservation to the chhertum — nothing invented, nothing lost.
     expect(
@@ -500,7 +541,7 @@ describe("ParimutuelEngine — exact revenue-residual conservation", () => {
     const winner = { ...YES, totalBetAmount: "100" };
 
     // Nu 100 forfeited bond passed in as houseForfeit.
-    const settlement = await (engine as any).settleMarket(
+    const [settlement] = await (engine as any).settleMarket(
       mkMarket(200),
       winner,
       100,
@@ -539,7 +580,7 @@ describe("ParimutuelEngine — forfeited-bond routing to house revenue", () => {
 
     // Nu 100 forfeited: houseAmount = 10 (edge) + 100 (forfeit) = 110,
     // payout stays 200 - 10 = 190.
-    const settlement = await (engine as any).settleMarket(
+    const [settlement] = await (engine as any).settleMarket(
       mkMarket(200),
       winner50,
       100,
@@ -560,7 +601,7 @@ describe("ParimutuelEngine — forfeited-bond routing to house revenue", () => {
     const { engine } = makeEngine(em);
     const winner50 = { ...YES, totalBetAmount: "100" };
 
-    const settlement = await (engine as any).settleMarket(
+    const [settlement] = await (engine as any).settleMarket(
       mkMarket(200),
       winner50,
       0,
@@ -581,7 +622,7 @@ describe("ParimutuelEngine.cancelMarket — error propagation", () => {
     const failingEm = {
       findOne: jest.fn().mockResolvedValue(market),
       save: jest.fn().mockRejectedValue(new Error("DB connection lost")),
-      find: jest.fn().mockResolvedValue([]),
+      find: withMarketBooks(jest.fn().mockResolvedValue([]), market),
       create: jest.fn().mockImplementation((_E: any, d: any) => d),
       getRepository: jest.fn().mockReturnValue({
         createQueryBuilder: jest.fn().mockReturnValue({
