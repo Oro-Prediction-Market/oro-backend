@@ -6,7 +6,7 @@
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
     "allowSyntheticDefaultImports": true,
-    "target": "ES2017",
+    "target": "ES2020",
     "useDefineForClassFields": false,
     "sourceMap": true,
     "outDir": "./dist",

@@ -15,8 +15,10 @@ COPY package.json ./
 COPY bun.lock* yarn.lock* package-lock.json* ./
 RUN bun install
 
-COPY tsconfig.json ./
+COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
+# tsconfig.build.json, not tsconfig.json: the base config includes the test
+# suite, so one stale spec file failed `tsc` and took the image build with it.
 RUN bun run build
 
 # ── runtime: Node 20 ───────────────────────────────────────────────────────
@@ -31,8 +33,11 @@ RUN apk add --no-cache tini
 COPY --chown=node:node package.json tsconfig.json ./
 COPY --chown=node:node --from=builder /app/node_modules ./node_modules
 COPY --chown=node:node --from=builder /app/dist ./dist
-# Migrations run via app startup (migrationsRun: true in data-source.ts).
-# Compiled migrations live in dist/migrations/ already.
+# Compiled migrations live in dist/migrations/. They are NOT run at startup —
+# `migrationsRun` is false, because several replicas booting together would
+# race each other. The deploy workflow runs them once as a Job on this image:
+#   node node_modules/typeorm/cli.js migration:run -d dist/data-source.js
+# which is why node_modules is kept whole rather than pruned to production.
 
 USER node
 EXPOSE 3000

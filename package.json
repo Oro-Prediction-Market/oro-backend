@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "build": "rimraf dist && npx tsc -p tsconfig.json",
+    "build": "rimraf dist && npx tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
     "dev": "TS_NODE_PROJECT=tsconfig.json npx ts-node -r tsconfig-paths/register src/main.ts",
     "typecheck": "npx tsc -p tsconfig.json --noEmit",
@@ -17,7 +17,9 @@
     "migrations": "npm run migration:run",
     "schema:drop": "npm run typeorm schema:drop",
     "test": "jest",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "migration:run:prod": "node node_modules/typeorm/cli.js migration:run -d dist/data-source.js",
+    "migration:show:prod": "node node_modules/typeorm/cli.js migration:show -d dist/data-source.js"
   },
   "jest": {
     "preset": "ts-jest",
@@ -54,6 +56,7 @@
     "@nestjs/throttler": "^6.5.0",
     "@nestjs/typeorm": "^11.0.3",
     "@nestjs/websockets": "^11.1.27",
+    "@noble/hashes": "1.8.0",
     "@socket.io/redis-adapter": "^8.3.0",
     "@types/pdfkit": "^0.17.6",
     "bcrypt": "^6.0.0",
@@ -63,8 +66,10 @@
     "class-validator": "^0.14.4",
     "cookie-parser": "^1.4.7",
     "dotenv": "^17.4.1",
+    "google-auth-library": "^11.0.2",
     "helmet": "^8.1.0",
     "ioredis": "^5.10.1",
+    "minio": "^8.0.7",
     "nodemailer": "^9.0.1",
     "otplib": "^13.4.0",
     "passport": "^0.7.0",

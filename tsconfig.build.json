@@ -1,0 +1,10 @@
+{
+  // Production build: application code only.
+  //
+  // `tsconfig.json` includes all of `src`, tests included, so a broken test
+  // file failed `tsc` and the Docker build with it — a deploy blocked by
+  // something that never ships. Tests are still fully typechecked by
+  // `npm run typecheck`, which uses the base config.
+  "extends": "./tsconfig.json",
+  "exclude": ["node_modules", "dist", "src/__tests__", "tests", "**/*.spec.ts"]
+}
