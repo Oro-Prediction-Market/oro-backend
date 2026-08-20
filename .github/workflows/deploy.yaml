@@ -82,8 +82,64 @@ jobs:
             --from-literal=SMS_PASSWORD='${{ secrets.SMS_PASSWORD }}' \
             | kubectl apply -f -
 
-      # Migrations are run by the app on startup (migrationsRun: true in
-      # data-source.ts). No separate Job — the backend pod handles it.
+      # ── Migrations ────────────────────────────────────────────────────────
+      #
+      # A one-shot Job on the new image, before the rollout.
+      #
+      # Not the app on startup: `migrationsRun` is false and deliberately so —
+      # several replicas booting together would race the same migrations, and a
+      # schema change half-applied by two pods is not something you recover
+      # from quickly. One Job, one runner, and the deploy stops if it fails.
+      #
+      # Ordering matters: main.ts refuses to boot while migrations are pending,
+      # so this has to finish before the new pods start. Running it after the
+      # rollout would leave the new image crash-looping until the Job caught up.
+      - name: Run migrations (Job on the new image)
+        env:
+          TAG: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          JOB="oro-migrate-$(echo "$TAG" | cut -c1-7)"
+
+          # Re-running the same commit would collide with the previous Job.
+          kubectl -n $NS delete job "$JOB" --ignore-not-found
+
+          kubectl -n $NS apply -f - <<EOF
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: $JOB
+          spec:
+            # A failed migration is for a human to read, not for Kubernetes to
+            # retry blindly.
+            backoffLimit: 0
+            ttlSecondsAfterFinished: 3600
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: migrate
+                    image: $IMAGE:$TAG
+                    # The runtime image ships dist only, so the ts-node script
+                    # in package.json cannot run here — this is the compiled
+                    # data source.
+                    command: ["node", "node_modules/typeorm/cli.js"]
+                    args: ["migration:run", "-d", "dist/data-source.js"]
+                    envFrom:
+                      - secretRef:
+                          name: oro-secrets
+          EOF
+
+          # The log matters either way: on success it records what was applied,
+          # on failure it is the only useful diagnostic.
+          if kubectl -n $NS wait --for=condition=complete --timeout=600s "job/$JOB"; then
+            kubectl -n $NS logs "job/$JOB" --tail=200
+          else
+            echo "::error::Migration job failed — deploy aborted, cluster left on the previous image."
+            kubectl -n $NS logs "job/$JOB" --tail=200 || true
+            kubectl -n $NS describe job "$JOB" || true
+            exit 1
+          fi
 
       - name: Roll deployment
         env:
