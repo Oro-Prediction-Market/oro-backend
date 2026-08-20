@@ -25,6 +25,7 @@ const CARD_MILESTONES: Record<number, CardType> = {
   7: CardType.SHIELD,
   15: CardType.GHOST,
 };
+import { ledgerBalanceForAccount } from "../shared/utils/ledger.util";
 
 @Injectable()
 export class ChallengesService {
@@ -43,13 +44,7 @@ export class ChallengesService {
   // ── Balance helper ─────────────────────────────────────────────────────────
 
   private async getBalance(userId: string): Promise<number> {
-    const { balance } = await this.dataSource
-      .getRepository(Transaction)
-      .createQueryBuilder("t")
-      .select("COALESCE(SUM(t.amount), 0)", "balance")
-      .where("t.userId = :userId", { userId })
-      .getRawOne();
-    return Number(balance);
+    return ledgerBalanceForAccount(this.dataSource, userId);
   }
 
   private async debit(
@@ -59,13 +54,7 @@ export class ChallengesService {
     referenceId: string | null,
     em?: EntityManager,
   ): Promise<void> {
-    // The balance is a SUM over the ledger, so check-then-write must be atomic.
-    // Without this, two concurrent wagers both read the same balance, both pass
-    // the check, and both write a debit — letting a user wager money they don't
-    // have. Lock the user row so a user's balance-affecting operations serialize
-    // (same pattern as ParimutuelEngine and the withdrawal flow). When `em` is
-    // passed, run inside the caller's transaction so the debit commits or rolls
-    // back together with their other writes.
+
     const run = async (m: EntityManager): Promise<void> => {
       const user = await m
         .getRepository(User)
@@ -75,13 +64,7 @@ export class ChallengesService {
         .getOne();
       if (!user) throw new NotFoundException("User not found");
 
-      const { balance } = await m
-        .getRepository(Transaction)
-        .createQueryBuilder("t")
-        .select("COALESCE(SUM(t.amount), 0)", "balance")
-        .where("t.userId = :userId", { userId })
-        .getRawOne();
-      const balanceBefore = Number(balance);
+      const balanceBefore = await ledgerBalanceForAccount(m, userId);
       if (balanceBefore < amount) {
         throw new BadRequestException("Insufficient balance for wager");
       }

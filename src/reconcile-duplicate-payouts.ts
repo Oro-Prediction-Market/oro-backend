@@ -19,6 +19,7 @@ import {
 } from "./entities/transaction.entity";
 import { User } from "./entities/user.entity";
 import { Settlement } from "./entities/settlement.entity";
+import { ledgerBalance } from "./shared/utils/ledger.util";
 
 const RECONCILIATION_NOTE_PREFIX = "RECONCILIATION: reversing duplicate of txn";
 
@@ -135,12 +136,13 @@ async function main(): Promise<void> {
       );
 
       if (!isDryRun) {
-        const row = await txnRepo
-          .createQueryBuilder("t")
-          .select("COALESCE(SUM(t.amount), 0)", "sum")
-          .where("t.userId = :userId", { userId: dup.userId })
-          .getRawOne();
-        const currentBalance = Number(row.sum);
+        // A reversal belongs to the same book as the row it reverses, so the
+        // currency comes from the duplicate itself rather than the account.
+        const currentBalance = await ledgerBalance(
+          txnRepo,
+          dup.userId,
+          dup.currency,
+        );
         const reversalAmount = -Number(dup.amount);
 
         await txnRepo.save(
@@ -151,6 +153,7 @@ async function main(): Promise<void> {
             balanceAfter: currentBalance + reversalAmount,
             positionId: dup.positionId,
             userId: dup.userId,
+            currency: dup.currency,
             isBonus: dup.isBonus,
             note: reversalNote,
           }),

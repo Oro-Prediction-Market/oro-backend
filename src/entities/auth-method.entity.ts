@@ -13,6 +13,26 @@ export enum AuthProvider {
   TELEGRAM = "telegram",
   DKBANK = "dkbank",
   BHUTANAPP = "bhutanapp",
+  /**
+   * Email + password. The only provider where the password is the sole
+   * credential rather than a convenience layered on an external identity —
+   * so registration, login and reset each need their own rate limiting.
+   *
+   * `providerId` is the normalised (lowercased, trimmed) email address. The
+   * existing unique index on (provider, providerId) then gives
+   * one-account-per-email for free. Normalise on write, never on read: a
+   * single un-normalised insert defeats the constraint.
+   */
+  EMAIL = "email",
+  /**
+   * Google Sign-In. The primary path for international accounts.
+   *
+   * `providerId` is Google's `sub` claim, **not** the email address. A person
+   * can change the email on a Google account; `sub` is stable for its life, so
+   * keying on email would silently detach the identity the day someone renames
+   * their address.
+   */
+  GOOGLE = "google",
 }
 
 @Index(["provider", "providerId"], { unique: true })

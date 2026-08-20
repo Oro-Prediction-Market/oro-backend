@@ -4,6 +4,7 @@ import {
   Controller,
   Get,
   HttpCode,
+  Logger,
   NotFoundException,
   Param,
   Post,
@@ -30,6 +31,7 @@ import { In, Repository } from "typeorm";
 import { ConfigService } from "@nestjs/config";
 import { JwtAuthGuard, PreKycJwtAuthGuard, Public } from "../auth/guards";
 import { User } from "../entities/user.entity";
+import { CryptoWithdrawal } from "../entities/crypto-withdrawal.entity";
 import { Payment } from "../entities/payment.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { Position, PositionStatus } from "../entities/position.entity";
@@ -40,6 +42,14 @@ import { OnboardService } from "./onboard.service";
 import { ParimutuelEngine } from "../markets/parimutuel.engine";
 import { DKGatewayService } from "../payment/services/dk-gateway/dk-gateway.service";
 import { UserNotificationService } from "./user-notification.service";
+import {
+  ledgerBalance,
+  ledgerBalanceForAccount,
+} from "../shared/utils/ledger.util";
+import {
+  allowedCurrencies,
+  usdtIdentityVerified,
+} from "../shared/utils/wallet.util";
 
 class SendOnboardOtpDto {
   @ApiProperty({ description: "Phone number (E.164)", required: false })
@@ -177,12 +187,16 @@ class PositionResponse {
 @UseGuards(JwtAuthGuard)
 @Controller("users")
 export class UsersController {
+  private readonly logger = new Logger(UsersController.name);
+
   constructor(
     @InjectRepository(User) private userRepo: Repository<User>,
     @InjectRepository(Payment) private paymentRepo: Repository<Payment>,
     @InjectRepository(Transaction)
     private transactionRepo: Repository<Transaction>,
     @InjectRepository(Position) private betRepo: Repository<Position>,
+    @InjectRepository(CryptoWithdrawal)
+    private cryptoWithdrawalRepo: Repository<CryptoWithdrawal>,
     private readonly redis: RedisService,
     private readonly streakService: StreakService,
     private readonly config: ConfigService,
@@ -307,30 +321,36 @@ export class UsersController {
       throw new BadRequestException("phoneNumber or email is required");
     }
 
-    // If CID and phone are provided, validate they match in DK Bank before sending OTP
+    // If CID and phone are provided, validate they match in DK Bank before
+    // sending OTP. The lookup is advisory: a DK outage must not block onboarding
+    // (bank linking re-checks the phone later), so the lookup failing and the
+    // phone genuinely mismatching have to stay separate — a single try/catch
+    // around both turns every DK-side error into a hard 400 for the user.
     if (dto.cid && dto.phoneNumber) {
       const cleanCid = dto.cid.trim().replace(/\D/g, "");
       if (cleanCid.length === 11) {
+        let bankPhone: string | null = null;
         try {
-          const result = await this.dkGateway.lookupAccountByCID(cleanCid);
-          const bankPhone = result.phoneNumber;
-          if (bankPhone) {
-            const stripToLocal = (p: string) => {
-              let c = p.replace(/[\s\-()+ ]/g, "");
-              if (c.startsWith("975") && c.length === 11) c = c.substring(3);
-              return c;
-            };
-            const normalizedUser = stripToLocal(dto.phoneNumber);
-            const normalizedBank = stripToLocal(bankPhone);
-            if (normalizedUser !== normalizedBank) {
-              throw new BadRequestException(
-                `Phone number does not match your DK Bank account. The phone registered with CID ${cleanCid.slice(0, 3)}***${cleanCid.slice(-3)} is different from what you entered.`,
-              );
-            }
-          }
+          bankPhone = (await this.dkGateway.lookupAccountByCID(cleanCid))
+            .phoneNumber;
         } catch (e: any) {
-          if (e instanceof BadRequestException) throw e;
-          // If DK lookup fails, let it pass — bank linking will catch it later
+          // DK unreachable / CID unknown / adapter error — let it pass.
+          this.logger.warn(
+            `Onboard CID phone pre-check skipped for ${cleanCid.slice(0, 3)}***${cleanCid.slice(-3)}: ${e?.message}`,
+          );
+        }
+
+        if (bankPhone) {
+          const stripToLocal = (p: string) => {
+            let c = p.replace(/[\s\-()+ ]/g, "");
+            if (c.startsWith("975") && c.length === 11) c = c.substring(3);
+            return c;
+          };
+          if (stripToLocal(dto.phoneNumber) !== stripToLocal(bankPhone)) {
+            throw new BadRequestException(
+              `Phone number does not match your DK Bank account. The phone registered with CID ${cleanCid.slice(0, 3)}***${cleanCid.slice(-3)} is different from what you entered.`,
+            );
+          }
         }
       }
     }
@@ -385,6 +405,13 @@ export class UsersController {
         "photoUrl",
         "isAdmin",
         "createdAt",
+        // The account's currency decides which rail the client renders — DK
+        // Bank for BTN, 21 Pay for USDT. Omitting it here made the wallet page
+        // treat every account as BTN, so a USDT user saw a Top Up button that
+        // could never work.
+        "currency",
+        "kycStatus",
+        "dkAccountNumber",
         "telegramId",
         "dkCid",
         "dkAccountName",
@@ -412,14 +439,29 @@ export class UsersController {
       await this.redis.getJson<number>(balanceCacheKey);
 
     if (creditsBalance === null) {
-      const { creditsBalance: raw } = await this.transactionRepo
-        .createQueryBuilder("t")
-        .select("COALESCE(SUM(t.amount), 0)", "creditsBalance")
-        .where("t.userId = :userId", { userId })
-        .getRawOne();
-      creditsBalance = Number(raw);
+      creditsBalance = await ledgerBalanceForAccount(
+        this.transactionRepo,
+        userId,
+      );
       await this.redis.setJsonEx(balanceCacheKey, 15, creditsBalance);
     }
+
+    // A second wallet, when the account may hold one.
+    //
+    // `creditsBalance` above is deliberately untouched: it stays the native
+    // currency's balance, which is what every existing screen renders. The
+    // USDT wallet is reported separately and never added to it — there is no
+    // rate between them, so a combined figure would be meaningless.
+    const canHoldUsdt = allowedCurrencies(user as any).includes("USDT");
+    // Two different questions, and the client needs both. An account created
+    // through Google *may* hold USDT — it is the only currency it has — but it
+    // cannot fund that wallet until a reviewer has approved a document. Showing
+    // it a deposit form would earn it a 403.
+    const usdtVerified = usdtIdentityVerified(user as any);
+    const usdtBalance =
+      canHoldUsdt && (user as any).currency !== "USDT"
+        ? await ledgerBalance(this.transactionRepo, userId, "USDT")
+        : null;
 
     // Derive boolean flags — never send raw hashes to the client
     const { dkPhoneHash, telegramPhoneHash, ...safeUser } = user as any;
@@ -442,6 +484,9 @@ export class UsersController {
     return {
       ...safeUser,
       creditsBalance,
+      canHoldUsdt,
+      usdtVerified,
+      usdtBalance,
       isDkPhoneLinked: !!dkPhoneHash,
       isPhoneVerified: verifiedByPhone || verifiedByAccountNumber,
       referralCount,
@@ -558,7 +603,7 @@ export class UsersController {
     description: "Filter by transaction type",
   })
   @ApiResponse({ status: 200, type: [TransactionResponse] })
-  getTransactions(
+  async getTransactions(
     @Request() req: any,
     @Query("limit") limit?: string,
     @Query("type") type?: TransactionType,
@@ -566,10 +611,47 @@ export class UsersController {
     const take = Math.min(Number(limit) || 50, 200);
     const where: any = { userId: req.user.userId };
     if (type) where.type = type;
-    return this.transactionRepo.find({
+    const rows = await this.transactionRepo.find({
       where,
       order: { createdAt: "DESC" },
       take,
+    });
+
+    // Mark the debits that are still in flight.
+    //
+    // A USDT withdrawal debits immediately — the money is reserved the moment
+    // it is requested — but it is not *sent* until an admin approves it and
+    // 21Pay confirms. Showing that row identically to a completed cash-out
+    // tells the user their money has gone out when it has not, and the first
+    // thing they do is look for it on chain and not find it.
+    const pending = await this.cryptoWithdrawalRepo.find({
+      where: {
+        userId: req.user.userId,
+        debitTransactionId: In(rows.map((r) => r.id)),
+      },
+      select: ["debitTransactionId", "approvalStatus", "remoteStatus"],
+    });
+    const stateByTx = new Map(
+      pending.map((w: CryptoWithdrawal) => [
+        w.debitTransactionId,
+        {
+          approvalStatus: w.approvalStatus,
+          remoteStatus: w.remoteStatus ?? null,
+        },
+      ]),
+    );
+
+    return rows.map((row) => {
+      const state = stateByTx.get(row.id);
+      if (!state) return row;
+      const settled =
+        state.approvalStatus === "rejected" ||
+        state.remoteStatus === "completed";
+      return Object.assign(row, {
+        withdrawalState: state.approvalStatus,
+        // One flag the client can render without knowing our state machine.
+        isPending: !settled,
+      });
     });
   }
 
@@ -645,11 +727,15 @@ export class UsersController {
     const webReferralLink = `${webBase}/?ref=${refId}`;
 
     // Total bonus credited across all referrals
+    // Scoped to the account's own currency, like every other ledger read.
     const { total } = await this.transactionRepo
       .createQueryBuilder("t")
       .select("COALESCE(SUM(t.amount), 0)", "total")
-      .where("t.userId = :userId", { userId })
-      .andWhere("t.type = :type", { type: TransactionType.REFERRAL_BONUS })
+      .where(
+        "t.userId = :userId AND t.type = :type AND t.currency = " +
+          "(SELECT u.currency FROM users u WHERE u.id = :userId)",
+        { userId, type: TransactionType.REFERRAL_BONUS },
+      )
       .getRawOne();
 
     const referredCount = await this.userRepo.count({

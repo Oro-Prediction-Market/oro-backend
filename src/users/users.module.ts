@@ -7,6 +7,7 @@ import { AuthMethod } from "../entities/auth-method.entity";
 import { Payment } from "../entities/payment.entity";
 import { Transaction } from "../entities/transaction.entity";
 import { Position } from "../entities/position.entity";
+import { CryptoWithdrawal } from "../entities/crypto-withdrawal.entity";
 import { Season } from "../entities/season.entity";
 import { UserNotification } from "../entities/user-notification.entity";
 import { UsersController } from "./users.controller";
@@ -30,6 +31,7 @@ import { TelegramModule } from "../telegram/telegram.module";
       Payment,
       Transaction,
       Position,
+      CryptoWithdrawal,
       Season,
       UserNotification,
       DKGatewayAuthToken,

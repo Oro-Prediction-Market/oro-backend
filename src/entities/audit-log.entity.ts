@@ -46,6 +46,12 @@ export enum AuditAction {
   ADMIN_PENALTY_REVOKE = "admin.penalty.revoke",
 
   // Transaction audit actions
+  // KYC review. VIEW is logged as well as the decisions: reading a passport
+  // image is itself an access to sensitive PII and has to be attributable.
+  KYC_DOCUMENT_VIEW = "kyc.document.view",
+  KYC_DOCUMENT_APPROVE = "kyc.document.approve",
+  KYC_DOCUMENT_REJECT = "kyc.document.reject",
+
   TRANSACTION_VERIFY = "transaction.verify",
   TRANSACTION_FLAG = "transaction.flag",
   TRANSACTION_REVIEW = "transaction.review",

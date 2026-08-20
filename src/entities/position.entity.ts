@@ -23,12 +23,15 @@ export { PositionStatus as BetStatus };
 
 @Index(["userId", "marketId"])
 @Index(["placedAt"])
+// Declared here as well as in the migration: DB_SYNCHRONIZE drops any index
+// absent from entity metadata.
+@Index("IDX_positions_currency", ["currency"])
 @Entity("positions")
 export class Position {
   @PrimaryGeneratedColumn("uuid")
   id: string;
 
-  @Column({ type: "decimal", precision: 18, scale: 2 })
+  @Column({ type: "decimal", precision: 28, scale: 9 })
   amount: number;
 
   @Column({
@@ -41,7 +44,7 @@ export class Position {
   @Column({ type: "decimal", precision: 10, scale: 4, nullable: true })
   oddsAtPlacement: number;
 
-  @Column({ type: "decimal", precision: 18, scale: 2, nullable: true })
+  @Column({ type: "decimal", precision: 28, scale: 9, nullable: true })
   payout: number;
 
   /**
@@ -74,6 +77,10 @@ export class Position {
    */
   @Column({ type: "boolean", default: false })
   streakBoostArmed: boolean;
+
+
+  @Column({ type: "varchar", length: 10, default: "BTN" })
+  currency: string;
 
   @CreateDateColumn()
   placedAt: Date;

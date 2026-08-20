@@ -18,6 +18,8 @@ import { DKGatewayService } from "../payment/services/dk-gateway/dk-gateway.serv
 import { TelegramModule } from "../telegram/telegram.module";
 import { AuditService } from "../admin/audit.service";
 import { SmsService } from "../shared/services/sms.service";
+import { EmailService } from "../shared/services/email.service";
+import { EmailAuthService } from "./email-auth.service";
 
 @Module({
   imports: [
@@ -48,7 +50,15 @@ import { SmsService } from "../shared/services/sms.service";
     }),
     TelegramModule,
   ],
-  providers: [AuthService, JwtStrategy, DKGatewayService, AuditService, SmsService],
+  providers: [
+    AuthService,
+    JwtStrategy,
+    DKGatewayService,
+    AuditService,
+    SmsService,
+    EmailService,
+    EmailAuthService,
+  ],
   controllers: [AuthController],
   exports: [AuthService, JwtModule],
 })

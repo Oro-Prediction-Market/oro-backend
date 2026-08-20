@@ -12,6 +12,10 @@ import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { Market } from "../entities/market.entity";
 import { Outcome } from "../entities/outcome.entity";
 import { User } from "../entities/user.entity";
+import {
+  accountCurrency,
+  ledgerBalance,
+} from "../shared/utils/ledger.util";
 
 export interface ReconciliationReport {
   total: number;
@@ -306,14 +310,12 @@ export class ReconciliationService {
 
         if (absDiff < threshold) {
           // Create correction transaction
-          const { balance } = await em
-            .getRepository(Transaction)
-            .createQueryBuilder("t")
-            .select("COALESCE(SUM(t.amount), 0)", "balance")
-            .where("t.userId = :userId", { userId: recon.userId })
-            .getRawOne();
-
-          const balanceBefore = Number(balance);
+          const currency = await accountCurrency(em, recon.userId);
+          const balanceBefore = await ledgerBalance(
+            em,
+            recon.userId,
+            currency,
+          );
           const correctionAmount = Number(recon.difference);
 
           const correctionTxn = em.create(Transaction, {
@@ -323,7 +325,8 @@ export class ReconciliationService {
             balanceBefore,
             balanceAfter: balanceBefore + correctionAmount,
             positionId: recon.positionId,
-            note: `Reconciliation auto-correction for ${recon.id} (diff: ${correctionAmount.toFixed(2)} BTN)`,
+            currency,
+            note: `Reconciliation auto-correction for ${recon.id} (diff: ${correctionAmount.toFixed(2)} ${currency})`,
           });
 
           await em.save(Transaction, correctionTxn);
@@ -331,7 +334,7 @@ export class ReconciliationService {
           recon.status = ReconciliationStatus.CORRECTED;
           recon.correctionTransactionId = correctionTxn.id;
           recon.resolvedAt = new Date();
-          recon.resolutionAction = `Auto-corrected ${correctionAmount.toFixed(2)} BTN (below threshold ${threshold})`;
+          recon.resolutionAction = `Auto-corrected ${correctionAmount.toFixed(2)} ${currency} (below threshold ${threshold})`;
 
           await em.save(Reconciliation, recon);
           corrected.push(recon);

@@ -30,6 +30,24 @@ import { MarketsGateway } from "./markets.gateway";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import { DKGatewayService } from "../payment/services/dk-gateway/dk-gateway.service";
 import { StreakService, STREAK_BONUS_MULT } from "../users/streak.service";
+import {
+  ledgerBalance,
+  ledgerBalanceForAccount,
+  balanceKey,
+  ledgerBalancesByAccountCurrency,
+  ledgerBalancesForAccounts,
+} from "../shared/utils/ledger.util";
+import { BTN_CURRENCY } from "../entities/transaction.entity";
+import { roundMoney } from "../shared/utils/money.util";
+import { MarketBook } from "../entities/market-book.entity";
+import { OutcomeBook } from "../entities/outcome-book.entity";
+import { resolveWalletCurrency } from "../shared/utils/wallet.util";
+import {
+  btnMinStakeFor,
+  ensureBook,
+  ensureBtnBook,
+  ensureOutcomeBooks,
+} from "./market-book.util";
 import { ChallengesService } from "../challenges/challenges.service";
 import { SseService } from "../sse/sse.service";
 import { RevenueDistributionService } from "./revenue-distribution.service";
@@ -89,14 +107,13 @@ export class ParimutuelEngine implements OnModuleInit {
   private async getCreditsBalance(
     em: EntityManager,
     userId: string,
+    currency?: string,
   ): Promise<number> {
-    const { balance } = await em
-      .getRepository(Transaction)
-      .createQueryBuilder("t")
-      .select("COALESCE(SUM(t.amount), 0)", "balance")
-      .where("t.userId = :userId", { userId })
-      .getRawOne();
-    return Number(balance);
+    // A wallet's balance, not "the account's balance". An account can hold two
+    // and they are never added together.
+    return currency
+      ? ledgerBalance(em, userId, currency)
+      : ledgerBalanceForAccount(em, userId);
   }
 
   // ── Odds calculation ───────────────────────────────────────────────────────
@@ -116,6 +133,11 @@ export class ParimutuelEngine implements OnModuleInit {
     marketId: string,
     outcomeId: string,
     amount: number,
+    /**
+     * Which wallet this stake comes from. Omitted means the account's native
+     * currency, so every existing caller behaves exactly as before.
+     */
+    requestedCurrency?: string,
   ): Promise<
     Position & {
       streak?: { count: number; dayInCycle: number; boostActive: boolean };
@@ -174,13 +196,6 @@ export class ParimutuelEngine implements OnModuleInit {
         if (market.status !== MarketStatus.OPEN)
           throw new BadRequestException("Market is not open for betting");
 
-        // Market-aware minimum bet: TER/BTC markets allow Nu 10, others require Nu 50
-        const minBet = ["ter", "btc"].includes(market.externalSource ?? "")
-          ? 10
-          : 50;
-        if (amount < minBet)
-          throw new BadRequestException(`Minimum bet is Nu ${minBet}`);
-
         // Enforce bettingClosesAt cutoff (TER markets close betting 2 min before market close)
         if (
           market.bettingClosesAt &&
@@ -201,32 +216,97 @@ export class ParimutuelEngine implements OnModuleInit {
         const user = await em.findOne(User, { where: { id: userId } });
         if (!user) throw new BadRequestException("User not found");
 
-        // Require a linked DK Bank account before placing any bet.
-        // Starter-credit balance alone is not sufficient — the user must have
-        // gone through the DK Bank onboarding (CID lookup) so winnings can be
-        // paid out to a real account.
-        if (!user.dkAccountNumber) {
+        // ── Payout-route prerequisites, per currency ─────────────────────────
+        //
+        // These exist so winnings can actually be paid out, so what they
+        // require depends on the rail the account withdraws through.
+        //
+        // A BTN account is paid to a Bhutanese bank account, hence the DK Bank
+        // linkage and the verified phone captured during that onboarding.
+        //
+        // A USDT account is paid to a crypto address and will never have
+        // either — requiring them would make it impossible for an
+        // international user to place a single bet. Their equivalent gate is
+        // KYC approval, enforced on the deposit path: an account that has not
+        // been approved cannot have funded itself, so it has nothing to stake.
+        // Which wallet is being spent. An account may hold ngultrum natively
+        // and USDT beside it; the stake says which, and anything the account
+        // cannot hold is refused here rather than deeper in.
+        const { currency: stakeCurrency, allowed } = resolveWalletCurrency(
+          user,
+          requestedCurrency,
+        );
+        if (!allowed) {
           throw new BadRequestException(
-            "You must link your DK Bank account before placing a bet. Go to Wallet Page → Link DK Bank.",
+            `This account cannot stake in ${stakeCurrency}.`,
           );
         }
 
-        // Require a verified phone number (stored during DK Bank onboarding).
-        // This doubles as identity verification and ensures withdrawal delivery.
-        if (!user.phoneNumber) {
+        // Keyed on the wallet being spent, not on the account. A Bhutanese
+        // user staking USDT is paid out to a crypto address, so DK Bank and a
+        // Bhutanese phone number are not prerequisites for that bet — they are
+        // prerequisites for a ngultrum one.
+        if (stakeCurrency === BTN_CURRENCY) {
+          if (!user.dkAccountNumber) {
+            throw new BadRequestException(
+              "You must link your DK Bank account before placing a bet. Go to Wallet Page → Link DK Bank.",
+            );
+          }
+
+          // Doubles as identity verification and ensures withdrawal delivery.
+          if (!user.phoneNumber) {
+            throw new BadRequestException(
+              "A verified phone number is required to place a bet. Go to Wallet Page → Link DK Bank.",
+            );
+          }
+        }
+
+        // Resolve the book this stake belongs to. A stake enters the book
+        // matching the staker's own currency and no other — this is the
+        // segregation boundary, and it is enforced here rather than in the
+        // market list, because a query filter is a UX affordance and this is
+        // the actual money path.
+        //
+        // Deliberately placed after the DK-account and phone guards: those
+        // messages are what an existing BTN user sees today, and a book check
+        // in front of them would change the error for everybody.
+        const bookCurrency = stakeCurrency;
+
+        // Created on demand in either currency. A user who has deposited USDT
+        // can stake it on any open market without an admin opening a book
+        // first — that step existed, and it meant a funded account could not
+        // bet on anything.
+        const book = await ensureBook(em, market, bookCurrency);
+
+        // A book can still be disabled deliberately, which is how a market is
+        // closed to one currency without being closed to the other.
+        if (!book.isEnabled) {
           throw new BadRequestException(
-            "A verified phone number is required to place a bet. Go to Wallet Page → Link DK Bank.",
+            `This market does not accept ${bookCurrency} stakes.`,
           );
         }
+
+        const minBet = Number(book.minStake);
+        if (amount < minBet)
+          throw new BadRequestException(
+            `Minimum bet is ${minBet} ${bookCurrency}`,
+          );
 
         // Store user reference for notification
         betUser = user;
         betUserTelegramId = user.telegramId;
         betMarket = market;
         betOutcome = outcome;
-        capturedHouseEdgePct = Number(market.houseEdgePct) || DEFAULT_HOUSE_EDGE_PCT;
+        // The platform cut is a property of the book: BTN and USDT can carry
+        // different rates on the same event.
+        capturedHouseEdgePct =
+          Number(book.houseEdgePct) || DEFAULT_HOUSE_EDGE_PCT;
 
-        const balanceBefore = await this.getCreditsBalance(em, userId);
+        const balanceBefore = await this.getCreditsBalance(
+          em,
+          userId,
+          stakeCurrency,
+        );
         this.logger.log(
           `[placePosition] user=${userId} credits=${balanceBefore} betAmount=${amount}`,
         );
@@ -246,42 +326,66 @@ export class ParimutuelEngine implements OnModuleInit {
         const predictedProbability =
           outcomeIndex >= 0 ? preBetProbs[outcomeIndex] : null;
 
+        // Per-outcome rows for THIS book. Ordered to match market.outcomes,
+        // because the LMSR service pairs probabilities positionally.
+        const outcomeBooks = await ensureOutcomeBooks(em, market, bookCurrency);
+        const outcomeBookFor = new Map(
+          outcomeBooks.map((ob) => [ob.outcomeId, ob]),
+        );
+        const stakedOutcomeBook = outcomeBookFor.get(outcomeId)!;
+
         // Snapshot pool % for this outcome BEFORE the new bet is added.
         // Used for tournament confidence scoring: 0.5 = maximally uncertain.
-        const preBetTotalPool = Number(market.totalPool);
-        const preBetOutcomePool = Number(outcome.totalBetAmount);
+        // Taken from the book, so a USDT stake is scored against the USDT pool
+        // rather than against a total it is not part of.
+        const preBetTotalPool = Number(book.totalPool);
+        const preBetOutcomePool = Number(stakedOutcomeBook.totalBetAmount);
         const poolPctAtBet =
           preBetTotalPool > 0 ? preBetOutcomePool / preBetTotalPool : 0.5;
 
-        // Update outcome pool
-        outcome.totalBetAmount = Number(outcome.totalBetAmount) + amount;
+        // ── Pool state lives on the book ─────────────────────────────────────
+        stakedOutcomeBook.totalBetAmount =
+          Number(stakedOutcomeBook.totalBetAmount) + amount;
+        book.totalPool = Number(book.totalPool) + amount;
 
-        // Update market total pool
-        market.totalPool = Number(market.totalPool) + amount;
-
-        // Recalculate odds for all outcomes (parimutuel - for settlement)
-        for (const o of market.outcomes) {
-          o.currentOdds = this.calcOdds(
-            Number(market.totalPool),
-            Number(market.houseEdgePct),
-            Number(o.totalBetAmount),
+        // Odds are recomputed within this book only, at this book's edge. A
+        // USDT stake cannot move a single BTN number, and vice versa.
+        for (const ob of outcomeBooks) {
+          ob.currentOdds = this.calcOdds(
+            Number(book.totalPool),
+            Number(book.houseEdgePct),
+            Number(ob.totalBetAmount),
           );
-          await em.save(Outcome, o);
         }
 
-        // Calculate post-bet LMSR probabilities and update display
         const postBetProbs = this.lmsrService.calculateProbabilities(
-          market.outcomes,
+          outcomeBooks as unknown as Outcome[],
           Number(market.liquidityParam) || 1000,
         );
+        outcomeBooks.forEach((ob, i) => {
+          ob.lmsrProbability = postBetProbs[i];
+        });
 
-        // Update LMSR probabilities for all outcomes
-        for (let i = 0; i < market.outcomes.length; i++) {
-          market.outcomes[i].lmsrProbability = postBetProbs[i];
-          await em.save(Outcome, market.outcomes[i]);
+        await em.save(OutcomeBook, outcomeBooks);
+        await em.save(MarketBook, book);
+
+        // ── Legacy mirror ────────────────────────────────────────────────────
+        // `markets.totalPool` and the `outcomes` pool columns are still read by
+        // settlement, reporting and the clients. Until those move to books
+        // (C9b onward) they are maintained as a mirror of the BTN book — which
+        // is exactly what those readers mean today, since every one of them is
+        // a ngultrum figure. A USDT stake deliberately leaves them untouched.
+        if (bookCurrency === BTN_CURRENCY) {
+          market.totalPool = Number(book.totalPool);
+          for (const o of market.outcomes) {
+            const ob = outcomeBookFor.get(o.id)!;
+            o.totalBetAmount = Number(ob.totalBetAmount);
+            o.currentOdds = Number(ob.currentOdds);
+            o.lmsrProbability = Number(ob.lmsrProbability);
+            await em.save(Outcome, o);
+          }
+          await em.save(Market, market);
         }
-
-        await em.save(Market, market);
 
         // Update lastActiveAt for decay tracking (outside the transaction is fine —
         // worst case it's slightly stale, never wrong)
@@ -303,7 +407,8 @@ export class ParimutuelEngine implements OnModuleInit {
           outcomeId,
           amount,
           status: PositionStatus.PENDING,
-          oddsAtPlacement: outcome.currentOdds,
+          currency: bookCurrency,
+          oddsAtPlacement: Number(stakedOutcomeBook.currentOdds),
           predictedProbability,
           poolPctAtBet,
           isBonusFunded,
@@ -315,6 +420,7 @@ export class ParimutuelEngine implements OnModuleInit {
           em.create(Transaction, {
             type: TransactionType.POSITION_OPENED,
             amount: -amount,
+            currency: bookCurrency,
             balanceBefore,
             balanceAfter: balanceBefore - amount,
             positionId: savedPosition.id,
@@ -506,13 +612,10 @@ export class ParimutuelEngine implements OnModuleInit {
       );
       if (!claim.affected) return;
 
-      const { balance: referrerBalance } = await txRepo
-        .createQueryBuilder("t")
-        .select("COALESCE(SUM(t.amount), 0)", "balance")
-        .where("t.userId = :id", { id: referrer.id })
-        .getRawOne();
-
-      const balBefore = Number(referrerBalance);
+      const balBefore = await ledgerBalanceForAccount(
+        txRepo,
+        referrer.id,
+      );
 
       await txRepo.save(
         txRepo.create({
@@ -839,13 +942,7 @@ export class ParimutuelEngine implements OnModuleInit {
             .getOne();
           if (!locked || locked.bondStatus !== DisputeBondStatus.LOCKED) return;
 
-          const { balance: rawBal } = await em
-            .getRepository(Transaction)
-            .createQueryBuilder("t")
-            .select("COALESCE(SUM(t.amount), 0)", "balance")
-            .where("t.userId = :userId", { userId: d.userId })
-            .getRawOne();
-          const balBefore = Number(rawBal);
+          const balBefore = await ledgerBalanceForAccount(em, d.userId);
 
           await em.save(
             Transaction,
@@ -886,8 +983,13 @@ export class ParimutuelEngine implements OnModuleInit {
 
       // Whatever wasn't paid to a winning side (no winners, or floor-rounding
       // dust) is booked as house revenue instead of disappearing.
-      unclaimedForfeit = parseFloat(
-        (forfeitPool - distributedReward).toFixed(2),
+      // Dispute bonds are ngultrum, so this rounds at ngultrum precision.
+      // Named explicitly rather than left as a bare 2dp, so the day bonds can
+      // be posted in another currency this reads as a decision to revisit
+      // instead of an assumption nobody recorded.
+      unclaimedForfeit = roundMoney(
+        forfeitPool - distributedReward,
+        BTN_CURRENCY,
       );
 
       await this.disputeRepo.save(disputes);
@@ -993,12 +1095,19 @@ export class ParimutuelEngine implements OnModuleInit {
       }
     }
 
-    const settlement = await this.settleMarket(
+    const settlements = await this.settleMarket(
       market,
       winner,
       unclaimedForfeit,
       challengerRewardObjectors,
     );
+
+    // Callers downstream of this point predate books and speak in a single
+    // ngultrum settlement. The BTN book is that settlement; the others are
+    // handled per book where it matters (revenue distribution below) and are
+    // deliberately out of scope for the DK payout path, which is a BTN rail.
+    const settlement =
+      settlements.find((st) => st.currency === BTN_CURRENCY) ?? settlements[0];
 
     // Record revenue distribution (house edge → pending transfer to public
     // account). Awaited so "settled" implies "revenue booked" on the happy path.
@@ -1006,23 +1115,25 @@ export class ParimutuelEngine implements OnModuleInit {
     // resolve — we log LOUDLY (error) and let reconcileMissingDistributions()
     // book it on the next cron tick. recordDistribution is idempotent, so this
     // never double-books.
-    if (
-      settlement &&
-      !settlement.cancelReason &&
-      Number(settlement.houseAmount) > 0
-    ) {
+    // One distribution per book: revenue is earned in the currency the book
+    // collected, and there is no rate at which two books could be combined.
+    for (const st of settlements) {
+      if (!st || st.cancelReason || Number(st.houseAmount) <= 0) continue;
       try {
         await this.revenueDistributionService.recordDistribution(
           market.id,
-          settlement.id,
-          Number(settlement.houseAmount),
-          Number(market.houseEdgePct),
-          Number(market.totalPool),
+          st.id,
+          Number(st.houseAmount),
+          Number(st.totalPool) > 0
+            ? (Number(st.houseAmount) / Number(st.totalPool)) * 100
+            : Number(market.houseEdgePct),
+          Number(st.totalPool),
         );
       } catch (err) {
         this.logger.error(
-          `[Revenue] Failed to record distribution for market ${marketId} at ` +
-            `settlement time; reconcile cron will retry: ${(err as Error).message}`,
+          `[Revenue] Failed to record distribution for market ${marketId} ` +
+            `book ${st.currency} at settlement time; reconcile cron will ` +
+            `retry: ${(err as Error).message}`,
         );
       }
     }
@@ -1116,9 +1227,97 @@ export class ParimutuelEngine implements OnModuleInit {
   }
 
   // Settlement: distribute payouts
+  /**
+   * Settle every book on a market.
+   *
+   * The market resolves once — one winning outcome, one resolution — and then
+   * each currency book settles independently against it, out of its own pool,
+   * at its own platform cut, crediting its own currency. Two books on one event
+   * never share money, so a payout is always a share of a pot denominated in a
+   * single currency.
+   *
+   * All books settle inside one transaction: a market is either settled or it
+   * is not, never half.
+   *
+   * Returns one Settlement per book that had positions. The BTN settlement is
+   * first when present, because callers that predate books expect a single
+   * ngultrum-shaped result.
+   */
   private async settleMarket(
     market: Market,
     winner: Outcome,
+    houseForfeit = 0,
+    challengerRewardObjectors: { userId: string; bondAmount: number }[] = [],
+  ): Promise<Settlement[]> {
+    return await this.dataSource.transaction(async (em) => {
+      const books = await em.find(MarketBook, {
+        where: { marketId: market.id },
+      });
+
+      // A market that predates the books migration, or was created by a path
+      // that never took a stake, still needs a BTN book to settle against.
+      // Built from the market's own figures, which are exactly what the book
+      // would have mirrored.
+      if (books.length === 0) {
+        books.push(
+          await em.save(
+            MarketBook,
+            em.create(MarketBook, {
+              marketId: market.id,
+              currency: BTN_CURRENCY,
+              totalPool: Number(market.totalPool) || 0,
+              houseEdgePct: Number(market.houseEdgePct),
+              minStake: btnMinStakeFor(market),
+            }),
+          ),
+        );
+      }
+
+      // BTN first: dispute bonds and challenger rewards are ngultrum concepts
+      // and are applied to the BTN book only (see settleBook).
+      books.sort((a, b) =>
+        a.currency === BTN_CURRENCY ? -1 : b.currency === BTN_CURRENCY ? 1 : 0,
+      );
+
+      const settlements: Settlement[] = [];
+      for (const book of books) {
+        settlements.push(
+          await this.settleBook(
+            em,
+            market,
+            winner,
+            book,
+            book.currency === BTN_CURRENCY ? houseForfeit : 0,
+            book.currency === BTN_CURRENCY ? challengerRewardObjectors : [],
+          ),
+        );
+      }
+
+      // The market itself is settled once, after every book has been.
+      market.status = MarketStatus.SETTLED;
+      await em.save(Market, market);
+
+      return settlements;
+    });
+  }
+
+  /**
+   * Settle one currency book of a market.
+   *
+   * This is the algorithm that has always run on `markets.totalPool`, now
+   * reading its pool, edge and winning-side total from a book instead. The
+   * arithmetic — thin-pool guard, 1.05x payout floor, edge subsidy, pro-rata
+   * scale-down, residual-derived house revenue — is unchanged.
+   *
+   * `houseForfeit` and `challengerRewardObjectors` arrive non-empty only for
+   * the BTN book: dispute bonds are ngultrum today, so routing them into a
+   * USDT book would move money across the boundary.
+   */
+  private async settleBook(
+    em: EntityManager,
+    market: Market,
+    winner: Outcome,
+    book: MarketBook,
     // Forfeited dispute bonds with no winning side to reward. Booked as house
     // revenue so they flow through the normal revenue-distribution mechanism
     // (recordDistribution) instead of being kept off-ledger.
@@ -1130,13 +1329,11 @@ export class ParimutuelEngine implements OnModuleInit {
     // still balances exactly. Skipped entirely on a refunded (thin-pool) market.
     challengerRewardObjectors: { userId: string; bondAmount: number }[] = [],
   ): Promise<Settlement> {
-    return await this.dataSource.transaction(async (em) => {
+    {
       // ── Idempotency guard — prevent double settlement ─────────────────────────
-      // If a Settlement record already exists for this market, return it immediately.
-      // This protects against: admin retry after a partial failure, scheduler ticks
-      // overlapping with a manual resolve, or any other double-call scenario.
+      // Per book: one book already being settled must not block its sibling.
       const existing = await em.findOne(Settlement, {
-        where: { marketId: market.id },
+        where: { marketId: market.id, currency: book.currency },
       });
       if (existing) {
         this.logger.warn(
@@ -1145,18 +1342,30 @@ export class ParimutuelEngine implements OnModuleInit {
         return existing;
       }
 
-      const totalPool = Number(market.totalPool);
+      const currency = book.currency;
+      const totalPool = Number(book.totalPool);
       // Configured edge; the amount actually booked can be lower when the payout
       // floor has to be subsidised (see the funding guard and bookedHouseAmount).
-      const houseAmount = totalPool * (Number(market.houseEdgePct) / 100);
+      const houseAmount = totalPool * (Number(book.houseEdgePct) / 100);
       const payoutPool = totalPool - houseAmount;
 
-      const winnerPool = Number(winner.totalBetAmount);
+      // The winning side's stake within THIS book.
+      //
+      // Derived from the positions being settled rather than read from
+      // `outcome_books`, because the payout shares below divide by it: taking
+      // both from the same source makes `sum(share) === 1` true by
+      // construction. The book's running total also counts stakes from any
+      // earlier partial settlement, which is not what this divisor means.
+
       // Only settle PENDING positions — never re-process already-settled bets.
       // This is the second line of defence against double payouts (the first is
       // the idempotency guard above; the third is the RESOLVING→RESOLVED atomic claim).
       const bets = await em.find(Position, {
-        where: { marketId: market.id, status: PositionStatus.PENDING },
+        where: {
+          marketId: market.id,
+          status: PositionStatus.PENDING,
+          currency,
+        },
       });
 
       // ── Thin-pool guard ───────────────────────────────────────────────────────
@@ -1170,6 +1379,10 @@ export class ParimutuelEngine implements OnModuleInit {
       const uniqueBettorIds = new Set(bets.map((b) => b.userId));
       const winningBets = bets.filter((b) => b.outcomeId === winner.id);
       const losingSideBettors = bets.length - winningBets.length;
+      const winnerPool = winningBets.reduce(
+        (sum, b) => sum + Number(b.amount),
+        0,
+      );
 
       if (
         uniqueBettorIds.size < minUniqueBettors ||
@@ -1185,16 +1398,15 @@ export class ParimutuelEngine implements OnModuleInit {
           "thin_pool",
           "Thin pool — market refunded",
           "thin_pool",
+          currency,
         );
       }
 
       const payoutFloorTotal = winningBets.reduce(
-        (sum, bet) => sum + parseFloat((Number(bet.amount) * 1.05).toFixed(2)),
+        (sum, bet) => sum + roundMoney(Number(bet.amount) * 1.05, currency),
         0,
       );
-      const floorShortfall = parseFloat(
-        (payoutFloorTotal - payoutPool).toFixed(2),
-      );
+      const floorShortfall = roundMoney(payoutFloorTotal - payoutPool, currency);
       if (floorShortfall > 0) {
         this.logger.warn(
           `[Settlement] Market ${market.id} refunded: 1.05x floor requires Nu ${payoutFloorTotal}, ` +
@@ -1209,6 +1421,7 @@ export class ParimutuelEngine implements OnModuleInit {
           "payout_floor_underfunded",
           "Payout floor could not be funded — market refunded",
           "payout_floor_underfunded",
+          currency,
         );
       }
 
@@ -1245,16 +1458,12 @@ export class ParimutuelEngine implements OnModuleInit {
       const balanceMap = new Map<string, number>();
       for (let i = 0; i < betUserIds.length; i += USER_CHUNK) {
         const chunk = betUserIds.slice(i, i + USER_CHUNK);
-        const rows: { userId: string; balance: string }[] = await em
-          .getRepository(Transaction)
-          .createQueryBuilder("t")
-          .select("t.userId", "userId")
-          .addSelect("COALESCE(SUM(t.amount), 0)", "balance")
-          .where("t.userId IN (:...ids)", { ids: chunk })
-          .groupBy("t.userId")
-          .getRawMany();
-        for (const r of rows) {
-          balanceMap.set(r.userId, Number(r.balance));
+        // Keyed by currency: this book pays in `currency`, and a Bhutanese
+        // account settling a USDT book has a ngultrum balance that has nothing
+        // to do with the row being written.
+        const chunkBalances = await ledgerBalancesByAccountCurrency(em, chunk);
+        for (const uid of chunk) {
+          balanceMap.set(uid, chunkBalances.get(balanceKey(uid, currency)) ?? 0);
         }
       }
 
@@ -1273,8 +1482,8 @@ export class ParimutuelEngine implements OnModuleInit {
       for (const bet of bets) {
         if (bet.outcomeId !== winner.id) continue;
         const share = winnerPool > 0 ? Number(bet.amount) / winnerPool : 0;
-        const raw = parseFloat((payoutPool * share).toFixed(2));
-        const floor = parseFloat((Number(bet.amount) * 1.05).toFixed(2));
+        const raw = roundMoney(payoutPool * share, currency);
+        const floor = roundMoney(Number(bet.amount) * 1.05, currency);
         desiredWinnerTotal += Math.max(raw, floor);
       }
       // Only scale down when the floor can't be funded even with a zero edge.
@@ -1302,12 +1511,13 @@ export class ParimutuelEngine implements OnModuleInit {
       for (const bet of bets) {
         if (bet.outcomeId === winner.id) {
           const share = winnerPool > 0 ? Number(bet.amount) / winnerPool : 0;
-          const rawPayout = parseFloat((payoutPool * share).toFixed(2));
+          const rawPayout = roundMoney(payoutPool * share, currency);
           const stake = Number(bet.amount);
           // Guaranteed floor, scaled down only in the extreme case where even a
           // waived house edge can't fund it (payoutScale < 1).
-          const effectivePayout = parseFloat(
-            (Math.max(rawPayout, stake * 1.05) * payoutScale).toFixed(2),
+          const effectivePayout = roundMoney(
+            Math.max(rawPayout, stake * 1.05) * payoutScale,
+            currency,
           );
 
           const user = userMap.get(bet.userId);
@@ -1323,8 +1533,9 @@ export class ParimutuelEngine implements OnModuleInit {
             const currentRemaining =
               bonusUpdates.get(bet.userId)?.bonusRealPayoutRemaining ??
               bonusRealPayoutRemaining;
-            withdrawablePayout = parseFloat(
-              Math.min(effectivePayout, currentRemaining).toFixed(2),
+            withdrawablePayout = roundMoney(
+              Math.min(effectivePayout, currentRemaining),
+              currency,
             );
             if (withdrawablePayout === 0) {
               withdrawablePayout = stake;
@@ -1356,6 +1567,7 @@ export class ParimutuelEngine implements OnModuleInit {
           txToInsert.push({
             type: TransactionType.POSITION_PAYOUT,
             amount: withdrawablePayout,
+            currency,
             balanceBefore,
             balanceAfter: balanceBefore + withdrawablePayout,
             positionId: bet.id,
@@ -1369,8 +1581,9 @@ export class ParimutuelEngine implements OnModuleInit {
           // If this bet armed the boost at placement AND it won, credit an extra
           // 20% of the actual payout as a separate streak-bonus transaction.
           if (bet.streakBoostArmed) {
-            const boostBonus = parseFloat(
-              (withdrawablePayout * (STREAK_BONUS_MULT - 1)).toFixed(2),
+            const boostBonus = roundMoney(
+              withdrawablePayout * (STREAK_BONUS_MULT - 1),
+              currency,
             );
             if (boostBonus > 0) {
               const boostBefore = getBalance(bet.userId);
@@ -1385,6 +1598,7 @@ export class ParimutuelEngine implements OnModuleInit {
               txToInsert.push({
                 type: TransactionType.STREAK_BONUS,
                 amount: boostBonus,
+                currency,
                 balanceBefore: boostBefore,
                 balanceAfter: boostBefore + boostBonus,
                 positionId: bet.id,
@@ -1494,8 +1708,7 @@ export class ParimutuelEngine implements OnModuleInit {
         await em.update(User, { id: uid }, fields);
       }
 
-      market.status = MarketStatus.SETTLED;
-      await em.save(Market, market);
+      // The market's status is set once by settleMarket, after every book.
 
       // Book house revenue as the EXACT residual of the pool: whatever was not
       // paid out to winners (totalPaidOut), plus any forfeited dispute bonds
@@ -1509,7 +1722,7 @@ export class ParimutuelEngine implements OnModuleInit {
       // raises totalPaidOut, which lowers this residual.
       const poolResidual = Math.max(
         0,
-        parseFloat((totalPool - totalPaidOut).toFixed(2)),
+        roundMoney(totalPool - totalPaidOut, currency),
       );
 
       // ── Overturned-with-no-defenders challenger reward ────────────────────────
@@ -1523,8 +1736,9 @@ export class ParimutuelEngine implements OnModuleInit {
       //                   + (bookedHouseAmount − houseForfeit)
       let challengerRewardPaid = 0;
       if (challengerRewardObjectors.length > 0) {
-        const houseCut = parseFloat(
-          ((totalPool * Number(market.houseEdgePct)) / 100).toFixed(2),
+        const houseCut = roundMoney(
+          (totalPool * Number(book.houseEdgePct)) / 100,
+          currency,
         );
         // Clamp to [0, 1]; fall back to 0.2 for a missing/garbage config value.
         const rawFraction = Number(
@@ -1535,7 +1749,7 @@ export class ParimutuelEngine implements OnModuleInit {
             ? rawFraction
             : 0.2;
         const rewardPool = Math.min(
-          parseFloat((houseCut * rewardFraction).toFixed(2)),
+          roundMoney(houseCut * rewardFraction, currency),
           poolResidual,
         );
         const totalBond = challengerRewardObjectors.reduce(
@@ -1544,23 +1758,22 @@ export class ParimutuelEngine implements OnModuleInit {
         );
         if (rewardPool > 0 && totalBond > 0) {
           for (const o of challengerRewardObjectors) {
-            const share = parseFloat(
-              ((o.bondAmount / totalBond) * rewardPool).toFixed(2),
+            const share = roundMoney(
+              (o.bondAmount / totalBond) * rewardPool,
+              currency,
             );
             if (share <= 0) continue;
-            const { balance: rawBal } = await em
-              .getRepository(Transaction)
-              .createQueryBuilder("t")
-              .select("COALESCE(SUM(t.amount), 0)", "balance")
-              .where("t.userId = :userId", { userId: o.userId })
-              .getRawOne();
-            const balBefore = Number(rawBal);
+            const balBefore = await ledgerBalanceForAccount(em, o.userId);
             await em.save(
               Transaction,
               em.create(Transaction, {
                 userId: o.userId,
                 type: TransactionType.DISPUTE_BOND_REWARD,
                 amount: share,
+                // Funded from this book's house cut, so it is denominated in
+                // this book's currency. Only the BTN book receives objectors
+                // today (see settleMarket), but the row should not rely on it.
+                currency,
                 balanceBefore: balBefore,
                 balanceAfter: balBefore + share,
                 note:
@@ -1568,8 +1781,9 @@ export class ParimutuelEngine implements OnModuleInit {
                   `no defenders; rewarded Nu ${share} from the house cut`,
               }),
             );
-            challengerRewardPaid = parseFloat(
-              (challengerRewardPaid + share).toFixed(2),
+            challengerRewardPaid = roundMoney(
+              challengerRewardPaid + share,
+              currency,
             );
             // Record the reward on the objector's dispute row so the UI can show
             // exactly what they won. resolveMarket already marked it REWARDED with
@@ -1596,13 +1810,12 @@ export class ParimutuelEngine implements OnModuleInit {
       // at poolResidual above.
       const bookedHouseAmount = Math.max(
         0,
-        parseFloat(
-          (poolResidual + houseForfeit - challengerRewardPaid).toFixed(2),
-        ),
+        roundMoney(poolResidual + houseForfeit - challengerRewardPaid, currency),
       );
 
       const settlement = em.create(Settlement, {
         marketId: market.id,
+        currency,
         winningOutcomeId: winner.id,
         totalPositions: bets.length,
         winningPositions,
@@ -1612,7 +1825,7 @@ export class ParimutuelEngine implements OnModuleInit {
         totalPaidOut,
       });
       return em.save(Settlement, settlement);
-    });
+    }
   }
 
   // ── Bet placement notification ─────────────────────────────────────────────
@@ -1923,32 +2136,35 @@ Good luck! 🍀
     const balanceMap = new Map<string, number>();
     for (let i = 0; i < userIds.length; i += REFUND_USER_CHUNK) {
       const chunk = userIds.slice(i, i + REFUND_USER_CHUNK);
-      const rows: { userId: string; balance: string }[] = await em
-        .getRepository(Transaction)
-        .createQueryBuilder("t")
-        .select("t.userId", "userId")
-        .addSelect("COALESCE(SUM(t.amount), 0)", "balance")
-        .where("t.userId IN (:...ids)", { ids: chunk })
-        .groupBy("t.userId")
-        .getRawMany();
-      for (const r of rows) balanceMap.set(r.userId, Number(r.balance));
+      // A cancelled market can hold positions in both books, so the balance
+      // has to be per (user, currency) rather than per user.
+      const chunkBalances = await ledgerBalancesByAccountCurrency(em, chunk);
+      for (const [key, bal] of chunkBalances) balanceMap.set(key, bal);
     }
     const balanceDelta = new Map<string, number>();
-    const getBalance = (uid: string): number =>
-      (balanceMap.get(uid) ?? 0) + (balanceDelta.get(uid) ?? 0);
+    // Both maps are keyed `${userId}|${currency}`: one refund run can touch a
+    // user's ngultrum and USDT wallets, and they must not be added together.
+    const getBalance = (uid: string, ccy: string): number =>
+      (balanceMap.get(balanceKey(uid, ccy)) ?? 0) +
+      (balanceDelta.get(balanceKey(uid, ccy)) ?? 0);
 
     const txToInsert: Partial<Transaction>[] = [];
 
     for (const bet of pendingBets) {
       const refundAmt = Number(bet.amount);
-      const balanceBefore = getBalance(bet.userId);
+      const betCurrency = bet.currency ?? BTN_CURRENCY;
+      const balanceBefore = getBalance(bet.userId, betCurrency);
       balanceDelta.set(
-        bet.userId,
-        (balanceDelta.get(bet.userId) ?? 0) + refundAmt,
+        balanceKey(bet.userId, betCurrency),
+        (balanceDelta.get(balanceKey(bet.userId, betCurrency)) ?? 0) + refundAmt,
       );
       txToInsert.push({
         type: TransactionType.REFUND,
         amount: refundAmt,
+        // A refund returns the stake to the book it came from. Taken from the
+        // position rather than a parameter so it is right even when a caller
+        // refunds a mixed set.
+        currency: betCurrency,
         balanceBefore,
         balanceAfter: balanceBefore + refundAmt,
         positionId: bet.id,
@@ -1987,6 +2203,17 @@ Good luck! 🍀
     }
   }
 
+  /**
+   * Refund one book and record its settlement.
+   *
+   * Per book, deliberately: a thin USDT pool refunds on its own while the BTN
+   * book on the same event pays out normally. Same market, different outcome
+   * for the two cohorts — correct, because each book can only ever pay from
+   * money its own bettors put in.
+   *
+   * The market's own status is set once by settleMarket after every book has
+   * been handled, not here.
+   */
   private async refundAndRecordSettlement(
     em: EntityManager,
     market: Market,
@@ -1996,10 +2223,9 @@ Good luck! 🍀
     cancelReason: "thin_pool" | "payout_floor_underfunded",
     note: string,
     notificationReason: "thin_pool" | "payout_floor_underfunded",
+    currency: string = BTN_CURRENCY,
   ): Promise<Settlement> {
     await this.refundPositions(em, bets, note);
-    market.status = MarketStatus.SETTLED;
-    await em.save(Market, market);
 
     await this.sendMarketRefundNotifications(
       em,
@@ -2010,6 +2236,7 @@ Good luck! 🍀
 
     const settlement = em.create(Settlement, {
       marketId: market.id,
+      currency,
       winningOutcomeId: winner.id,
       totalPositions: bets.length,
       winningPositions: 0,

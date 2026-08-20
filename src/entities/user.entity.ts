@@ -13,6 +13,18 @@ import { Position } from "./position.entity";
 import { Payment } from "./payment.entity";
 import { Transaction } from "./transaction.entity";
 
+export enum KycStatus {
+  /** Not applicable — provider-verified accounts never enter document review. */
+  NONE = "none",
+  PENDING = "pending",
+  APPROVED = "approved",
+  REJECTED = "rejected",
+}
+
+// Declared at class level rather than as a property decorator: the property
+// form does not register, and DB_SYNCHRONIZE drops any index it cannot find in
+// entity metadata.
+@Index("IDX_users_kycStatus", ["kycStatus"])
 @Entity("users")
 export class User {
   @PrimaryGeneratedColumn("uuid")
@@ -57,6 +69,16 @@ export class User {
 
   @Column({ default: false })
   isAdmin: boolean;
+
+  /**
+   * May read KYC documents and decide on them.
+   *
+   * Deliberately not implied by `isAdmin`. Admin access means moving money and
+   * resolving markets; this means looking at strangers' passports. Different
+   * permission, different people.
+   */
+  @Column({ default: false })
+  isKycReviewer: boolean;
 
   @Index({ unique: true, sparse: true } as any)
   @Column({ type: "varchar", nullable: true, unique: true })
@@ -218,6 +240,44 @@ export class User {
    */
   @Column({ default: 0 })
   adminWrongResolutions: number;
+
+  /**
+   * The account's currency: 'BTN' or 'USDT'. Set once at creation and never
+   * changed.
+   *
+   * There is deliberately no application code path that updates this column,
+   * and that absence is the segregation guarantee — it is what makes it
+   * impossible for a user to cross between the BTN and USDT books. A user's
+   * currency decides which ledger rows are theirs, which book of a market they
+   * may stake into, and which rail they withdraw through.
+   *
+   * See docs/usdt-oro/SEGREGATION-MODEL.md.
+   */
+  @Column({ type: "varchar", length: 10, default: "BTN" })
+  currency: string;
+
+  /**
+   * Where this account sits in document review.
+   *
+   * `NONE` for every existing user, and for every BhutanApp, DK Bank or
+   * Telegram account: those are verified through their provider and never
+   * enter this queue. Only email accounts move pending → approved.
+   *
+   * Denormalised from `user_kyc_documents` so the deposit gate does not join.
+   * The gate is on deposit, not withdrawal — blocking withdrawal would mean
+   * taking money from someone we may then refuse to pay.
+   */
+  @Column({ type: "enum", enum: KycStatus, default: KycStatus.NONE })
+  kycStatus: KycStatus;
+
+  /**
+   * When the email address was confirmed.
+   *
+   * An unverified address must not reach document upload, or the review queue
+   * fills with documents belonging to addresses nobody controls.
+   */
+  @Column({ type: "timestamptz", nullable: true })
+  emailVerifiedAt: Date | null;
 
   /**
    * Running total of bonus (free-credit) balance still in play.

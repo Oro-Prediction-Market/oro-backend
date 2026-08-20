@@ -37,6 +37,7 @@ import { DKBankAuthDto } from "./dto/dkbank-auth.dto";
 import { ManualLoginRequestDto } from "./dto/manual-login-request.dto";
 import { ManualLoginVerifyDto } from "./dto/manual-login-verify.dto";
 import { BhutanAppAuthDto } from "./dto/bhutanapp-auth.dto";
+import { EmailAuthService } from "./email-auth.service";
 import { TelegramVerificationService } from "../telegram/telegram-verification.service";
 import { AuditAction } from "../entities/audit-log.entity";
 
@@ -165,6 +166,7 @@ export class AuthController {
   constructor(
     private authService: AuthService,
     private telegramVerification: TelegramVerificationService,
+    private emailAuth: EmailAuthService,
   ) {}
 
   private setAuthCookie(res: ExpressResponse, token: string) {
@@ -629,5 +631,88 @@ export class AuthController {
       dto.otp,
       dto.phoneNumber,
     );
+  }
+  // ── Email + password ────────────────────────────────────────────────────────
+  //
+  // Tighter limits than the rest of this controller. For every other provider a
+  // password is a convenience layered on an external identity; here it is the
+  // only credential, which makes these three routes the credential-stuffing
+  // surface of the whole product. See docs/usdt-oro/STAGE-G-ONBOARDING-KYC.md.
+
+  @Post("email/register")
+  @HttpCode(200)
+  @Public()
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
+  @ApiOperation({ summary: "Register with email and password" })
+  async emailRegister(@Body() body: { email: string; password: string }) {
+    return this.emailAuth.register(body?.email, body?.password);
+  }
+
+  /**
+   * Google Sign-In — the primary path for international accounts.
+   *
+   * The body carries Google's ID token and nothing else. Email, name and
+   * subject are all read from the verified token server-side.
+   */
+  @Post("google")
+  @HttpCode(200)
+  @Public()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({ summary: "Sign in with a Google ID token" })
+  async googleLogin(
+    @Body() body: { idToken?: string; credential?: string; referralCode?: string },
+    @Response({ passthrough: true }) res: ExpressResponse,
+  ) {
+    // Google Identity Services names it `credential`; accept either so the
+    // client can pass whatever its library hands back.
+    const result = await this.emailAuth.loginWithGoogle(
+      body?.idToken ?? body?.credential ?? "",
+      body?.referralCode,
+    );
+    this.setAuthCookie(res, result.token);
+    return result;
+  }
+
+  @Post("email/verify")
+  @HttpCode(200)
+  @Public()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({ summary: "Confirm an email address with the emailed token" })
+  async emailVerify(@Body() body: { token: string }) {
+    return this.emailAuth.verify(body?.token);
+  }
+
+  @Post("email/login")
+  @HttpCode(200)
+  @Public()
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiOperation({ summary: "Log in with email and password" })
+  async emailLogin(
+    @Body() body: { email: string; password: string },
+    @Response({ passthrough: true }) res: ExpressResponse,
+  ) {
+    const result = await this.emailAuth.login(body?.email, body?.password);
+    this.setAuthCookie(res, result.token);
+    return result;
+  }
+
+  @Post("email/reset/request")
+  @HttpCode(200)
+  @Public()
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
+  @ApiOperation({ summary: "Request a password-reset email" })
+  async emailResetRequest(@Body() body: { email: string }) {
+    return this.emailAuth.requestReset(body?.email);
+  }
+
+  @Post("email/reset/complete")
+  @HttpCode(200)
+  @Public()
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiOperation({ summary: "Set a new password using a reset token" })
+  async emailResetComplete(
+    @Body() body: { token: string; password: string },
+  ) {
+    return this.emailAuth.completeReset(body?.token, body?.password);
   }
 }

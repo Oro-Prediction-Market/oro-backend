@@ -14,6 +14,7 @@ import {
   ApiBearerAuth,
   ApiParam,
 } from "@nestjs/swagger";
+import { SegregationInvariantsService } from "./segregation-invariants.service";
 import { ReconciliationService } from "./reconciliation.service";
 import {
   ReconcileSettlementDto,
@@ -29,7 +30,8 @@ import { JwtAuthGuard, AdminGuard } from "../auth/guards";
 @UseGuards(JwtAuthGuard, AdminGuard)
 @ApiBearerAuth()
 export class ReconciliationController {
-  constructor(private readonly reconciliationService: ReconciliationService) {}
+  constructor(
+    private readonly invariants: SegregationInvariantsService,private readonly reconciliationService: ReconciliationService) {}
 
   @Post("settlement")
   @ApiOperation({
@@ -170,5 +172,19 @@ export class ReconciliationController {
       recordsUpdated: records.length,
       records,
     };
+  }
+
+  /**
+   * The segregation invariants.
+   *
+   * Every check must report zero violations. A non-zero result means money may
+   * already have crossed between the BTN and USDT books, and everything
+   * downstream of it — balances, reports, payouts — is suspect until it is
+   * explained. Wire this to a daily alert; see STAGE-I-ROLLOUT.md §I.4.
+   */
+  @Get("segregation")
+  @ApiOperation({ summary: "Currency-segregation invariants (all must be zero)" })
+  async segregation() {
+    return this.invariants.runAll();
   }
 }

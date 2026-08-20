@@ -15,6 +15,19 @@ import { TelegramModule } from "../telegram/telegram.module";
 import { BhutanAppNotificationService } from "../shared/services/bhutanapp-notification.service";
 import { AuthMethod } from "../entities/auth-method.entity";
 import { SmsService } from "../shared/services/sms.service";
+import { TwentyOnePayClient } from "./services/twentyone-pay/twentyone-pay.client";
+import { CryptoDepositService } from "./crypto-deposit.service";
+import { CryptoWebhookService } from "./crypto-webhook.service";
+import { CryptoSettlementService } from "./crypto-settlement.service";
+import { CryptoIntentPoller } from "./crypto-intent.poller";
+import { CryptoWithdrawalService } from "./crypto-withdrawal.service";
+import {
+  CryptoWithdrawal,
+  CryptoWithdrawalDestination,
+} from "../entities/crypto-withdrawal.entity";
+import { Pay21WebhookGuard } from "./guards/pay21-webhook.guard";
+import { CryptoWebhookEvent } from "../entities/crypto-webhook-event.entity";
+import { CryptoPaymentIntent } from "../entities/crypto-payment-intent.entity";
 
 @Module({
   imports: [
@@ -27,6 +40,10 @@ import { SmsService } from "../shared/services/sms.service";
       PaymentOtp,
       LinkedBankAccount,
       AuthMethod,
+      CryptoPaymentIntent,
+      CryptoWebhookEvent,
+      CryptoWithdrawal,
+      CryptoWithdrawalDestination,
     ]),
     TelegramModule,
   ],
@@ -37,7 +54,14 @@ import { SmsService } from "../shared/services/sms.service";
     BankLinkService,
     BhutanAppNotificationService,
     SmsService,
+    TwentyOnePayClient,
+    CryptoDepositService,
+    CryptoWebhookService,
+    CryptoSettlementService,
+    CryptoIntentPoller,
+    CryptoWithdrawalService,
+    Pay21WebhookGuard,
   ],
-  exports: [DKGatewayService, BankLinkService],
+  exports: [DKGatewayService, BankLinkService, TwentyOnePayClient, CryptoDepositService, CryptoSettlementService],
 })
 export class PaymentModule {}

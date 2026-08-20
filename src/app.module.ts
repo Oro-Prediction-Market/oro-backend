@@ -13,11 +13,21 @@ import { AdminModule } from "./admin/admin.module";
 import { TelegramModule } from "./telegram/telegram.module";
 import { PaymentModule } from "./payment/payment.module";
 import { RedisModule } from "./redis/redis.module";
+import { KycModule } from "./kyc/kyc.module";
 import { JobsModule } from "./jobs/jobs.module";
 import { User } from "./entities/user.entity";
 import { AuthMethod } from "./entities/auth-method.entity";
 import { Market } from "./entities/market.entity";
 import { Outcome } from "./entities/outcome.entity";
+import { MarketBook } from "./entities/market-book.entity";
+import { UserKycDocument } from "./entities/user-kyc-document.entity";
+import { CryptoPaymentIntent } from "./entities/crypto-payment-intent.entity";
+import { CryptoWebhookEvent } from "./entities/crypto-webhook-event.entity";
+import {
+  CryptoWithdrawal,
+  CryptoWithdrawalDestination,
+} from "./entities/crypto-withdrawal.entity";
+import { OutcomeBook } from "./entities/outcome-book.entity";
 import { Position } from "./entities/position.entity";
 import { Payment } from "./entities/payment.entity";
 import { Transaction } from "./entities/transaction.entity";
@@ -58,6 +68,7 @@ import { UserNotification } from "./entities/user-notification.entity";
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]), // 120 req/min global default
     ScheduleModule.forRoot(),
     RedisModule,
+    KycModule,
     BullModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -99,6 +110,13 @@ import { UserNotification } from "./entities/user-notification.entity";
           AuthMethod,
           Market,
           Outcome,
+          MarketBook,
+          OutcomeBook,
+          UserKycDocument,
+          CryptoPaymentIntent,
+          CryptoWebhookEvent,
+          CryptoWithdrawal,
+          CryptoWithdrawalDestination,
           Position,
           Payment,
           Transaction,

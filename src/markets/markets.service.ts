@@ -6,7 +6,7 @@ import {
   OnModuleInit,
 } from "@nestjs/common";
 import { InjectRepository, InjectDataSource } from "@nestjs/typeorm";
-import { Repository, DataSource } from "typeorm";
+import { Repository, DataSource, In } from "typeorm";
 import { RedisService } from "../redis/redis.service";
 import { randomUUID } from "crypto";
 import { CreateMarketDto } from "./dto/create-market.dto";
@@ -29,9 +29,15 @@ import { Dispute } from "../entities/dispute.entity";
 import { DisputeBondStatus, DisputeSide } from "../entities/dispute.entity";
 import { Position, PositionStatus } from "../entities/position.entity";
 import { User } from "../entities/user.entity";
+import { MarketBook } from "../entities/market-book.entity";
+import { OutcomeBook } from "../entities/outcome-book.entity";
+import { btnMinStakeFor, usdtMinStake } from "./market-book.util";
+import { BTN_CURRENCY } from "../shared/utils/money.util";
+import { USDT as USDT_CURRENCY } from "../shared/utils/wallet.util";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { ParimutuelEngine } from "./parimutuel.engine";
 import { LMSRService } from "./lmsr.service";
+import { ledgerBalanceForAccount } from "../shared/utils/ledger.util";
 import { ReputationService } from "./reputation.service";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import { bracketAdvance, WC_KICKOFFS } from "./wc-knockout";
@@ -48,6 +54,10 @@ export class MarketsService implements OnModuleInit {
     @InjectRepository(Outcome) private outcomeRepo: Repository<Outcome>,
     @InjectRepository(Dispute) private disputeRepo: Repository<Dispute>,
     @InjectRepository(User) private userRepo: Repository<User>,
+    @InjectRepository(MarketBook)
+    private marketBookRepo: Repository<MarketBook>,
+    @InjectRepository(OutcomeBook)
+    private outcomeBookRepo: Repository<OutcomeBook>,
     private engine: ParimutuelEngine,
     private lmsrService: LMSRService,
     @InjectDataSource() private dataSource: DataSource,
@@ -381,6 +391,7 @@ export class MarketsService implements OnModuleInit {
     const markets = await qb.getMany();
     // Attach reputation signal to each market's outcomes (fire in parallel)
     await Promise.all(markets.map((m) => this.attachSignal(m)));
+    await this.attachBooksToMany(markets);
     await this.redis.setJsonEx(cacheKey, 30, markets);
     return markets;
   }
@@ -396,8 +407,188 @@ export class MarketsService implements OnModuleInit {
     if (!market) throw new NotFoundException("Market not found");
     market.outcomes?.sort((a, b) => a.sortOrder - b.sortOrder);
     await this.attachSignal(market);
+    await this.attachBooks(market);
     await this.redis.setJsonEx(cacheKey, 30, market);
     return market;
+  }
+
+  /**
+   * {@link attachBooks} across a list, in two queries rather than two per
+   * market.
+   *
+   * The feed returns dozens of markets; doing this per market would turn one
+   * page load into a hundred round trips. Same output, same synthesis rules.
+   */
+  /**
+   * Public entry point for callers outside this service — the admin listing
+   * builds its own query and would otherwise render ngultrum-only pools on a
+   * screen where both books are being resolved.
+   */
+  async attachBooksTo(markets: Market[]): Promise<void> {
+    return this.attachBooksToMany(markets);
+  }
+
+  private async attachBooksToMany(markets: Market[]): Promise<void> {
+    if (!markets.length) return;
+
+    const rows = await this.marketBookRepo.find({
+      where: { marketId: In(markets.map((m) => m.id)) },
+    });
+    const byMarket = new Map<string, typeof rows>();
+    for (const row of rows) {
+      if (!row.isEnabled) continue;
+      const list = byMarket.get(row.marketId) ?? [];
+      list.push(row);
+      byMarket.set(row.marketId, list);
+    }
+
+    for (const market of markets) {
+      (market as Market & { books?: unknown }).books = this.withDefaultBooks(
+        market,
+        (byMarket.get(market.id) ?? []).map((b) => ({
+          currency: b.currency,
+          minStake: Number(b.minStake),
+          houseEdgePct: Number(b.houseEdgePct),
+          totalPool: Number(b.totalPool),
+        })),
+      );
+    }
+
+    await this.attachOutcomePools(markets);
+  }
+
+  /**
+   * Fill in the books a market accepts but has no row for yet.
+   *
+   * Both currencies open their book on the first stake into them, so "no row"
+   * means "empty", never "not accepted". Terms match what the engine would
+   * actually apply, so what a client renders is what a stake would meet.
+   */
+  private withDefaultBooks(
+    market: Market,
+    books: {
+      currency: string;
+      minStake: number;
+      houseEdgePct: number;
+      totalPool: number;
+    }[],
+  ) {
+    const edge = Number(market.houseEdgePct) || DEFAULT_HOUSE_EDGE_PCT;
+    if (!books.some((b) => b.currency === BTN_CURRENCY)) {
+      books.push({
+        currency: BTN_CURRENCY,
+        minStake: btnMinStakeFor(market),
+        houseEdgePct: edge,
+        totalPool: Number(market.totalPool) || 0,
+      });
+    }
+    if (!books.some((b) => b.currency === USDT_CURRENCY)) {
+      books.push({
+        currency: USDT_CURRENCY,
+        minStake: usdtMinStake(),
+        houseEdgePct: edge,
+        totalPool: 0,
+      });
+    }
+    return books;
+  }
+
+  /**
+   * Attach the currency books so a client knows what this market accepts.
+   *
+   * Without this the bet form has no way to tell a USDT market from a BTN-only
+   * one, so it either offers a stake that the engine then refuses, or hides a
+   * wallet that would have worked. Both were happening.
+   *
+   * Terms only — pool totals are already carried per outcome, and a book's
+   * `minStake` and `houseEdgePct` are what a stake screen has to render.
+   */
+  private async attachBooks(market: Market): Promise<void> {
+    const rows = await this.marketBookRepo.find({
+      where: { marketId: market.id },
+    });
+    const books = rows
+      .filter((b) => b.isEnabled)
+      .map((b) => ({
+        currency: b.currency,
+        minStake: Number(b.minStake),
+        houseEdgePct: Number(b.houseEdgePct),
+        totalPool: Number(b.totalPool),
+      }));
+
+    (market as Market & { books?: unknown }).books = this.withDefaultBooks(
+      market,
+      books,
+    );
+
+    await this.attachOutcomePools([market]);
+  }
+
+  /**
+   * Per-outcome pools, per currency, across a list of markets in one query.
+   *
+   * `outcome.totalBetAmount` is the BTN book's figure and nothing else, so a
+   * client computing odds or a payout from it quotes a USDT stake against a
+   * pool that stake will never join. Every card and every bet screen needs
+   * this, and the feed needs it as much as the detail page — attaching it only
+   * on the single-market path left every card in the feed with nothing to
+   * compute from, silently falling back to ngultrum figures.
+   */
+  private async attachOutcomePools(markets: Market[]): Promise<void> {
+    const outcomeIds = markets.flatMap((m) => (m.outcomes ?? []).map((o) => o.id));
+    if (!outcomeIds.length) return;
+
+    const rows = await this.outcomeBookRepo.find({
+      where: { outcomeId: In(outcomeIds) },
+    });
+    const byOutcome = new Map<string, Record<string, number>>();
+    const lmsrByOutcome = new Map<string, Record<string, number>>();
+    for (const row of rows) {
+      const pools = byOutcome.get(row.outcomeId) ?? {};
+      pools[row.currency] = Number(row.totalBetAmount) || 0;
+      byOutcome.set(row.outcomeId, pools);
+
+      // Each book keeps its own LMSR probability. `outcome.lmsrProbability`
+      // is written only for the BTN book — it is the legacy mirror — so a
+      // client with no per-currency value falls back to ngultrum-derived
+      // odds on a market where the viewer's own book is empty.
+      const lmsr = lmsrByOutcome.get(row.outcomeId) ?? {};
+      lmsr[row.currency] = Number(row.lmsrProbability) || 0;
+      lmsrByOutcome.set(row.outcomeId, lmsr);
+    }
+
+    for (const market of markets) {
+      // Currencies this market accepts, so a book with no stakes still reports
+      // a zero rather than being absent — a missing key reads as "unknown" to
+      // a client and sends it back to the ngultrum field.
+      const currencies = (
+        (market as Market & { books?: { currency: string }[] }).books ?? []
+      ).map((b) => b.currency);
+
+      for (const outcome of market.outcomes ?? []) {
+        const found = byOutcome.get(outcome.id) ?? {};
+        const pools: Record<string, number> = {
+          [BTN_CURRENCY]: Number(outcome.totalBetAmount) || 0,
+        };
+        for (const currency of currencies) {
+          if (currency === BTN_CURRENCY) continue;
+          pools[currency] = found[currency] ?? 0;
+        }
+        (outcome as Outcome & { poolsByCurrency?: unknown }).poolsByCurrency =
+          pools;
+
+        const lmsrFound = lmsrByOutcome.get(outcome.id) ?? {};
+        const lmsr: Record<string, number> = {
+          [BTN_CURRENCY]: Number(outcome.lmsrProbability) || 0,
+        };
+        for (const currency of currencies) {
+          if (currency === BTN_CURRENCY) continue;
+          lmsr[currency] = lmsrFound[currency] ?? 0;
+        }
+        (outcome as Outcome & { lmsrByCurrency?: unknown }).lmsrByCurrency =
+          lmsr;
+      }
+    }
   }
 
   /**
@@ -626,6 +817,7 @@ export class MarketsService implements OnModuleInit {
       marketId,
       dto.outcomeId,
       dto.amount,
+      dto.currency,
     );
     // cache invalidation handled inside ParimutuelEngine.placeBet
   }
@@ -896,13 +1088,7 @@ export class MarketsService implements OnModuleInit {
           bond = required;
         }
 
-        const { balance } = await em
-          .getRepository(Transaction)
-          .createQueryBuilder("t")
-          .select("COALESCE(SUM(t.amount), 0)", "balance")
-          .where("t.userId = :userId", { userId })
-          .getRawOne();
-        const currentBalance = Number(balance);
+        const currentBalance = await ledgerBalanceForAccount(em, userId);
 
         if (currentBalance < bond)
           throw new BadRequestException(

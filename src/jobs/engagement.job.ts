@@ -14,6 +14,7 @@ import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { Challenge, ChallengeStatus } from "../entities/challenge.entity";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import { RedisService } from "../redis/redis.service";
+import { ledgerBalanceForAccount } from "../shared/utils/ledger.util";
 
 @Injectable()
 export class EngagementJob {
@@ -218,12 +219,7 @@ export class EngagementJob {
         claimed = true;
 
         if (wager > 0) {
-          const { balance: rawBefore } = await em
-            .getRepository(Transaction)
-            .createQueryBuilder("t")
-            .select("COALESCE(SUM(t.amount), 0)", "balance")
-            .where("t.userId = :userId", { userId: ch.creatorId })
-            .getRawOne();
+          const rawBefore = await ledgerBalanceForAccount(em, ch.creatorId);
 
           await em.save(
             em.create(Transaction, {

@@ -3,6 +3,7 @@ import { InjectRepository, InjectDataSource } from "@nestjs/typeorm";
 import { Repository, DataSource } from "typeorm";
 import { User } from "../entities/user.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
+import { ledgerBalanceForAccount } from "../shared/utils/ledger.util";
 import { SseService } from "../sse/sse.service";
 
 export const STREAK_BONUS_DAY = 7; // day on which the boost fires
@@ -208,14 +209,7 @@ export class StreakService {
     if (bonusAmount <= 0) return;
 
     await this.dataSource.transaction(async (em) => {
-      const { balance: rawBefore } = await em
-        .getRepository(Transaction)
-        .createQueryBuilder("t")
-        .select("COALESCE(SUM(t.amount), 0)", "balance")
-        .where("t.userId = :userId", { userId })
-        .getRawOne();
-
-      const balanceBefore = Number(rawBefore);
+      const balanceBefore = await ledgerBalanceForAccount(em, userId);
 
       await em.save(
         em.create(Transaction, {

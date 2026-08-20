@@ -1,5 +1,6 @@
 import "reflect-metadata";
 import * as dotenv from "dotenv";
+import * as bodyParser from "body-parser";
 // Set Bhutan timezone (UTC+6) before anything else
 process.env.TZ = "Asia/Thimphu";
 import { NestFactory, HttpAdapterHost, Reflector } from "@nestjs/core";
@@ -51,15 +52,90 @@ class HttpExceptionFilter implements ExceptionFilter {
 dotenv.config();
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // ── Body parsing, with raw bytes kept for the 21Pay webhook ────────────────
+  //
+  // 21Pay's HMAC is computed over the exact bytes it sent. A parse-then-
+  // reserialise round trip changes whitespace and key order, so verifying
+  // against the parsed body fails for every legitimate delivery.
+  //
+  // Nest installs its own JSON parser during `create()`, and body-parser skips
+  // a request another parser has already consumed — so adding a second parser
+  // afterwards silently never runs its `verify`, and `rawBody` is quietly
+  // undefined. Hence `bodyParser: false` and one parser we control.
+  //
+  // The buffer is retained for the webhook path only. Keeping it for every
+  // request would double the memory held per request across a live API to
+  // serve one route.
+  const app = await NestFactory.create(AppModule, { bodyParser: false });
 
-  // Migration gate: with synchronize off, the schema is only ever what the
-  // migrations built. If any are pending, the running code expects columns the
-  // database does not have — in production that must be a hard stop, not a
-  // stream of 500s on money endpoints.
+  // A document photograph is the one payload that legitimately exceeds the
+  // general 1 MB ceiling: base64 inflates by a third, so the service's 4 MB
+  // image limit needs roughly 5.5 MB of JSON. Mounted first and scoped to the
+  // one path — body-parser skips a request already consumed, so the general
+  // parser below leaves it alone, and every other route keeps the tighter
+  // limit rather than the whole API inheriting a 6 MB request budget.
+  app.use("/api/kyc/documents", bodyParser.json({ limit: "6mb" }));
+
+  const WEBHOOK_PATH = "/api/payments/usdt/webhook";
+  app.use(
+    bodyParser.json({
+      limit: "1mb",
+      verify: (req: any, _res: unknown, buf: Buffer) => {
+        if (req.originalUrl?.split("?")[0] === WEBHOOK_PATH) {
+          req.rawBody = buf;
+        }
+      },
+    }),
+  );
+  app.use(bodyParser.urlencoded({ extended: true, limit: "1mb" }));
+
+  // Migrations: run them here, under a lock, then gate on the result.
+  //
+  // `DB_MIGRATIONS_RUN=true` makes a deploy self-applying — push, and the new
+  // pod brings the schema with it. What TypeORM's own `migrationsRun` does not
+  // give you is safety when more than one replica boots at once: each would
+  // read the migrations table, both would decide the same migration is
+  // pending, and both would try to apply it. One wins, the other dies on a
+  // duplicate-object error and crash-loops.
+  //
+  // A Postgres advisory lock costs one round trip and removes that entirely.
+  // The second pod blocks, then finds nothing pending and carries on. The lock
+  // is session-scoped, so a pod killed mid-migration releases it when its
+  // connection drops rather than wedging every future deploy.
   {
     const log = new Logger("migrations");
     const dataSource = app.get(DataSource);
+
+    if (process.env.DB_MIGRATIONS_RUN === "true") {
+      // Arbitrary but fixed: any two processes using the same number
+      // serialise against each other, and nothing else in the system uses it.
+      const LOCK_ID = 776_199_001;
+      const runner = dataSource.createQueryRunner();
+      try {
+        await runner.query("SELECT pg_advisory_lock($1)", [LOCK_ID]);
+        const applied = await dataSource.runMigrations({ transaction: "each" });
+        if (applied.length) {
+          log.log(
+            `Applied ${applied.length} migration(s): ${applied
+              .map((m) => m.name)
+              .join(", ")}`,
+          );
+        } else {
+          log.log("Schema already up to date.");
+        }
+      } catch (err) {
+        // Never start on a half-applied schema — the endpoints most likely to
+        // break are the ones that move money.
+        log.error(`Migration failed, refusing to start: ${(err as Error).message}`);
+        await runner.query("SELECT pg_advisory_unlock($1)", [LOCK_ID]).catch(() => undefined);
+        await runner.release().catch(() => undefined);
+        await app.close();
+        process.exit(1);
+      }
+      await runner.query("SELECT pg_advisory_unlock($1)", [LOCK_ID]);
+      await runner.release();
+    }
+
     const pending = await dataSource.showMigrations();
     if (pending) {
       if (process.env.NODE_ENV === "production") {

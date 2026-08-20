@@ -10,6 +10,7 @@ import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import { BhutanAppNotificationService } from "../shared/services/bhutanapp-notification.service";
 import { UserNotificationService } from "./user-notification.service";
 import { RedisService } from "../redis/redis.service";
+import { ledgerBalanceForAccount } from "../shared/utils/ledger.util";
 
 // Real-money prizes paid every month to the top-3 finishers.
 // #1 → Nu 700, #2 → Nu 500, #3 → Nu 350
@@ -295,12 +296,7 @@ export class SeasonService implements OnApplicationBootstrap {
           return false;
         }
 
-        const { balance: rawBefore } = await em
-          .getRepository(Transaction)
-          .createQueryBuilder("t")
-          .select("COALESCE(SUM(t.amount), 0)", "balance")
-          .where("t.userId = :userId", { userId: user.id })
-          .getRawOne();
+        const rawBefore = await ledgerBalanceForAccount(em, user.id);
 
         await em.save(
           em.create(Transaction, {

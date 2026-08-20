@@ -5,6 +5,9 @@ import { BullModule } from "@nestjs/bullmq";
 import { Market } from "../entities/market.entity";
 import { Outcome } from "../entities/outcome.entity";
 import { Position } from "../entities/position.entity";
+import { MarketBook } from "../entities/market-book.entity";
+import { OutcomeBook } from "../entities/outcome-book.entity";
+import { MarketBookService } from "./market-book.service";
 import { Payment } from "../entities/payment.entity";
 import { Settlement } from "../entities/settlement.entity";
 import { User } from "../entities/user.entity";
@@ -35,6 +38,8 @@ import { UclModule } from "../ucl/ucl.module";
       Market,
       Outcome,
       Position,
+      MarketBook,
+      OutcomeBook,
       Payment,
       Settlement,
       User,
@@ -52,6 +57,7 @@ import { UclModule } from "../ucl/ucl.module";
     forwardRef(() => ChallengesModule),
   ],
   providers: [
+    MarketBookService,
     MarketsService,
     ParimutuelEngine,
     LMSRService,
@@ -66,6 +72,7 @@ import { UclModule } from "../ucl/ucl.module";
     KeeperService,
     MarketsGateway,
     RevenueDistributionModule,
+    MarketBookService,
   ],
 })
 export class MarketsModule {}

@@ -40,7 +40,7 @@ export class RevenueDistribution {
   challengeId: string | null;
 
   /** House edge amount to transfer (Nu) */
-  @Column({ type: "decimal", precision: 18, scale: 2 })
+  @Column({ type: "decimal", precision: 28, scale: 9 })
   amount: number;
 
   /** House edge percentage at time of settlement (for audit) */
@@ -48,7 +48,7 @@ export class RevenueDistribution {
   houseEdgePct: number;
 
   /** Total pool at time of settlement (for audit) */
-  @Column({ type: "decimal", precision: 18, scale: 2 })
+  @Column({ type: "decimal", precision: 28, scale: 9 })
   totalPool: number;
 
   /** Destination: DK_PUBLIC_ACCOUNT_NO */
@@ -66,6 +66,15 @@ export class RevenueDistribution {
   /** DK Bank transaction reference (set after successful transfer) */
   @Column({ type: "varchar", length: 100, nullable: true })
   paymentReference: string | null;
+
+
+  /**
+   * Denormalised from the market's book so aggregations need no join, the same
+   * way transactions.currency works. Never disagrees with the book it belongs
+   * to; Stage I reconciliation asserts that.
+   */
+  @Column({ type: "varchar", length: 10, default: "BTN" })
+  currency: string;
 
   @CreateDateColumn()
   createdAt: Date;

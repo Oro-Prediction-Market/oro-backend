@@ -25,6 +25,9 @@ import { SseService } from "../sse/sse.service";
 import { BhutanAppNotificationService } from "../shared/services/bhutanapp-notification.service";
 import { AuthMethod, AuthProvider } from "../entities/auth-method.entity";
 
+import { ledgerBalance } from "../shared/utils/ledger.util";
+import { BTN_CURRENCY } from "../entities/transaction.entity";
+
 /** DK Bank OTP window: 10 minutes. */
 const OTP_TTL_MS = 10 * 60 * 1000;
 
@@ -678,13 +681,11 @@ export class DKBankPaymentService {
         payment.failureReason = null;
 
         // Snapshot balance before crediting
-        const { balance: rawBefore } = await em
-          .getRepository(Transaction)
-          .createQueryBuilder("t")
-          .select("COALESCE(SUM(t.amount), 0)", "balance")
-          .where("t.userId = :userId", { userId: params.userId })
-          .getRawOne();
-        const balanceBefore = Number(rawBefore);
+        const balanceBefore = await ledgerBalance(
+          em,
+          params.userId,
+          BTN_CURRENCY,
+        );
 
         this.logger.log(
           `[CREDITS] Crediting ${payment.amount} to user ${params.userId} from DK payment ${payment.id}`,
@@ -770,13 +771,7 @@ export class DKBankPaymentService {
     // under pessimistic_write lock to prevent TOCTOU races.
     let balance = 0;
     await this.dataSource.transaction(async (em) => {
-      const { balance: rawBalance } = await em
-        .getRepository(Transaction)
-        .createQueryBuilder("t")
-        .select("COALESCE(SUM(t.amount), 0)", "balance")
-        .where("t.userId = :userId", { userId })
-        .getRawOne();
-      balance = Number(rawBalance);
+      balance = await ledgerBalance(em, userId, BTN_CURRENCY);
     });
 
     if (balance < amount) {
@@ -906,18 +901,6 @@ export class DKBankPaymentService {
     };
   }
 
-  /**
-   * Step 2 — Withdrawal confirmation. Validates the Telegram OTP, then runs a
-   * reserve-then-call flow so the bank is never paid without a matching debit:
-   *   Phase 1 (short txn): re-check balance under pessimistic_write lock, write
-   *     the WITHDRAWAL debit, and move the payment to PROCESSING. The debit is
-   *     committed BEFORE any bank call.
-   *   Phase 2 (no lock): call DK Gateway to push funds merchant vault → user.
-   *   Phase 3 (short txn): on success, finalise SUCCESS (debit already written);
-   *     on a definitive DK failure, write a REFUND credit reversing the debit and
-   *     mark FAILED; on an AMBIGUOUS outcome (the call threw — timeout/network),
-   *     keep the debit and leave the payment PROCESSING for reconciliation.
-   */
   async confirmWithdrawal(
     userId: string,
     paymentId: string,
@@ -1021,13 +1004,7 @@ export class DKBankPaymentService {
       }
 
       // Re-check balance under lock (authoritative TOCTOU guard)
-      const { balance: rawBalance } = await em
-        .getRepository(Transaction)
-        .createQueryBuilder("t")
-        .select("COALESCE(SUM(t.amount), 0)", "balance")
-        .where("t.userId = :userId", { userId })
-        .getRawOne();
-      const balanceBefore = Number(rawBalance);
+      const balanceBefore = await ledgerBalance(em, userId, BTN_CURRENCY);
 
       if (balanceBefore < withdrawalAmount) {
         throw new BadRequestException(
@@ -1160,13 +1137,7 @@ export class DKBankPaymentService {
 
       if (!transferSucceeded) {
         // Definitive DK failure — reverse the reserved debit and fail cleanly.
-        const { balance: rawBal } = await em
-          .getRepository(Transaction)
-          .createQueryBuilder("t")
-          .select("COALESCE(SUM(t.amount), 0)", "balance")
-          .where("t.userId = :userId", { userId })
-          .getRawOne();
-        const balNow = Number(rawBal);
+        const balNow = await ledgerBalance(em, userId, BTN_CURRENCY);
         await em.save(
           Transaction,
           em.create(Transaction, {

@@ -73,7 +73,7 @@ export class Dispute {
     example: 50,
     description: "BTN bond locked with this objection",
   })
-  @Column({ type: "decimal", precision: 18, scale: 2, default: 0 })
+  @Column({ type: "decimal", precision: 28, scale: 9, default: 0 })
   bondAmount: number;
 
   @ApiProperty({
@@ -97,10 +97,19 @@ export class Dispute {
     example: 25,
     description: "BTN reward paid on top of the returned bond when this side won",
   })
-  @Column({ type: "decimal", precision: 18, scale: 2, default: 0 })
+  @Column({ type: "decimal", precision: 28, scale: 9, default: 0 })
   rewardAmount: number;
 
   @ApiProperty()
+
+  /**
+   * Denormalised from the market's book so aggregations need no join, the same
+   * way transactions.currency works. Never disagrees with the book it belongs
+   * to; Stage I reconciliation asserts that.
+   */
+  @Column({ type: "varchar", length: 10, default: "BTN" })
+  currency: string;
+
   @CreateDateColumn()
   createdAt: Date;
 

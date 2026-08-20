@@ -35,7 +35,8 @@ export class AmlDetectorService {
       WITH deposits AS (
         SELECT t.id, t."userId", t.amount::numeric AS amt, t."createdAt" AS dt
         FROM transactions t
-        WHERE t.type = 'deposit'
+        WHERE t.currency = 'BTN'
+          AND t.type = 'deposit'
           AND t."createdAt" BETWEEN $1 AND $2
           AND t.amount::numeric >= 3000
       ),
@@ -53,6 +54,7 @@ export class AmlDetectorService {
         FROM deposits d
         JOIN transactions w
           ON  w."userId"    = d."userId"
+          AND w.currency    = 'BTN'
           AND w.type        = 'withdrawal'
           AND w."createdAt" BETWEEN d.dt AND d.dt + INTERVAL '2 hours'
         GROUP BY d."userId", d.id, d.amt, d.dt
@@ -109,7 +111,8 @@ export class AmlDetectorService {
       WITH user_deposits AS (
         SELECT "userId", SUM(amount::numeric) AS total_deposited
         FROM transactions
-        WHERE type = 'deposit' AND "createdAt" BETWEEN $1 AND $2
+        WHERE currency = 'BTN'
+          AND type = 'deposit' AND "createdAt" BETWEEN $1 AND $2
         GROUP BY "userId"
         HAVING SUM(amount::numeric) > 20000
       ),
@@ -119,7 +122,8 @@ export class AmlDetectorService {
         -- depositor would falsely trip the "<15% wagered" ratio.
         SELECT "userId", SUM(ABS(amount::numeric)) AS total_bet
         FROM transactions
-        WHERE type = 'bet_placed' AND "createdAt" BETWEEN $1 AND $2
+        WHERE currency = 'BTN'
+          AND type = 'bet_placed' AND "createdAt" BETWEEN $1 AND $2
         GROUP BY "userId"
       )
       SELECT
@@ -193,7 +197,8 @@ export class AmlDetectorService {
           DATE_TRUNC('day', "createdAt" AT TIME ZONE 'Asia/Thimphu') AS deposit_day,
           SUM(amount::numeric) AS daily_total
         FROM transactions
-        WHERE type = 'deposit' AND "createdAt" BETWEEN $1 AND $2
+        WHERE currency = 'BTN'
+          AND type = 'deposit' AND "createdAt" BETWEEN $1 AND $2
         GROUP BY "userId", DATE_TRUNC('day', "createdAt" AT TIME ZONE 'Asia/Thimphu')
         HAVING SUM(amount::numeric) >= 14000
       )

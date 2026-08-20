@@ -33,6 +33,16 @@ export enum TransactionType {
 export const BET_PLACED = TransactionType.POSITION_OPENED;
 export const BET_PAYOUT = TransactionType.POSITION_PAYOUT;
 
+/**
+ * The ngultrum ledger. Every balance read that means "spendable Nu" filters on
+ * this — an unfiltered SUM(amount) folds the USDT book into the BTN book and
+ * lets a crypto deposit be staked or withdrawn as ngultrum.
+ */
+export const BTN_CURRENCY = "BTN";
+
+// Declared here as well as in the migration: DB_SYNCHRONIZE runs TypeORM
+// synchronize at boot, which drops any index it cannot find in entity metadata.
+@Index("IDX_transactions_user_currency", ["userId", "currency"])
 @Entity("transactions")
 export class Transaction {
   @PrimaryGeneratedColumn("uuid")
@@ -43,6 +53,18 @@ export class Transaction {
 
   @Column({ type: "decimal", precision: 20, scale: 9 })
   amount: number;
+
+  /**
+   * Ledger currency for this row. Balances are per-currency:
+   *
+   *   SUM(amount) WHERE "userId" = ? AND currency = ?
+   *
+   * Existing rows backfill to 'BTN'. Every balance read MUST filter on this;
+   * `ledger-currency-guard.spec.ts` fails the build if one does not. The
+   * supporting composite index is declared at class level.
+   */
+  @Column({ type: "varchar", length: 10, default: BTN_CURRENCY })
+  currency: string;
 
   @Column({ type: "decimal", precision: 20, scale: 9 })
   balanceBefore: number;

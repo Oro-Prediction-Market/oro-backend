@@ -22,6 +22,10 @@ import { AuditService } from "../admin/audit.service";
 import { AuditAction, AuditLog, RoleType } from "../entities/audit-log.entity";
 import { RedisService } from "../redis/redis.service";
 import { SmsService } from "../shared/services/sms.service";
+import {
+  assertSameCurrency,
+  ledgerBalanceForAccount,
+} from "../shared/utils/ledger.util";
 
 function stripSensitiveFields(
   user: User,
@@ -1575,19 +1579,11 @@ export class AuthService {
         const amRepo = tx.getRepository(AuthMethod);
         const uRepo = tx.getRepository(User);
 
-        const callerRow = await txRepo
-          .createQueryBuilder("t")
-          .select("COALESCE(SUM(t.amount), 0)", "bal")
-          .where("t.userId = :id", { id: callerUserId })
-          .getRawOne<{ bal: string }>();
-        const targetRow = await txRepo
-          .createQueryBuilder("t")
-          .select("COALESCE(SUM(t.amount), 0)", "bal")
-          .where("t.userId = :id", { id: target!.id })
-          .getRawOne<{ bal: string }>();
 
-        const callerBalance = Number(callerRow?.bal ?? 0);
-        const targetBalance = Number(targetRow?.bal ?? 0);
+        await assertSameCurrency(tx, callerUserId, target!.id);
+
+        const callerBalance = await ledgerBalanceForAccount(tx, callerUserId);
+        const targetBalance = await ledgerBalanceForAccount(tx, target!.id);
 
         if (callerBalance > 0) {
           await txRepo.save(
@@ -1829,30 +1825,19 @@ export class AuthService {
     return { ok: true, user: stripSensitiveFields(fresh!) };
   }
 
-  // ── Helper: transfer all balance from one user to another ─────────────────
-  /**
-   * Drains `fromId`'s transaction-summed balance and credits it to `toId`.
-   * Used during account merges so the orphan PWA user's funds follow them
-   * to the linked TMA user record. Returns the amount moved (0 if nothing).
-   */
   private async transferOrphanBalance(
     fromId: string,
     toId: string,
   ): Promise<number> {
-    const fromRow = await this.transactionRepo
-      .createQueryBuilder("t")
-      .select("COALESCE(SUM(t.amount), 0)", "bal")
-      .where("t.userId = :id", { id: fromId })
-      .getRawOne<{ bal: string }>();
-    const balance = Number(fromRow?.bal ?? 0);
+    const em = this.transactionRepo.manager;
+
+    // See assertSameCurrency: a merge across the boundary loses the money.
+    await assertSameCurrency(em, fromId, toId);
+
+    const balance = await ledgerBalanceForAccount(em, fromId);
     if (balance <= 0) return 0;
 
-    const toRow = await this.transactionRepo
-      .createQueryBuilder("t")
-      .select("COALESCE(SUM(t.amount), 0)", "bal")
-      .where("t.userId = :id", { id: toId })
-      .getRawOne<{ bal: string }>();
-    const targetBalance = Number(toRow?.bal ?? 0);
+    const targetBalance = await ledgerBalanceForAccount(em, toId);
 
     await this.transactionRepo.save([
       this.transactionRepo.create({

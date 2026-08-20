@@ -27,6 +27,15 @@ const DK_RESPONSE_CODES = {
   INTERNAL_NO_RESPONSE: "2001",
 } as const;
 
+/** DK-side failures — retryable, and never caused by what the caller sent. */
+const UPSTREAM_FAILURE_CODES: ReadonlySet<string> = new Set([
+  DK_RESPONSE_CODES.INTERNAL_NO_RESPONSE,
+  DK_RESPONSE_CODES.TIMEOUT,
+  DK_RESPONSE_CODES.INTERNAL_FAILURE,
+  DK_RESPONSE_CODES.EXCEPTION,
+  DK_RESPONSE_CODES.DB_ERROR,
+]);
+
 type DKTokenRow = DKGatewayAuthToken;
 
 interface DKAuthResponse {
@@ -376,6 +385,18 @@ export class DKGatewayService {
       ) {
         throw new BadRequestException(
           "No DK Bank account found for this CID. Please check your 11-digit CID and try again.",
+        );
+      }
+      // Anything else is DK-side (5002 "Error form other adapter" = their core
+      // banking adapter failed). That is not the caller's fault and their
+      // internal wording means nothing to a user, so surface it as upstream
+      // unavailability with the real text kept in the log.
+      if (UPSTREAM_FAILURE_CODES.has(res.response_code)) {
+        this.logger.error(
+          `DK client_inquiry upstream failure ${res.response_code}: ${res.response_description || res.response_message || ""}`,
+        );
+        throw new ServiceUnavailableException(
+          "DK Bank is not responding right now. Please try again in a few minutes.",
         );
       }
       throw new BadRequestException(

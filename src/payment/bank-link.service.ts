@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
   Injectable,
   Logger,
   NotFoundException,
@@ -78,6 +79,8 @@ export class BankLinkService {
       accountName = result.accountName;
       bankPhone = result.phoneNumber;
     } catch (e: any) {
+
+      if (e instanceof HttpException) throw e;
       throw new BadRequestException(
         e?.message || "Could not find a DK Bank account for this CID.",
       );

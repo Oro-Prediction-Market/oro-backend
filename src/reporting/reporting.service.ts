@@ -66,7 +66,14 @@ export class ReportingService {
     if (from && to) qb.where("t.createdAt BETWEEN :from AND :to", { from: new Date(from), to: new Date(to) });
     const [totalCount, byType] = await Promise.all([
       qb.getCount(),
-      this.transactionRepo.createQueryBuilder("t").select("t.type", "type").addSelect("COUNT(*)", "count").addSelect("SUM(t.amount)", "totalAmount").groupBy("t.type").getRawMany(),
+      this.transactionRepo
+        .createQueryBuilder("t")
+        .select("t.type", "type")
+        .addSelect("t.currency", "currency")
+        .addSelect("COUNT(*)", "count")
+        .addSelect("SUM(t.amount)", "totalAmount")
+        .groupBy("t.type, t.currency")
+        .getRawMany(),
     ]);
     return { totalCount, byType };
   }

@@ -67,7 +67,7 @@ export class Challenge {
   participantCount: number;
 
   /** Oro credits each side puts up. 0 = bragging-rights only challenge */
-  @Column({ type: "decimal", precision: 18, scale: 2, default: 0 })
+  @Column({ type: "decimal", precision: 28, scale: 9, default: 0 })
   wagerAmount: number;
 
   /** The user who accepted the challenge (null until someone joins) */
@@ -98,6 +98,15 @@ export class Challenge {
   /** Challenge expires 24 hours after creation if no one joins */
   @Column({ type: "timestamptz" })
   expiresAt: Date;
+
+
+  /**
+   * Denormalised from the market's book so aggregations need no join, the same
+   * way transactions.currency works. Never disagrees with the book it belongs
+   * to; Stage I reconciliation asserts that.
+   */
+  @Column({ type: "varchar", length: 10, default: "BTN" })
+  currency: string;
 
   @CreateDateColumn()
   createdAt: Date;

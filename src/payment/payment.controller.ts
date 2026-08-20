@@ -14,11 +14,12 @@ import {
   BadRequestException,
   UsePipes,
   ValidationPipe,
+  Query,
 } from "@nestjs/common";
 import { ApiTags, ApiOperation, ApiResponse, ApiBody } from "@nestjs/swagger";
 import { Throttle, SkipThrottle } from "@nestjs/throttler";
 import { ConfigService } from "@nestjs/config";
-import { JwtAuthGuard } from "../auth/guards";
+import { JwtAuthGuard, AdminGuard, Public } from "../auth/guards";
 import { DKBankPaymentService } from "./dkbank-payment.service";
 import { DKGatewayService } from "./services/dk-gateway/dk-gateway.service";
 import { BankLinkService } from "./bank-link.service";
@@ -36,6 +37,11 @@ import {
   MaxLength,
 } from "class-validator";
 import { ApiProperty as Prop } from "@nestjs/swagger";
+import { CryptoDepositService } from "./crypto-deposit.service";
+import { CryptoWebhookService } from "./crypto-webhook.service";
+import { CryptoSettlementService } from "./crypto-settlement.service";
+import { CryptoWithdrawalService } from "./crypto-withdrawal.service";
+import { Pay21WebhookGuard } from "./guards/pay21-webhook.guard";
 
 class InitiateWithdrawalDto {
   @Prop({ description: "Amount to withdraw in BTN", example: 200 })
@@ -90,6 +96,10 @@ class VerifyBankLinkDto {
 @Throttle({ default: { limit: 8, ttl: 60_000 } }) // 8 req/min per IP on payment endpoints
 export class PaymentController {
   constructor(
+    private readonly cryptoDeposit: CryptoDepositService,
+    private readonly cryptoWebhook: CryptoWebhookService,
+    private readonly cryptoSettlement: CryptoSettlementService,
+    private readonly cryptoWithdrawal: CryptoWithdrawalService,
     private readonly configService: ConfigService,
     private readonly dkBankPaymentService: DKBankPaymentService,
     private readonly dkGatewayService: DKGatewayService,
@@ -350,16 +360,6 @@ export class PaymentController {
           icon: "🏦",
         },
         {
-          id: "ton",
-          name: "TON Wallet",
-          type: "ton",
-          currency: "USDT",
-          enabled: true,
-          minAmount: 0.5,
-          maxAmount: 100,
-          icon: "💎",
-        },
-        {
           id: "credits",
           name: "Oro Credits",
           type: "credits",
@@ -477,5 +477,215 @@ export class PaymentController {
     @Request() req: any,
   ) {
     await this.bankLinkService.unlinkAccount(req.user.userId, accountId);
+  }
+
+  // ── USDT deposits (21 Pay) ──────────────────────────────────────────────────
+  //
+  // There is deliberately no `GET /usdt/balance`. A USDT account's balance is
+  // just its balance, served by the existing endpoint; a second balance route
+  // would imply an account can hold both currencies, which is the model
+  // segregation replaces.
+
+  /**
+   * Networks this account may deposit on.
+   *
+   * The client renders its picker from this and holds no per-chain table of
+   * its own — names, confirmation hints and the Tron gas warning are all
+   * backend-owned, so they cannot drift from what the rail supports.
+   *
+   * An empty list means no chain is currently safe to offer. The UI should say
+   * deposits are unavailable rather than showing an empty picker.
+   */
+  @Get("usdt/networks")
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: "Networks available for USDT deposit" })
+  async usdtNetworks() {
+    return { networks: await this.cryptoDeposit.availableNetworks() };
+  }
+
+  @Post("usdt/deposit-intent")
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  // Harder than the controller default. Each call burns an HD derivation index
+  // on 21Pay's side, and `POST /v1/payment-intents` is capped at 30/min per
+  // source IP — a ceiling shared with anything co-located behind the same
+  // egress address.
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
+  @ApiOperation({ summary: "Create a USDT deposit intent" })
+  async createDepositIntent(
+    @Request() req: any,
+    @Body()
+    body: { network: string; amountUsdt: string; clientRequestId: string },
+  ) {
+    return this.cryptoDeposit.createIntent(req.user.userId, body);
+  }
+
+  @Post("usdt/deposit-intent/:id/topup")
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
+  @ApiOperation({ summary: "Top up an underpaid or expired deposit" })
+  async topupDepositIntent(
+    @Request() req: any,
+    @Param("id") id: string,
+    @Body() body: { clientRequestId: string },
+  ) {
+    return this.cryptoDeposit.createTopup(
+      req.user.userId,
+      id,
+      body?.clientRequestId,
+    );
+  }
+
+  @Get("usdt/deposit-intent/:id")
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: "Status of one deposit intent" })
+  async getDepositIntent(@Request() req: any, @Param("id") id: string) {
+    return this.cryptoDeposit.getIntent(req.user.userId, id);
+  }
+
+  @Get("usdt/deposit-intents")
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: "This account's recent deposit intents" })
+  async listDepositIntents(
+    @Request() req: any,
+    @Query("limit") limit?: string,
+  ) {
+    return this.cryptoDeposit.listIntents(req.user.userId, Number(limit) || 20);
+  }
+
+  /**
+   * 21Pay webhook receiver.
+   *
+   * `@Public()` by necessity — 21Pay has no session with us — and the HMAC in
+   * `Pay21WebhookGuard` is the authentication.
+   *
+   * `@SkipThrottle()` for the same reason the DK Bank webhook skips it: during
+   * an incident 21Pay's retry burst would otherwise be rate-limited into
+   * terminal failure, and **there is no replay**. A delivery we reject is gone.
+   *
+   * Processing is synchronous and the 200 comes last. Once we 200 the engine
+   * treats the delivery as durably handed off; if our processing can fail we
+   * want a 5xx so their backoff retries it. Holding the request open across a
+   * DB write is the cost, and correctness outranks receiver latency here.
+   */
+  @Post("usdt/webhook")
+  @Public()
+  @SkipThrottle()
+  @UseGuards(Pay21WebhookGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "21Pay webhook: deposit and payout events" })
+  async usdtWebhook(
+    @Body() payload: any,
+    @Headers("x-t1pay-event") subject: string,
+  ) {
+    const { event, duplicate } = await this.cryptoWebhook.record(
+      subject,
+      payload ?? {},
+    );
+
+    // Nothing we handle, or something we have already seen. Either way a 200:
+    // asking 21Pay to retry would not change the outcome.
+    if (!event || duplicate) return { received: true, duplicate };
+
+    // Synchronous on purpose: if this throws, the 5xx is what makes 21Pay
+    // retry, and with no replay endpoint that retry is the only recovery.
+    const { action } = this.cryptoWebhook.parseSubject(subject);
+    const outcome = await this.cryptoSettlement.settle({
+      pay21IntentId:
+        payload?.intent_id ?? payload?.intentId ?? payload?.id ?? "",
+      status: action ?? "",
+      detectedAmountBaseUnits: payload?.amount ?? null,
+      txHash: payload?.tx_hash ?? null,
+      blockNumber: payload?.block_number ?? null,
+      failureReason: payload?.reason ?? null,
+    });
+
+    await this.cryptoWebhook.markProcessed(
+      event.id,
+      outcome.handled ? undefined : outcome.reason,
+    );
+
+    return { received: true, duplicate: false, credited: outcome.credited };
+  }
+
+  // ── USDT withdrawals ────────────────────────────────────────────────────────
+
+  @Post("usdt/destinations")
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiOperation({ summary: "Whitelist a USDT withdrawal address" })
+  async addWithdrawalDestination(
+    @Request() req: any,
+    @Body() body: { network: string; address: string; label?: string },
+  ) {
+    return this.cryptoWithdrawal.addDestination(req.user.userId, body);
+  }
+
+  @Get("usdt/destinations")
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: "This account's whitelisted addresses" })
+  async listWithdrawalDestinations(@Request() req: any) {
+    return this.cryptoWithdrawal.listDestinations(req.user.userId);
+  }
+
+  @Post("usdt/withdrawals")
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
+  @ApiOperation({ summary: "Request a USDT withdrawal" })
+  async requestWithdrawal(
+    @Request() req: any,
+    @Body()
+    body: {
+      destinationId: string;
+      amountUsdt: string;
+      clientRequestId: string;
+    },
+  ) {
+    return this.cryptoWithdrawal.request(req.user.userId, body);
+  }
+
+  @Get("usdt/withdrawals")
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: "This account's withdrawals" })
+  async listWithdrawals(@Request() req: any, @Query("limit") limit?: string) {
+    return this.cryptoWithdrawal.listForUser(
+      req.user.userId,
+      Number(limit) || 20,
+    );
+  }
+
+  // ── Admin approval ──────────────────────────────────────────────────────────
+  //
+  // Ours decides whose money it is; 21Pay's own controls protect the tenant
+  // float and know nothing about entitlement.
+
+  @Get("usdt/admin/withdrawals/pending")
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  @ApiOperation({ summary: "Withdrawals awaiting approval, oldest first" })
+  async pendingWithdrawals(@Query("limit") limit?: string) {
+    return this.cryptoWithdrawal.pendingApprovals(Number(limit) || 50);
+  }
+
+  @Post("usdt/admin/withdrawals/:id/approve")
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  @ApiOperation({ summary: "Approve a withdrawal and submit it to 21Pay" })
+  async approveWithdrawal(@Request() req: any, @Param("id") id: string) {
+    return this.cryptoWithdrawal.approve(req.user.userId, id);
+  }
+
+  @Post("usdt/admin/withdrawals/:id/reject")
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  @ApiOperation({ summary: "Reject a withdrawal and return the funds" })
+  async rejectWithdrawal(
+    @Request() req: any,
+    @Param("id") id: string,
+    @Body() body: { reason: string },
+  ) {
+    return this.cryptoWithdrawal.reject(req.user.userId, id, body?.reason);
   }
 }

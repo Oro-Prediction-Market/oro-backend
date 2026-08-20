@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { ReconciliationController } from "./reconciliation.controller";
 import { ReconciliationService } from "./reconciliation.service";
+import { SegregationInvariantsService } from "./segregation-invariants.service";
 import { Reconciliation } from "../entities/reconciliation.entity";
 import { Settlement } from "../entities/settlement.entity";
 import { Position } from "../entities/position.entity";
@@ -23,7 +24,7 @@ import { User } from "../entities/user.entity";
     ]),
   ],
   controllers: [ReconciliationController],
-  providers: [ReconciliationService],
-  exports: [ReconciliationService],
+  providers: [ReconciliationService, SegregationInvariantsService],
+  exports: [ReconciliationService, SegregationInvariantsService],
 })
 export class ReconciliationModule {}

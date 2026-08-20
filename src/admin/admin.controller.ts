@@ -15,6 +15,7 @@ import {
   NotFoundException,
   BadRequestException,
   ParseUUIDPipe,
+  HttpStatus,
 } from "@nestjs/common";
 import type { Response } from "express";
 import {
@@ -79,6 +80,12 @@ import { ToggleAdminDto } from "./dto/toggle-admin.dto";
 import { HealthCheckResponse } from "./dto/health-check.dto";
 import { csvCell } from "../shared/utils/csv.util";
 import { buildLateMoneyStats, LateMoneyStats } from "./late-money.util";
+import { BTN_CURRENCY } from "../entities/transaction.entity";
+import { MarketBookService } from "../markets/market-book.service";
+import {
+  accountCurrency,
+  ledgerBalance,
+} from "../shared/utils/ledger.util";
 
 class CreditUserDto {
   @ApiProperty({ example: 500, description: "Amount to credit (BTN)" })
@@ -98,6 +105,7 @@ class CreditUserDto {
 @Controller("admin")
 export class AdminController {
   constructor(
+    private readonly marketBooks: MarketBookService,
     private marketsService: MarketsService,
     private suggestionsService: SuggestionsService,
     private keeperService: KeeperService,
@@ -309,7 +317,8 @@ export class AdminController {
         COALESCE((
           SELECT SUM(pt.amount)
           FROM transactions pt
-          WHERE pt.type = 'bet_payout'
+          WHERE pt.currency = 'BTN'
+            AND pt.type = 'bet_payout'
             AND pt."isBonus" = false
             AND pt."positionId" IN (
               SELECT p_win.id FROM positions p_win
@@ -327,6 +336,7 @@ export class AdminController {
             )
         ), 0) AS "bonusFundedRealPayouts"
       FROM transactions t
+      WHERE t.currency = 'BTN'
     `);
     // Current outstanding bonus balance across all users
     const bonusBalanceResult = await this.dataSource.query(`
@@ -348,7 +358,8 @@ export class AdminController {
         COALESCE(SUM(CASE WHEN type = 'season_prize' THEN amount ELSE 0 END), 0)::float AS "season",
         COUNT(*)::int AS "count"
       FROM transactions
-      WHERE type IN ('referral_bonus','referral_prize','streak_bonus','season_prize')
+      WHERE currency = 'BTN'
+        AND type IN ('referral_bonus','referral_prize','streak_bonus','season_prize')
         AND "isBonus" = false
     `);
     const marketingReferral = parseFloat(marketingResult[0].referral);
@@ -670,6 +681,7 @@ export class AdminController {
       );
     }
     const [data, total] = await qb.getManyAndCount();
+    await this.marketsService.attachBooksTo(data);
     return {
       data,
       total,
@@ -1550,13 +1562,11 @@ export class AdminController {
     const note = dto.note ?? "Admin manual credit";
 
     const tx = await this.dataSource.transaction(async (em) => {
-      const { balance } = await em
-        .getRepository(Transaction)
-        .createQueryBuilder("t")
-        .select("COALESCE(SUM(t.amount), 0)", "balance")
-        .where("t.userId = :userId", { userId })
-        .getRawOne();
-      const balanceBefore = Number(balance);
+      // Read and write must name the same currency. Reading the account's
+      // balance but writing a row that defaults to BTN would put the credit
+      // somewhere the account's own balance query never looks.
+      const currency = await accountCurrency(em, userId);
+      const balanceBefore = await ledgerBalance(em, userId, currency);
       const balanceAfter = balanceBefore + dto.amount;
 
       return em.save(
@@ -1567,6 +1577,7 @@ export class AdminController {
           balanceBefore,
           balanceAfter,
           userId,
+          currency,
           note,
         }),
       );
@@ -1637,14 +1648,16 @@ export class AdminController {
       .getRepository(Transaction)
       .createQueryBuilder("t")
       .select("COALESCE(SUM(t.amount), 0)", "total")
-      .where("t.isBonus = :isBonus", { isBonus: false })
+      .where("t.currency = :currency", { currency: BTN_CURRENCY })
+      .andWhere("t.isBonus = :isBonus", { isBonus: false })
       .getRawOne();
 
     const bonusBalanceRow = await em
       .getRepository(Transaction)
       .createQueryBuilder("t")
       .select("COALESCE(SUM(t.amount), 0)", "total")
-      .where("t.isBonus = :isBonus", { isBonus: true })
+      .where("t.currency = :currency", { currency: BTN_CURRENCY })
+      .andWhere("t.isBonus = :isBonus", { isBonus: true })
       .getRawOne();
 
     const txBreakdown = await em
@@ -1701,7 +1714,8 @@ export class AdminController {
       SELECT COALESCE(SUM(ABS(bt.amount)), 0)::float AS total
       FROM transactions bt
       INNER JOIN positions p ON p.id = bt."positionId"
-      WHERE bt.type = 'bet_placed'
+      WHERE bt.currency = 'BTN'
+        AND bt.type = 'bet_placed'
         AND bt."isBonus" = false
         AND p.status = 'pending'
     `,
@@ -1753,7 +1767,8 @@ export class AdminController {
           SELECT SUM(ABS(bt.amount))
           FROM transactions bt
           INNER JOIN positions p ON p.id = bt."positionId"
-          WHERE bt.type = 'bet_placed'
+          WHERE bt.currency = 'BTN'
+            AND bt.type = 'bet_placed'
             AND bt."isBonus" = true
             AND p.status = 'lost'
         ), 0)
@@ -1763,7 +1778,8 @@ export class AdminController {
           SELECT SUM(pt.amount)
           FROM transactions pt
           INNER JOIN positions p ON p.id = pt."positionId"
-          WHERE pt.type = 'bet_payout'
+          WHERE pt.currency = 'BTN'
+            AND pt.type = 'bet_payout'
             AND pt."isBonus" = false
             AND p.status = 'won'
             AND EXISTS (
@@ -1784,7 +1800,7 @@ export class AdminController {
         `
       SELECT COALESCE(SUM(amount), 0)::float AS total
       FROM transactions
-      WHERE type = 'free_credit' AND "isBonus" = true
+      WHERE currency = 'BTN' AND type = 'free_credit' AND "isBonus" = true
     `,
       )
       .then((r: any[]) => parseFloat(r[0].total));
@@ -1797,7 +1813,7 @@ export class AdminController {
         `
       SELECT COALESCE(SUM(amount), 0)::float AS total
       FROM transactions
-      WHERE type = 'free_credit' AND "isBonus" = false
+      WHERE currency = 'BTN' AND type = 'free_credit' AND "isBonus" = false
     `,
       )
       .then((r: any[]) => parseFloat(r[0].total));
@@ -1816,7 +1832,8 @@ export class AdminController {
         `
       SELECT COALESCE(SUM(amount), 0)::float AS total
       FROM transactions
-      WHERE type IN ('referral_bonus', 'streak_bonus', 'season_prize', 'referral_prize')
+      WHERE currency = 'BTN'
+        AND type IN ('referral_bonus', 'streak_bonus', 'season_prize', 'referral_prize')
         AND "isBonus" = false
     `,
       )
@@ -1842,7 +1859,7 @@ export class AdminController {
       .query(
         `SELECT COALESCE(ABS(SUM(amount)), 0)::float AS total
          FROM transactions
-         WHERE type = 'bet_placed' AND "isBonus" = true`,
+         WHERE currency = 'BTN' AND type = 'bet_placed' AND "isBonus" = true`,
       )
       .then((r: any[]) => parseFloat(r[0].total));
 
@@ -2556,5 +2573,85 @@ export class AdminController {
       ipAddress: req.ip,
     });
     return market;
+  }
+
+  // ── Per-currency market books ───────────────────────────────────────────────
+  //
+  // A BTN book appears on its own the first time someone stakes, because its
+  // terms follow from the market. A USDT book does not: its platform cut and
+  // minimum stake are decisions, so it is opened here deliberately. A market
+  // with no USDT book simply refuses USDT stakes.
+
+  @Get("markets/:id/books")
+  @ApiOperation({ summary: "Currency books on a market" })
+  async listMarketBooks(@Param("id") id: string) {
+    return { books: await this.marketBooks.listBooks(id) };
+  }
+
+  @Post("markets/:id/books")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Open a currency book on a market" })
+  async openMarketBook(
+    @Request() req: any,
+    @Param("id") id: string,
+    @Body() body: { currency: string; houseEdgePct: number; minStake: number },
+  ) {
+    const book = await this.marketBooks.openBook(id, body);
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action: AuditAction.MARKET_UPDATE,
+      entityType: "market_book",
+      entityId: book.id,
+      after: {
+        marketId: id,
+        currency: book.currency,
+        houseEdgePct: book.houseEdgePct,
+        minStake: book.minStake,
+      },
+      ipAddress: req.ip,
+    });
+    return book;
+  }
+
+  @Patch("markets/books/:bookId")
+  @ApiOperation({ summary: "Change a book's terms — refused once it has stakes" })
+  async updateMarketBook(
+    @Request() req: any,
+    @Param("bookId") bookId: string,
+    @Body() body: { houseEdgePct?: number; minStake?: number },
+  ) {
+    const book = await this.marketBooks.updateTerms(bookId, body);
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action: AuditAction.MARKET_UPDATE,
+      entityType: "market_book",
+      entityId: bookId,
+      after: { houseEdgePct: book.houseEdgePct, minStake: book.minStake },
+      ipAddress: req.ip,
+    });
+    return book;
+  }
+
+  @Post("markets/books/:bookId/enabled")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Open or close a book to new stakes" })
+  async setMarketBookEnabled(
+    @Request() req: any,
+    @Param("bookId") bookId: string,
+    @Body() body: { enabled: boolean },
+  ) {
+    const book = await this.marketBooks.setEnabled(bookId, !!body?.enabled);
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action: AuditAction.MARKET_UPDATE,
+      entityType: "market_book",
+      entityId: bookId,
+      after: { isEnabled: book.isEnabled },
+      ipAddress: req.ip,
+    });
+    return book;
   }
 }

@@ -28,8 +28,24 @@ export enum PaymentStatus {
 
 export enum PaymentMethod {
   DK_BANK = "dkbank",
+  /**
+   * @deprecated Never carried a working rail.
+   *
+   * The value stays because Postgres cannot remove an enum member and old rows
+   * may reference it. Nothing offers it: `GET /payments/methods` stopped
+   * returning it, and USDT arrives via `usdt` on the 21 Pay rail instead. TON
+   * itself is out of scope — its only rationale was Telegram-native signing,
+   * and the Telegram client is BTN-only. See docs/usdt-oro/README.md §4.
+   */
   TON = "ton",
   CREDITS = "credits",
+  /**
+   * USDT over the 21 Pay rail, any supported chain.
+   *
+   * Not `usdt_trc20`: four chains are planned and a payment method should not
+   * name one of them. The network lives on the intent row.
+   */
+  USDT = "usdt",
 }
 
 @Index(["userId"])
@@ -48,7 +64,7 @@ export class Payment {
   @Column({ type: "enum", enum: PaymentMethod })
   method: PaymentMethod;
 
-  @Column({ type: "decimal", precision: 18, scale: 2 })
+  @Column({ type: "decimal", precision: 28, scale: 9 })
   amount: number;
 
   @Column({ type: "varchar", length: 10, default: "BTN" })
