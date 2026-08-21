@@ -168,9 +168,11 @@ describe("CryptoDepositService.createIntent — guards", () => {
   });
 
   it("refuses an unknown or disabled network", async () => {
+    // `ethereum` was the example here until 21Pay activated it for our tenant.
+    // `solana` is a chain their engine knows and we still cannot watch.
     const { service } = build();
     await expect(
-      service.createIntent("u1", { ...req, network: "ethereum" }),
+      service.createIntent("u1", { ...req, network: "solana" }),
     ).rejects.toBeInstanceOf(BadRequestException);
 
     const off = build();

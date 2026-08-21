@@ -329,7 +329,10 @@ describe("TWENTYONE_PAY_NETWORKS parsing", () => {
   it("throws on an unsupported network rather than skipping it", () => {
     // Silently dropping a typo means a chain we cannot watch is either offered
     // or withheld without anyone noticing. Fail at boot instead.
-    expect(() => parseEnabledNetworks("tron,ethereum")).toThrow(/ethereum/);
+    // `ethereum` used to belong here; 21Pay activated it for our tenant and
+    // it is supported now, so the example moved to a chain we still cannot
+    // watch.
+    expect(() => parseEnabledNetworks("tron,solana")).toThrow(/solana/);
     expect(() => parseEnabledNetworks("ton")).toThrow(/ton/);
     expect(() => parseEnabledNetworks("torn")).toThrow(/torn/);
   });

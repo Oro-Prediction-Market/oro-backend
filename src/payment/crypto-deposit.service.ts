@@ -55,9 +55,20 @@ const NETWORK_DISPLAY: Record<CryptoNetwork, DepositNetworkView> = {
   },
   [CryptoNetwork.ARBITRUM]: {
     id: "arbitrum",
-    name: "Arbitrum network",
+    name: "Arbitrum One",
     confirmationHint: "Usually under a minute",
     warning: null,
+  },
+  [CryptoNetwork.ETHEREUM]: {
+    id: "ethereum",
+    name: "Ethereum (ERC-20)",
+    confirmationHint: "Usually a minute or two",
+    // The one chain here where the fee can rival a small deposit, and the
+    // user picks the network before they see that cost. Saying so is the
+    // difference between an informed choice and a surprise.
+    warning:
+      "Ethereum network fees are high — often several dollars, sometimes more. " +
+      "For a small deposit, Tron or Arbitrum will cost far less.",
   },
 };
 
@@ -67,6 +78,7 @@ const EXPLORER_TX: Record<CryptoNetwork, string> = {
   [CryptoNetwork.BASE]: "https://basescan.org/tx/",
   [CryptoNetwork.POLYGON]: "https://polygonscan.com/tx/",
   [CryptoNetwork.ARBITRUM]: "https://arbiscan.io/tx/",
+  [CryptoNetwork.ETHEREUM]: "https://etherscan.io/tx/",
 };
 
 /**

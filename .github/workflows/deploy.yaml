@@ -42,10 +42,60 @@ jobs:
           docker push $IMAGE:$TAG
           docker push $IMAGE:latest
 
+      - name: Check optional feature config
+        run: |
+          warn() { echo "::warning::$1 is not set — the feature it gates will refuse at runtime."; }
+          [ -n '${{ secrets.GOOGLE_CLIENT_ID }}' ]    || warn "GOOGLE_CLIENT_ID (Google sign-in)"
+          [ -n '${{ vars.MINIO_ENDPOINT }}${{ secrets.MINIO_ENDPOINT }}' ] || warn "MINIO_ENDPOINT (document storage)"
+          if [ '${{ vars.USDT_ENABLED }}${{ secrets.USDT_ENABLED }}' = 'true' ]; then
+            [ -n '${{ secrets.TWENTY_ONE_PAY_API }}' ] \
+              || warn "TWENTY_ONE_PAY_API — USDT is enabled but there is no API token, so every call to 21 Pay will fail"
+            [ -n '${{ secrets.TWENTYONE_PAY_WEBHOOK_SECRET }}' ] \
+              || warn "TWENTYONE_PAY_WEBHOOK_SECRET — deposits will only be credited by the 60s fallback poller"
+            [ -n '${{ vars.TWENTYONE_PAY_NETWORKS }}${{ secrets.TWENTYONE_PAY_NETWORKS }}' ] \
+              || warn "TWENTYONE_PAY_NETWORKS — unset means no chains are offered and no deposit can start"
+          fi
+
+          BASE='${{ vars.TWENTYONE_PAY_BASE_URL }}'
+          if [ -z "$BASE" ]; then
+            warn "TWENTYONE_PAY_BASE_URL (USDT deposits and withdrawals)"
+          elif ! echo "$BASE" | grep -q '/v1$'; then
+            # Without the prefix every call lands on their web console, which
+            # answers 404 with an HTML page — it reads as a missing endpoint
+            # when it is a missing path segment. That cost real time once.
+            echo "::error::TWENTYONE_PAY_BASE_URL must end in /v1 — got '$BASE'."
+            exit 1
+          fi
+
       - name: Sync prod Secret (live values from cluster + GH secrets)
         run: |
           DB_PASSWORD="$(kubectl -n database get secret oro-pg-app -o jsonpath='{.data.password}' | base64 -d)"
           REDIS_QUEUE_PASSWORD="$(kubectl -n redis get secret redis-queue -o jsonpath='{.data.redis-password}' | base64 -d)"
+
+          # Neither of these is a secret, so a repo Variable is the right home:
+          # Actions masks a secret's literal value everywhere it appears, which
+          # would turn `USDT_ENABLED` into `***` in the logs and blank out the
+          # word "tron" in any line that mentions it. Read from `vars` first,
+          # falling back to `secrets` so it works either way.
+          USDT_NETWORKS='${{ vars.TWENTYONE_PAY_NETWORKS || secrets.TWENTYONE_PAY_NETWORKS }}'
+          # Defaults to off. The rail going live should be a deliberate act,
+          # not something that follows from forgetting to set a variable.
+          USDT_ENABLED='${{ vars.USDT_ENABLED || secrets.USDT_ENABLED || 'false' }}'
+
+          # MinIO credentials, preferring what the cluster already holds.
+          #
+          # Same pattern as Postgres and Redis above: if MinIO runs in this
+          # cluster its own Secret is the source of truth, and copying the keys
+          # into GitHub would mean two places to rotate. Falls back to GitHub
+          # secrets for a MinIO hosted elsewhere.
+          MINIO_ENDPOINT='${{ vars.MINIO_ENDPOINT || secrets.MINIO_ENDPOINT }}'
+          MINIO_ACCESS_KEY="$(kubectl -n minio get secret minio -o jsonpath='{.data.root-user}' 2>/dev/null | base64 -d || true)"
+          MINIO_SECRET_KEY="$(kubectl -n minio get secret minio -o jsonpath='{.data.root-password}' 2>/dev/null | base64 -d || true)"
+          if [ -z "$MINIO_ACCESS_KEY" ]; then
+            MINIO_ENDPOINT='${{ secrets.MINIO_ENDPOINT }}'
+            MINIO_ACCESS_KEY='${{ secrets.MINIO_ACCESS_KEY }}'
+            MINIO_SECRET_KEY='${{ secrets.MINIO_SECRET_KEY }}'
+          fi
 
           kubectl create secret generic oro-secrets --namespace=$NS \
             --dry-run=client -o yaml \
@@ -81,6 +131,17 @@ jobs:
             --from-literal=BHUTANAPP_NOTIFICATION_SERVICE_URL='${{ secrets.BHUTANAPP_NOTIFICATION_SERVICE_URL }}' \
             --from-literal=EMAIL_SMTP_PASSWORD='${{ secrets.EMAIL_SMTP_PASSWORD }}' \
             --from-literal=SMS_PASSWORD='${{ secrets.SMS_PASSWORD }}' \
+            --from-literal=GOOGLE_CLIENT_ID='${{ secrets.GOOGLE_CLIENT_ID }}' \
+            --from-literal=TWENTYONE_PAY_BASE_URL='${{ vars.TWENTYONE_PAY_BASE_URL }}' \
+            --from-literal=TWENTY_ONE_PAY_API='${{ secrets.TWENTY_ONE_PAY_API }}' \
+            --from-literal=TWENTYONE_PAY_WEBHOOK_SECRET='${{ secrets.TWENTYONE_PAY_WEBHOOK_SECRET }}' \
+            --from-literal=TWENTYONE_PAY_NETWORKS="$USDT_NETWORKS" \
+            --from-literal=USDT_ENABLED="$USDT_ENABLED" \
+            --from-literal=MINIO_ENDPOINT="$MINIO_ENDPOINT" \
+            --from-literal=MINIO_ACCESS_KEY="$MINIO_ACCESS_KEY" \
+            --from-literal=MINIO_SECRET_KEY="$MINIO_SECRET_KEY" \
+            --from-literal=MINIO_KYC_BUCKET='${{ vars.MINIO_KYC_BUCKET || 'oro-kyc' }}' \
+            --from-literal=MINIO_USE_SSL='${{ vars.MINIO_USE_SSL || 'false' }}' \
             | kubectl apply -f -
 
       # Migrations run in the pod at startup, under a Postgres advisory lock

@@ -4,13 +4,15 @@ export enum CryptoNetwork {
   BASE = "base",
   POLYGON = "polygon",
   ARBITRUM = "arbitrum",
+  ETHEREUM = "ethereum",
 }
 
-/** The three chains sharing the EVM `0x` address format. */
+/** The chains sharing the EVM `0x` address format. */
 export const EVM_NETWORKS: ReadonlySet<CryptoNetwork> = new Set([
   CryptoNetwork.BASE,
   CryptoNetwork.POLYGON,
   CryptoNetwork.ARBITRUM,
+  CryptoNetwork.ETHEREUM,
 ]);
 
 export function isCryptoNetwork(value: string): value is CryptoNetwork {
