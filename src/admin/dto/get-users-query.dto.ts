@@ -19,6 +19,18 @@ export class GetUsersQueryDto {
   dkStatus?: "all" | "linked" | "unlinked";
 
   @ApiPropertyOptional({
+    enum: ["all", "BTN", "USDT"],
+    default: "all",
+    description:
+      "Native currency of the account. This list is built around the DK Bank " +
+      "rail, so a USDT account shows here with every one of those columns " +
+      "empty; International Accounts is the page for those.",
+  })
+  @IsOptional()
+  @IsIn(["all", "BTN", "USDT"])
+  currency?: "all" | "BTN" | "USDT";
+
+  @ApiPropertyOptional({
     enum: ["name", "balance", "streak", "joined"],
     default: "joined",
   })

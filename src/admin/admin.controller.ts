@@ -1391,6 +1391,7 @@ export class AdminController {
       search,
       role = "all",
       dkStatus = "all",
+      currency = "all",
       sortField = "joined",
       sortDir = "desc",
       page = 1,
@@ -1459,6 +1460,15 @@ export class AdminController {
         )`,
         { term },
       );
+    }
+
+    // ── Currency filter ─────────────────────────────────────────────────────
+    // Older rows predate the column and were all ngultrum, so BTN has to
+    // include NULL or the list loses everyone who joined before the USDT rail.
+    if (currency === "BTN") {
+      qb.andWhere("(u.currency = :cur OR u.currency IS NULL)", { cur: "BTN" });
+    } else if (currency === "USDT") {
+      qb.andWhere("u.currency = :cur", { cur: "USDT" });
     }
 
     // ── Role filter ─────────────────────────────────────────────────────────
@@ -1594,6 +1604,93 @@ export class AdminController {
           (t: number, r: any) => t + num(r.pendingWithdrawal),
           0,
         ),
+      },
+    };
+  }
+
+  @Get("usdt/finance")
+  @ApiOperation({ summary: "USDT-only financial position and custody check" })
+  async usdtFinance() {
+    const [settled] = await this.dataSource.query(`
+      SELECT
+        COALESCE(SUM(s."totalPool"), 0)   AS "settledPool",
+        COALESCE(SUM(s."houseAmount"), 0) AS "houseIncome",
+        COALESCE(SUM(s."totalPaidOut"), 0) AS "paidOut",
+        COUNT(*)                          AS "settledCount"
+      FROM settlements s
+      WHERE s.currency = 'USDT'
+    `);
+
+    const [active] = await this.dataSource.query(`
+      SELECT
+        COALESCE(SUM(mb."totalPool"), 0) AS "activePool",
+        COUNT(*) FILTER (WHERE mb."totalPool" > 0) AS "activeBooks"
+      FROM market_books mb
+      JOIN markets m ON m.id = mb."marketId"
+      WHERE mb.currency = 'USDT'
+        AND m.status IN ('open', 'closed', 'resolving', 'resolved')
+    `);
+
+    const [flow] = await this.dataSource.query(`
+      SELECT
+        COALESCE(SUM(CASE WHEN type = 'deposit'    THEN amount ELSE 0 END), 0) AS "deposits",
+        COUNT(*) FILTER (WHERE type = 'deposit')                               AS "depositCount",
+        COALESCE(SUM(CASE WHEN type = 'withdrawal' THEN -amount ELSE 0 END), 0) AS "withdrawals",
+        COUNT(*) FILTER (WHERE type = 'withdrawal')                            AS "withdrawalCount",
+        COALESCE(SUM(CASE WHEN type = 'bet_placed' THEN -amount ELSE 0 END), 0) AS "staked",
+        -- bet_payout, not position_payout: comparing an enum column to a
+        -- label that does not exist is a hard error, not an empty result.
+        -- (No backticks in here — this is inside a template literal.)
+        COALESCE(SUM(CASE WHEN type = 'bet_payout' THEN amount ELSE 0 END), 0) AS "payouts",
+        COALESCE(SUM(amount), 0)                                               AS "heldForUsers"
+      FROM transactions
+      WHERE currency = 'USDT'
+    `);
+
+    const [wd] = await this.dataSource.query(`
+      SELECT
+        COALESCE(SUM(CASE WHEN "approvalStatus" = 'pending_approval'
+                          THEN "amountUsdt" ELSE 0 END), 0) AS "pendingApproval",
+        COALESCE(SUM(CASE WHEN "approvalStatus" = 'approved'
+                           AND ("remoteStatus" IS DISTINCT FROM 'completed')
+                          THEN "amountUsdt" ELSE 0 END), 0) AS "inFlight"
+      FROM crypto_withdrawals
+    `);
+
+    const n = (v: unknown) => Number(v) || 0;
+
+    const expectedCustody = n(flow.deposits) - n(flow.withdrawals);
+    const accountedFor =
+      n(flow.heldForUsers) + n(active.activePool) + n(settled.houseIncome);
+
+    return {
+      settled: {
+        pool: n(settled.settledPool),
+        houseIncome: n(settled.houseIncome),
+        paidOut: n(settled.paidOut),
+        count: n(settled.settledCount),
+      },
+      active: {
+        pool: n(active.activePool),
+        books: n(active.activeBooks),
+      },
+      flow: {
+        deposits: n(flow.deposits),
+        depositCount: n(flow.depositCount),
+        withdrawals: n(flow.withdrawals),
+        withdrawalCount: n(flow.withdrawalCount),
+        staked: n(flow.staked),
+        payouts: n(flow.payouts),
+        heldForUsers: n(flow.heldForUsers),
+        pendingApproval: n(wd.pendingApproval),
+        inFlight: n(wd.inFlight),
+      },
+      custody: {
+        expected: expectedCustody,
+        accountedFor,
+        // Should be zero. Anything else means money exists in one view and
+        // not the other, which is the whole reason to compute both.
+        difference: Number((expectedCustody - accountedFor).toFixed(6)),
       },
     };
   }
