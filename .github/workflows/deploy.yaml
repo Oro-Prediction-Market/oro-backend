@@ -56,9 +56,18 @@ jobs:
               || warn "TWENTYONE_PAY_NETWORKS — unset means no chains are offered and no deposit can start"
           fi
 
-          BASE='${{ vars.TWENTYONE_PAY_BASE_URL }}'
+          # `vars` first, then `secrets` — same as the other two below. Reading
+          # only one of them meant the value was invisible if it happened to be
+          # stored as the other kind, and the deploy warned that a variable you
+          # had set was missing.
+          BASE='${{ vars.TWENTYONE_PAY_BASE_URL || secrets.TWENTYONE_PAY_BASE_URL }}'
           if [ -z "$BASE" ]; then
-            warn "TWENTYONE_PAY_BASE_URL (USDT deposits and withdrawals)"
+            # Only worth mentioning when the rail is switched on. With
+            # USDT_ENABLED unset or false, nothing calls 21 Pay and the absence
+            # is simply the current state of the world, not a problem.
+            if [ '${{ vars.USDT_ENABLED }}${{ secrets.USDT_ENABLED }}' = 'true' ]; then
+              warn "TWENTYONE_PAY_BASE_URL — USDT is enabled but there is no API base URL, so no call can be made"
+            fi
           elif ! echo "$BASE" | grep -q '/v1$'; then
             # Without the prefix every call lands on their web console, which
             # answers 404 with an HTML page — it reads as a missing endpoint
@@ -77,6 +86,7 @@ jobs:
           # would turn `USDT_ENABLED` into `***` in the logs and blank out the
           # word "tron" in any line that mentions it. Read from `vars` first,
           # falling back to `secrets` so it works either way.
+          PAY21_BASE_URL='${{ vars.TWENTYONE_PAY_BASE_URL || secrets.TWENTYONE_PAY_BASE_URL }}'
           USDT_NETWORKS='${{ vars.TWENTYONE_PAY_NETWORKS || secrets.TWENTYONE_PAY_NETWORKS }}'
           # Defaults to off. The rail going live should be a deliberate act,
           # not something that follows from forgetting to set a variable.
@@ -132,7 +142,7 @@ jobs:
             --from-literal=EMAIL_SMTP_PASSWORD='${{ secrets.EMAIL_SMTP_PASSWORD }}' \
             --from-literal=SMS_PASSWORD='${{ secrets.SMS_PASSWORD }}' \
             --from-literal=GOOGLE_CLIENT_ID='${{ secrets.GOOGLE_CLIENT_ID }}' \
-            --from-literal=TWENTYONE_PAY_BASE_URL='${{ vars.TWENTYONE_PAY_BASE_URL }}' \
+            --from-literal=TWENTYONE_PAY_BASE_URL="$PAY21_BASE_URL" \
             --from-literal=TWENTY_ONE_PAY_API='${{ secrets.TWENTY_ONE_PAY_API }}' \
             --from-literal=TWENTYONE_PAY_WEBHOOK_SECRET='${{ secrets.TWENTYONE_PAY_WEBHOOK_SECRET }}' \
             --from-literal=TWENTYONE_PAY_NETWORKS="$USDT_NETWORKS" \
