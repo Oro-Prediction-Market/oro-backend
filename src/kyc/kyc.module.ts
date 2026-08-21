@@ -53,9 +53,26 @@ import { Logger } from "@nestjs/common";
           );
         }
 
-        return MinioKycDocumentStorage.isConfigured()
-          ? new MinioKycDocumentStorage()
-          : new UnconfiguredKycDocumentStorage();
+        if (!MinioKycDocumentStorage.isConfigured()) {
+          return new UnconfiguredKycDocumentStorage();
+        }
+
+        const storage = new MinioKycDocumentStorage();
+        void storage.healthy().then(({ ok, reason }) => {
+          if (ok) {
+            log.log(
+              `Document storage reachable at ${process.env.MINIO_ENDPOINT} ` +
+                `(bucket ${process.env.MINIO_KYC_BUCKET || "oro-kyc"}).`,
+            );
+          } else {
+            log.error(
+              `Document storage NOT reachable at ${process.env.MINIO_ENDPOINT}: ${reason}. ` +
+                `Uploads will fail. Check the endpoint host and port, the ` +
+                `access keys, and that the bucket exists.`,
+            );
+          }
+        });
+        return storage;
       },
     },
   ],

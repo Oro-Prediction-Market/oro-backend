@@ -55,12 +55,15 @@ jobs:
             [ -n '${{ vars.TWENTYONE_PAY_NETWORKS }}${{ secrets.TWENTYONE_PAY_NETWORKS }}' ] \
               || warn "TWENTYONE_PAY_NETWORKS — unset means no chains are offered and no deposit can start"
           fi
+          if [ -n '${{ secrets.KYC_ENCRYPTION_KEY }}' ] \
+             && [ '${{ secrets.KYC_ENCRYPTION_KEY }}' = '${{ secrets.KYC_INDEX_KEY }}' ]; then
+            echo "::error::KYC_ENCRYPTION_KEY and KYC_INDEX_KEY are identical — they must differ."
+            exit 1
+          fi
+
           BASE='${{ vars.TWENTYONE_PAY_BASE_URL || secrets.TWENTYONE_PAY_BASE_URL || 'https://dev-21pay.tech.bt/v1' }}'
           NORMALISED="$(echo "$BASE" | sed 's:/*$::')"
           if ! echo "$NORMALISED" | grep -q '/v1$'; then
-            # Without the prefix every call lands on their web console, which
-            # answers 404 with an HTML page — it reads as a missing endpoint
-            # when it is a missing path segment. That cost real time once.
             echo "::error::TWENTYONE_PAY_BASE_URL must end in /v1 (e.g. https://pay.example/v1). Stored value does not."
             exit 1
           fi
@@ -74,12 +77,15 @@ jobs:
           USDT_NETWORKS='${{ vars.TWENTYONE_PAY_NETWORKS || secrets.TWENTYONE_PAY_NETWORKS }}'
           USDT_ENABLED='${{ vars.USDT_ENABLED || secrets.USDT_ENABLED || 'false' }}'
           MINIO_ENDPOINT='${{ vars.MINIO_ENDPOINT || secrets.MINIO_ENDPOINT }}'
-          MINIO_ACCESS_KEY="$(kubectl -n minio get secret minio -o jsonpath='{.data.root-user}' 2>/dev/null | base64 -d || true)"
-          MINIO_SECRET_KEY="$(kubectl -n minio get secret minio -o jsonpath='{.data.root-password}' 2>/dev/null | base64 -d || true)"
+          MINIO_ACCESS_KEY='${{ secrets.MINIO_ACCESS_KEY }}'
+          MINIO_SECRET_KEY='${{ secrets.MINIO_SECRET_KEY }}'
+
+          # Names the tenant's own Secrets so the log says where to look,
+          # without printing anything from them.
           if [ -z "$MINIO_ACCESS_KEY" ]; then
-            MINIO_ENDPOINT='${{ secrets.MINIO_ENDPOINT }}'
-            MINIO_ACCESS_KEY='${{ secrets.MINIO_ACCESS_KEY }}'
-            MINIO_SECRET_KEY='${{ secrets.MINIO_SECRET_KEY }}'
+            echo "::warning::MINIO_ACCESS_KEY is not set. Candidate Secrets in the cluster:"
+            kubectl -n minio get secret --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null \
+              | sed 's/^/           /' || true
           fi
 
           kubectl create secret generic oro-secrets --namespace=$NS \
@@ -117,6 +123,8 @@ jobs:
             --from-literal=EMAIL_SMTP_PASSWORD='${{ secrets.EMAIL_SMTP_PASSWORD }}' \
             --from-literal=SMS_PASSWORD='${{ secrets.SMS_PASSWORD }}' \
             --from-literal=GOOGLE_CLIENT_ID='${{ secrets.GOOGLE_CLIENT_ID }}' \
+            --from-literal=KYC_ENCRYPTION_KEY='${{ secrets.KYC_ENCRYPTION_KEY }}' \
+            --from-literal=KYC_INDEX_KEY='${{ secrets.KYC_INDEX_KEY }}' \
             --from-literal=TWENTYONE_PAY_BASE_URL="$PAY21_BASE_URL" \
             --from-literal=TWENTY_ONE_PAY_API='${{ secrets.TWENTY_ONE_PAY_API }}' \
             --from-literal=TWENTYONE_PAY_WEBHOOK_SECRET='${{ secrets.TWENTYONE_PAY_WEBHOOK_SECRET }}' \
