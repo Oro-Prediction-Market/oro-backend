@@ -191,6 +191,23 @@ function kycImageSignature(objectKey: string, expires: number): string {
     .digest("hex");
 }
 
+export function kycConfigReport(): { ready: boolean; missing: string[] } {
+  const missing: string[] = [];
+  const key = process.env.KYC_ENCRYPTION_KEY;
+  const index = process.env.KYC_INDEX_KEY;
+
+  if (!key || key.length < 32) missing.push("KYC_ENCRYPTION_KEY (32+ chars)");
+  if (!index || index.length < 32) missing.push("KYC_INDEX_KEY (32+ chars)");
+  if (key && index && key === index) {
+    missing.push("KYC_INDEX_KEY must differ from KYC_ENCRYPTION_KEY");
+  }
+  if (!process.env.MINIO_ENDPOINT) missing.push("MINIO_ENDPOINT");
+  if (!process.env.MINIO_ACCESS_KEY) missing.push("MINIO_ACCESS_KEY");
+  if (!process.env.MINIO_SECRET_KEY) missing.push("MINIO_SECRET_KEY");
+
+  return { ready: missing.length === 0, missing };
+}
+
 @Injectable()
 export class UnconfiguredKycDocumentStorage extends KycDocumentStorage {
   private readonly logger = new Logger(UnconfiguredKycDocumentStorage.name);

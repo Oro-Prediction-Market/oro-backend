@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { KycService } from "../kyc/kyc.service";
+import { kycConfigReport } from "../kyc/kyc-document-storage";
 import { KycStatus } from "../entities/user.entity";
 import {
   KycDocumentStatus,
@@ -484,5 +485,64 @@ describe("KycService.statusFor", () => {
       rejectionReason: null,
       canSubmit: true,
     });
+  });
+});
+
+describe("kycConfigReport", () => {
+  const KEYS = [
+    "KYC_ENCRYPTION_KEY",
+    "KYC_INDEX_KEY",
+    "MINIO_ENDPOINT",
+    "MINIO_ACCESS_KEY",
+    "MINIO_SECRET_KEY",
+  ];
+  const saved: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    for (const k of KEYS) {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    }
+  });
+  afterEach(() => {
+    for (const k of KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k]!;
+    }
+  });
+
+  it("names every missing piece at once, not just the first", () => {
+    // Submission checks the keys, then storage, and both answer with the same
+    // "temporarily unavailable" message — so fixing one only reveals the next.
+    const { ready, missing } = kycConfigReport();
+    expect(ready).toBe(false);
+    expect(missing).toHaveLength(5);
+  });
+
+  it("rejects a key that is too short to be worth having", () => {
+    process.env.KYC_ENCRYPTION_KEY = "short";
+    expect(kycConfigReport().missing).toContain(
+      "KYC_ENCRYPTION_KEY (32+ chars)",
+    );
+  });
+
+  it("refuses the two keys being the same value", () => {
+    // They exist as two keys precisely so leaking one does not compromise the
+    // other; setting both to the same string quietly removes that.
+    const same = "a".repeat(40);
+    process.env.KYC_ENCRYPTION_KEY = same;
+    process.env.KYC_INDEX_KEY = same;
+    expect(kycConfigReport().missing).toContain(
+      "KYC_INDEX_KEY must differ from KYC_ENCRYPTION_KEY",
+    );
+  });
+
+  it("reports ready when everything is present", () => {
+    process.env.KYC_ENCRYPTION_KEY = "a".repeat(40);
+    process.env.KYC_INDEX_KEY = "b".repeat(40);
+    process.env.MINIO_ENDPOINT = "minio:9000";
+    process.env.MINIO_ACCESS_KEY = "user";
+    process.env.MINIO_SECRET_KEY = "pass";
+    expect(kycConfigReport()).toEqual({ ready: true, missing: [] });
   });
 });

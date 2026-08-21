@@ -15,7 +15,9 @@ import {
   KycDocumentStorage,
   MinioKycDocumentStorage,
   UnconfiguredKycDocumentStorage,
+  kycConfigReport,
 } from "./kyc-document-storage";
+import { Logger } from "@nestjs/common";
 
 @Module({
   imports: [TypeOrmModule.forFeature([User, UserKycDocument, AuditLog])],
@@ -40,10 +42,21 @@ import {
     // A factory runs at container init, after the environment is loaded.
     {
       provide: KycDocumentStorage,
-      useFactory: () =>
-        MinioKycDocumentStorage.isConfigured()
+      useFactory: () => {
+        const { ready, missing } = kycConfigReport();
+        const log = new Logger("KycConfig");
+        if (ready) {
+          log.log("Identity verification is fully configured.");
+        } else {
+          log.warn(
+            `Identity verification will refuse submissions. Missing: ${missing.join(", ")}`,
+          );
+        }
+
+        return MinioKycDocumentStorage.isConfigured()
           ? new MinioKycDocumentStorage()
-          : new UnconfiguredKycDocumentStorage(),
+          : new UnconfiguredKycDocumentStorage();
+      },
     },
   ],
   exports: [KycService],
