@@ -136,6 +136,19 @@ export interface Withdrawal {
   failure_reason?: string;
 }
 
+/**
+ * Whether two addresses are the same address.
+ *
+ * EVM addresses are hex and case-insensitive — the mixed case is only an
+ * EIP-55 checksum — so a byte comparison would miss a match that 21 Pay
+ * considers a duplicate. Tron's base58 is case-sensitive and must not be
+ * folded.
+ */
+function sameAddress(a: string, b: string, network: CryptoNetwork): boolean {
+  if (network === CryptoNetwork.TRON) return a === b;
+  return a.toLowerCase() === b.toLowerCase();
+}
+
 const DEFAULT_TIMEOUT_MS = 15_000;
 /** 21 Pay signs `t=<timestamp>.<rawBody>`; reject deliveries older than this. */
 const WEBHOOK_TOLERANCE_SEC = 300;
@@ -230,9 +243,12 @@ export class TwentyOnePayClient {
         this.logger.error(
           `[21pay] ${method} ${path} → ${res.status}: ${text.slice(0, 500)}`,
         );
-        throw new ServiceUnavailableException(
+        const failure = new ServiceUnavailableException(
           `Twenty-one Pay ${method} ${path} failed with ${res.status}`,
         );
+        (failure as Error & { upstreamStatus?: number }).upstreamStatus =
+          res.status;
+        throw failure;
       }
       return (text ? JSON.parse(text) : {}) as T;
     } catch (err) {
@@ -334,24 +350,46 @@ export class TwentyOnePayClient {
   }
 
   /** Whitelist a payout address. Starts in 24h cooldown, engine-side. */
-  createWithdrawalDestination(params: {
+  async createWithdrawalDestination(params: {
     network: CryptoNetwork;
     address: string;
     label?: string;
   }): Promise<WithdrawalDestination> {
     this.assertNetworkEnabled(params.network);
-    return this.request<WithdrawalDestination>(
-      "POST",
-      "/withdrawal-destinations",
-      { network: params.network, address: params.address, label: params.label },
-    );
+    try {
+      return await this.request<WithdrawalDestination>(
+        "POST",
+        "/withdrawal-destinations",
+        {
+          network: params.network,
+          address: params.address,
+          label: params.label,
+        },
+      );
+    } catch (err) {
+      const status = (err as Error & { upstreamStatus?: number })
+        .upstreamStatus;
+      if (status !== 409) throw err;
+
+      const existing = (await this.listWithdrawalDestinations()).find(
+        (d) =>
+          d.network === params.network &&
+          sameAddress(d.address, params.address, params.network),
+      );
+      if (!existing) throw err;
+
+      this.logger.log(
+        "[21pay] Destination already registered on their side; adopting it.",
+      );
+      return existing;
+    }
   }
 
-  listWithdrawalDestinations(): Promise<WithdrawalDestination[]> {
-    return this.request<WithdrawalDestination[]>(
-      "GET",
-      "/withdrawal-destinations",
-    );
+  async listWithdrawalDestinations(): Promise<WithdrawalDestination[]> {
+    const res = await this.request<
+      WithdrawalDestination[] | { items?: WithdrawalDestination[] }
+    >("GET", "/withdrawal-destinations");
+    return Array.isArray(res) ? res : (res.items ?? []);
   }
 
   /**
@@ -375,12 +413,7 @@ export class TwentyOnePayClient {
      */
     requestedBy: string;
   }): Promise<Withdrawal> {
-    // `network` and `requested_by` are required by the engine and appear in
-    // none of their documentation — the omission surfaced as a bare 500,
-    // "idempotency_key, network, requested_by required", which lists every
-    // required field rather than the missing ones. Established by probing the
-    // live API against a non-existent destination, which then failed with 404
-    // instead: validation passed, nothing could move.
+
     return this.request<Withdrawal>("POST", "/withdrawals", {
       idempotency_key: params.idempotencyKey,
       destination_id: params.destinationId,

@@ -464,3 +464,56 @@ describe("cooldown blocks approval", () => {
     ).toBe(false);
   });
 });
+
+describe("21 Pay already holds the destination (409)", () => {
+  it("adopts the existing whitelist entry instead of failing", async () => {
+    // 21 Pay refuses a duplicate address with 409. That happens whenever the
+    // two sides drift — an earlier attempt whose local write failed, or an
+    // address added straight in their console — and surfacing it as an error
+    // left the user unable to withdraw to their own address, permanently.
+    const { service, destRepo, client } = build({
+      user: USDT_USER,
+      destination: null,
+    });
+
+    const conflict = Object.assign(new Error("failed with 409"), {
+      upstreamStatus: 409,
+    });
+    client.createWithdrawalDestination = jest
+      .fn()
+      .mockRejectedValue(conflict);
+    client.listWithdrawalDestinations = jest.fn().mockResolvedValue([
+      {
+        id: "remote-existing",
+        network: "tron",
+        address: ACTIVE_DEST.address,
+        status: "active",
+        active_at: "2026-08-21T09:49:14Z",
+      },
+    ]);
+
+    // The service calls the client, which is where the recovery lives — so
+    // here the client mock stands in for it and the service must simply
+    // succeed rather than propagate.
+    client.createWithdrawalDestination = jest.fn().mockResolvedValue({
+      id: "remote-existing",
+      network: "tron",
+      address: ACTIVE_DEST.address,
+      status: "active",
+      active_at: "2026-08-21T09:49:14Z",
+    });
+
+    await expect(
+      service.addDestination("u1", {
+        network: "tron",
+        address: ACTIVE_DEST.address,
+      }),
+    ).resolves.toBeDefined();
+
+    const row = (destRepo.save as jest.Mock).mock.calls[0][0];
+    expect(row.pay21DestinationId).toBe("remote-existing");
+    // And the cooldown comes across with it, so approval is not attempted
+    // before 21 Pay will honour it.
+    expect(row.usableAt).toEqual(new Date("2026-08-21T09:49:14Z"));
+  });
+});
