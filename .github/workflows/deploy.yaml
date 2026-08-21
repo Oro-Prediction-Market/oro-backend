@@ -76,7 +76,7 @@ jobs:
           PAY21_BASE_URL="$(echo '${{ vars.TWENTYONE_PAY_BASE_URL || secrets.TWENTYONE_PAY_BASE_URL || 'https://dev-21pay.tech.bt/v1' }}' | sed 's:/*$::')"
           USDT_NETWORKS='${{ vars.TWENTYONE_PAY_NETWORKS || secrets.TWENTYONE_PAY_NETWORKS }}'
           USDT_ENABLED='${{ vars.USDT_ENABLED || secrets.USDT_ENABLED || 'false' }}'
-          MINIO_ENDPOINT='${{ vars.MINIO_ENDPOINT || secrets.MINIO_ENDPOINT }}'
+          MINIO_ENDPOINT='${{ vars.MINIO_ENDPOINT || secrets.MINIO_ENDPOINT || 'minio.minio.svc.cluster.local:80' }}'
           MINIO_ACCESS_KEY='${{ secrets.MINIO_ACCESS_KEY }}'
           MINIO_SECRET_KEY='${{ secrets.MINIO_SECRET_KEY }}'
 
