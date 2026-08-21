@@ -1518,6 +1518,86 @@ export class AdminController {
     };
   }
 
+  @Get("usdt/users")
+  @ApiOperation({ summary: "Accounts holding or moving USDT, with balances" })
+  async listUsdtUsers(@Query("limit") limit?: string) {
+    const take = Math.min(Number(limit) || 100, 500);
+
+    const rows = await this.dataSource.query(
+      `
+      SELECT
+        u.id,
+        u."firstName",
+        u."lastName",
+        u.email,
+        u.currency                                   AS "nativeCurrency",
+        u."kycStatus",
+        u."createdAt",
+        COALESCE(bal.balance, 0)                     AS "usdtBalance",
+        COALESCE(dep.total, 0)                       AS "deposited",
+        COALESCE(stake.total, 0)                     AS "staked",
+        COALESCE(wd.completed, 0)                    AS "withdrawn",
+        COALESCE(wd.in_flight, 0)                    AS "inFlight",
+        COALESCE(wd.pending, 0)                      AS "pendingWithdrawal",
+        COALESCE(wd.pending_count, 0)                AS "pendingWithdrawalCount"
+      FROM users u
+      LEFT JOIN (
+        SELECT "userId", SUM(amount) AS balance
+        FROM transactions WHERE currency = 'USDT' GROUP BY "userId"
+      ) bal ON bal."userId" = u.id
+      LEFT JOIN (
+        SELECT "userId", SUM(amount) AS total
+        FROM transactions WHERE currency = 'USDT' AND type = 'deposit'
+        GROUP BY "userId"
+      ) dep ON dep."userId" = u.id
+      LEFT JOIN (
+        SELECT "userId", SUM(ABS(amount)) AS total
+        FROM transactions WHERE currency = 'USDT' AND type = 'bet_placed'
+        GROUP BY "userId"
+      ) stake ON stake."userId" = u.id
+      LEFT JOIN (
+        -- Three states, not two. An approved withdrawal that 21 Pay is still
+        -- broadcasting has left our ledger but has not reached the user, so
+        -- counting it as "withdrawn" overstates what actually landed and
+        -- hides the window where a payout can still fail.
+        SELECT "userId",
+          SUM(CASE WHEN "approvalStatus" = 'approved' AND "remoteStatus" = 'completed'
+                   THEN "amountUsdt" ELSE 0 END) AS completed,
+          SUM(CASE WHEN "approvalStatus" = 'approved'
+                    AND ("remoteStatus" IS DISTINCT FROM 'completed')
+                   THEN "amountUsdt" ELSE 0 END) AS in_flight,
+          SUM(CASE WHEN "approvalStatus" = 'pending_approval' THEN "amountUsdt" ELSE 0 END) AS pending,
+          COUNT(*) FILTER (WHERE "approvalStatus" = 'pending_approval') AS pending_count
+        FROM crypto_withdrawals GROUP BY "userId"
+      ) wd ON wd."userId" = u.id
+      WHERE u.currency = 'USDT'
+         OR EXISTS (
+              SELECT 1 FROM transactions t
+              WHERE t."userId" = u.id AND t.currency = 'USDT'
+            )
+      ORDER BY COALESCE(bal.balance, 0) DESC, u."createdAt" DESC
+      LIMIT $1
+      `,
+      [take],
+    );
+
+    const num = (v: unknown) => Number(v) || 0;
+    return {
+      users: rows,
+      totals: {
+        accounts: rows.length,
+        held: rows.reduce((t: number, r: any) => t + num(r.usdtBalance), 0),
+        deposited: rows.reduce((t: number, r: any) => t + num(r.deposited), 0),
+        withdrawn: rows.reduce((t: number, r: any) => t + num(r.withdrawn), 0),
+        inFlight: rows.reduce((t: number, r: any) => t + num(r.inFlight), 0),
+        pendingWithdrawal: rows.reduce(
+          (t: number, r: any) => t + num(r.pendingWithdrawal),
+          0,
+        ),
+      },
+    };
+  }
+
   @Patch("users/:userId/admin")
   @ApiOperation({ summary: "Grant or revoke admin role for a user" })
   async toggleAdmin(
