@@ -2035,11 +2035,20 @@ export class AdminController {
   @ApiOperation({ summary: "List all transactions — full financial ledger" })
   @ApiQuery({ name: "type", required: false })
   @ApiQuery({ name: "search", required: false, type: String })
+  @ApiQuery({
+    name: "currency",
+    required: false,
+    description:
+      "Restrict to one book. The two never mix and must never be summed — " +
+      "there is no exchange rate between them — so a screen showing both is " +
+      "a screen whose totals mean nothing.",
+  })
   @ApiQuery({ name: "page", required: false, type: Number })
   @ApiQuery({ name: "limit", required: false, type: Number })
   async listTransactions(
     @Query("type") type?: string,
     @Query("search") search?: string,
+    @Query("currency") currency?: string,
     @Query("page") page = "1",
     @Query("limit") limit = "50",
   ) {
@@ -2074,18 +2083,36 @@ export class AdminController {
       );
     }
 
+    if (currency === "BTN") {
+      qb.andWhere("(t.currency = :cur OR t.currency IS NULL)", { cur: "BTN" });
+    } else if (currency) {
+      qb.andWhere("t.currency = :cur", { cur: currency });
+    }
+
     const [data, total] = await qb.getManyAndCount();
 
     // Whole-ledger per-type counts for the summary cards (independent of the
     // active type filter / pagination, so the totals stay stable).
-    const rawCounts = await this.transactionRepo
+    const countsQb = this.transactionRepo
       .createQueryBuilder("t")
       .select("t.type", "type")
       .addSelect("COUNT(*)", "count")
-      .groupBy("t.type")
-      .getRawMany();
+      .addSelect("COALESCE(SUM(t.amount), 0)", "net")
+      .groupBy("t.type");
+    if (currency === "BTN") {
+      countsQb.andWhere("(t.currency = :cur OR t.currency IS NULL)", {
+        cur: "BTN",
+      });
+    } else if (currency) {
+      countsQb.andWhere("t.currency = :cur", { cur: currency });
+    }
+    const rawCounts = await countsQb.getRawMany();
     const counts: Record<string, number> = {};
-    for (const r of rawCounts) counts[r.type] = Number(r.count);
+    const net: Record<string, number> = {};
+    for (const r of rawCounts) {
+      counts[r.type] = Number(r.count);
+      net[r.type] = Number(r.net);
+    }
 
     return {
       data,
@@ -2094,6 +2121,8 @@ export class AdminController {
       limit: take,
       pages: Math.ceil(total / take),
       counts,
+      net,
+      currency: currency ?? null,
     };
   }
 
