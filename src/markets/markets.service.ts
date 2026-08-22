@@ -214,6 +214,69 @@ export class MarketsService implements OnModuleInit {
     }
   }
 
+  /**
+   * Append new outcomes to an existing market. Used to keep season-long "stat"
+   * markets (top scorer, assists, …) current as new players enter the
+   * leaderboard over the season. Only allowed while the market is still open for
+   * betting. New outcomes start at a zero pool; their per-currency books are
+   * created lazily on the first bet (ensureOutcomeBooks), so this stays safe
+   * alongside the multi-currency engine and never touches existing bets.
+   *
+   * Deduped by exact (case-insensitive) label — callers that need fuzzy
+   * name-matching should pre-filter with statNamesMatch. Returns how many were
+   * actually added.
+   */
+  async addOutcomes(
+    marketId: string,
+    items: { label: string; imageUrl?: string | null }[],
+  ): Promise<number> {
+    if (!items || items.length === 0) return 0;
+
+    const market = await this.marketRepo.findOne({
+      where: { id: marketId },
+      relations: ["outcomes"],
+    });
+    if (!market) throw new NotFoundException("Market not found");
+    if (
+      market.status !== MarketStatus.UPCOMING &&
+      market.status !== MarketStatus.OPEN
+    ) {
+      throw new BadRequestException(
+        "Outcomes can only be added while the market is open for betting",
+      );
+    }
+
+    const seen = new Set(
+      (market.outcomes ?? []).map((o) => o.label.trim().toLowerCase()),
+    );
+    let nextSort =
+      (market.outcomes ?? []).reduce((m, o) => Math.max(m, o.sortOrder), -1) + 1;
+
+    const fresh = items.filter((it) => {
+      const key = (it.label ?? "").trim().toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    if (fresh.length === 0) return 0;
+
+    const rows = fresh.map((it) =>
+      this.outcomeRepo.create({
+        label: it.label.trim(),
+        imageUrl: it.imageUrl ?? null,
+        totalBetAmount: 0,
+        currentOdds: 0,
+        lmsrProbability: 0,
+        isWinner: false,
+        marketId: market.id,
+        sortOrder: nextSort++,
+      }),
+    );
+    await this.outcomeRepo.save(rows);
+    await this.invalidateMarketCache();
+    return rows.length;
+  }
+
   async createGroup(dto: CreateMarketGroupDto): Promise<Market[]> {
     const groupId = randomUUID();
     const markets: Market[] = [];

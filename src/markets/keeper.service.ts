@@ -21,6 +21,7 @@ import {
   buildUclStatMarketDto,
 } from "../ucl/ucl-stat-markets";
 import { CreateMarketDto } from "./dto/create-market.dto";
+import { statNamesMatch } from "./stat-outcome-match.util";
 
 export interface KeeperLogEntry {
   id: number;
@@ -468,6 +469,120 @@ export class KeeperService {
             `🏆 Premier League season is underway — I auto-created ${created.length} stat market(s):\n• ${created.join("\n• ")}\n\nReview close dates in Admin → Markets. Betting is live on the app's Stats tab.`,
           )
           .catch(() => undefined);
+      }
+    }
+  }
+
+  // ── Cron: keep season stat markets' fields current (daily) ──────────────────
+  // The season stat markets (top scorer, assists, …) are created once from the
+  // leaderboard as it stood that day, so a market opened after GW1 only lists the
+  // handful of players who had scored. This cron tops up the field: each day it
+  // reads the current top STAT_FIELD_SIZE of each board and adds any player not
+  // already an outcome, so new scorers become bettable and the eventual season
+  // winner is guaranteed to be in the list. Outcomes are only ever added, never
+  // removed, and only while the market is still open for betting.
+  private static readonly STAT_FIELD_SIZE = 25;
+
+  @Cron("30 7 * * *")
+  async handleEplStatMarketSync() {
+    if (!this.isActive) return;
+    await this.withClusterLock("keeper:epl-stat-sync", 280, () =>
+      this.syncStatMarketOutcomes(
+        "EPL",
+        () => this.epl.getSeasonInfo(),
+        () => this.epl.getStats(),
+        Object.values(EPL_STAT_MARKET_META),
+      ),
+    );
+  }
+
+  @Cron("35 7 * * *")
+  async handleUclStatMarketSync() {
+    if (!this.isActive) return;
+    await this.withClusterLock("keeper:ucl-stat-sync", 280, () =>
+      this.syncStatMarketOutcomes(
+        "UCL",
+        () => this.ucl.getSeasonInfo(),
+        () => this.ucl.getStats(),
+        Object.values(UCL_STAT_MARKET_META),
+      ),
+    );
+  }
+
+  private async syncStatMarketOutcomes(
+    tag: string,
+    getSeasonInfo: () => Promise<{ started: boolean }>,
+    getStats: () => Promise<any>,
+    metas: readonly { board: string; subcategory: string; title: string }[],
+  ): Promise<void> {
+    let info: { started: boolean };
+    try {
+      info = await getSeasonInfo();
+    } catch (e) {
+      this.logger.warn(
+        `[Keeper] ${tag} stat-sync season check failed: ${(e as Error).message}`,
+      );
+      return;
+    }
+    if (!info.started) return; // off-season — boards show last season, do nothing
+
+    let stats: any;
+    try {
+      stats = await getStats();
+    } catch (e) {
+      this.logger.warn(
+        `[Keeper] ${tag} stat-sync stats fetch failed: ${(e as Error).message}`,
+      );
+      return;
+    }
+
+    for (const meta of metas) {
+      // Only sync a market that still exists and is open for betting.
+      const market = await this.marketRepo.findOne({
+        where: {
+          subcategory: meta.subcategory,
+          status: In([MarketStatus.UPCOMING, MarketStatus.OPEN]),
+        },
+        relations: ["outcomes"],
+      });
+      if (!market) continue;
+
+      const board: {
+        player: string;
+        face?: string;
+        faceBackup?: string;
+      }[] = (stats?.[meta.board] ?? []).slice(0, KeeperService.STAT_FIELD_SIZE);
+      if (board.length === 0) continue;
+
+      const additions = board
+        .filter(
+          (p) =>
+            p.player &&
+            !(market.outcomes ?? []).some((o) =>
+              statNamesMatch(o.label, p.player),
+            ),
+        )
+        .map((p) => ({
+          label: p.player,
+          imageUrl: p.face || p.faceBackup || null,
+        }));
+      if (additions.length === 0) continue;
+
+      try {
+        const added = await this.marketsService.addOutcomes(
+          market.id,
+          additions,
+        );
+        if (added > 0) {
+          this.addLog(
+            "success",
+            `${tag} stat sync: added ${added} new player(s) to ${meta.title}.`,
+          );
+        }
+      } catch (e) {
+        this.logger.error(
+          `[Keeper] ${tag} stat-sync ${meta.subcategory} failed: ${(e as Error).message}`,
+        );
       }
     }
   }
