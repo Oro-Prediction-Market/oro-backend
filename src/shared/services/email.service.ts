@@ -43,6 +43,8 @@ export class EmailService implements OnModuleInit {
     subject: string;
     text?: string;
     html?: string;
+    /** Address replies should go to (e.g. the user who sent feedback). */
+    replyTo?: string;
   }): Promise<boolean> {
     if (!this.transporter) {
       this.logger.debug("Email transporter not configured, skipping");
@@ -56,6 +58,7 @@ export class EmailService implements OnModuleInit {
       await this.transporter.sendMail({
         from: `"${fromName}" <${from}>`,
         to: Array.isArray(options.to) ? options.to.join(", ") : options.to,
+        replyTo: options.replyTo,
         subject: options.subject,
         text: options.text,
         html: options.html,

@@ -58,6 +58,7 @@ import { MarketSuggestion } from "./entities/market-suggestion.entity";
 import { MarketSuggestionVote } from "./entities/market-suggestion-vote.entity";
 import { EplModule } from "./epl/epl.module";
 import { UclModule } from "./ucl/ucl.module";
+import { FeedbackModule } from "./feedback/feedback.module";
 import { AmlAlert } from "./aml/entities/aml-alert.entity";
 import { AmlReport } from "./aml/entities/aml-report.entity";
 import { UserNotification } from "./entities/user-notification.entity";
@@ -178,6 +179,7 @@ import { UserNotification } from "./entities/user-notification.entity";
     SuggestionsModule,
     EplModule,
     UclModule,
+    FeedbackModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
