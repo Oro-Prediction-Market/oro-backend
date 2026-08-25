@@ -298,6 +298,52 @@ export class EmailAuthService {
   }
 
   /**
+   * A client capable of the authorization-code exchange.
+   *
+   * The app renders its OWN branded sign-in button and opens Google in a popup
+   * (auth-code flow) — Google's embedded button lives in an un-restylable iframe,
+   * and hiding it under a custom button is blocked by Google's anti-clickjacking
+   * protection. The popup returns a one-time code; exchanging it for tokens needs
+   * the client SECRET as well as the id (unlike `verifyIdToken`). `postmessage`
+   * is the special redirect the popup code flow uses.
+   */
+  private googleCodeClient(): OAuth2Client {
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+    if (!clientId || !clientSecret) {
+      throw new ServiceUnavailableException(
+        "Google sign-in is not configured on this deployment",
+      );
+    }
+    return new OAuth2Client(clientId, clientSecret, "postmessage");
+  }
+
+  /**
+   * Sign in with a Google authorization code (popup / auth-code flow).
+   *
+   * We exchange the one-time code for tokens, then hand the returned ID token to
+   * the exact same verification as the embedded-button flow below — nothing the
+   * client sends is trusted until that verification passes.
+   */
+  async loginWithGoogleCode(
+    code: string,
+    referralCode?: string,
+  ): Promise<{ token: string; user: Partial<User>; isNew: boolean }> {
+    if (!code?.trim()) {
+      throw new BadRequestException("Missing Google authorization code");
+    }
+    let idToken: string | undefined;
+    try {
+      const { tokens } = await this.googleCodeClient().getToken(code);
+      idToken = tokens.id_token ?? undefined;
+    } catch {
+      throw new UnauthorizedException("Google sign-in failed");
+    }
+    if (!idToken) throw new UnauthorizedException("Google sign-in failed");
+    return this.loginWithGoogle(idToken, referralCode);
+  }
+
+  /**
    * Sign in with a Google ID token.
    *
    * The token is verified against Google's public keys with our client id as

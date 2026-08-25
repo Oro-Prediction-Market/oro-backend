@@ -660,15 +660,25 @@ export class AuthController {
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOperation({ summary: "Sign in with a Google ID token" })
   async googleLogin(
-    @Body() body: { idToken?: string; credential?: string; referralCode?: string },
+    @Body()
+    body: {
+      idToken?: string;
+      credential?: string;
+      code?: string;
+      referralCode?: string;
+    },
     @Response({ passthrough: true }) res: ExpressResponse,
   ) {
-    // Google Identity Services names it `credential`; accept either so the
-    // client can pass whatever its library hands back.
-    const result = await this.emailAuth.loginWithGoogle(
-      body?.idToken ?? body?.credential ?? "",
-      body?.referralCode,
-    );
+    // Two shapes are accepted:
+    //  • `code` — the popup / authorization-code flow the branded button uses.
+    //  • `idToken`/`credential` — the older embedded-button ID-token flow, kept
+    //    so any client that still sends one keeps working.
+    const result = body?.code
+      ? await this.emailAuth.loginWithGoogleCode(body.code, body?.referralCode)
+      : await this.emailAuth.loginWithGoogle(
+          body?.idToken ?? body?.credential ?? "",
+          body?.referralCode,
+        );
     this.setAuthCookie(res, result.token);
     return result;
   }
