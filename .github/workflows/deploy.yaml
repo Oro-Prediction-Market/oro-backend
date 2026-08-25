@@ -46,6 +46,12 @@ jobs:
         run: |
           warn() { echo "::warning::$1 is not set — the feature it gates will refuse at runtime."; }
           [ -n '${{ secrets.GOOGLE_CLIENT_ID }}' ]    || warn "GOOGLE_CLIENT_ID (Google sign-in)"
+          # The branded button uses the popup / authorization-code flow, which
+          # exchanges the code server-side. That exchange needs the secret as
+          # well as the id, so an id alone leaves "Continue with Google" 503ing.
+          if [ -n '${{ secrets.GOOGLE_CLIENT_ID }}' ] && [ -z '${{ secrets.GOOGLE_CLIENT_SECRET }}' ]; then
+            warn "GOOGLE_CLIENT_SECRET — GOOGLE_CLIENT_ID is set but the secret is not, so the popup code flow (POST /auth/google) will 503"
+          fi
           [ -n '${{ vars.MINIO_ENDPOINT }}${{ secrets.MINIO_ENDPOINT }}' ] || warn "MINIO_ENDPOINT (document storage)"
           if [ '${{ vars.USDT_ENABLED }}${{ secrets.USDT_ENABLED }}' = 'true' ]; then
             [ -n '${{ secrets.TWENTY_ONE_PAY_API }}' ] \
@@ -123,6 +129,7 @@ jobs:
             --from-literal=EMAIL_SMTP_PASSWORD='${{ secrets.EMAIL_SMTP_PASSWORD }}' \
             --from-literal=SMS_PASSWORD='${{ secrets.SMS_PASSWORD }}' \
             --from-literal=GOOGLE_CLIENT_ID='${{ secrets.GOOGLE_CLIENT_ID }}' \
+            --from-literal=GOOGLE_CLIENT_SECRET='${{ secrets.GOOGLE_CLIENT_SECRET }}' \
             --from-literal=KYC_ENCRYPTION_KEY='${{ secrets.KYC_ENCRYPTION_KEY }}' \
             --from-literal=KYC_INDEX_KEY='${{ secrets.KYC_INDEX_KEY }}' \
             --from-literal=TWENTYONE_PAY_BASE_URL="$PAY21_BASE_URL" \
