@@ -1,4 +1,11 @@
-import { Controller, Get, Post, UseGuards } from "@nestjs/common";
+import {
+  Controller,
+  Get,
+  Post,
+  UseGuards,
+  Logger,
+  ServiceUnavailableException,
+} from "@nestjs/common";
 import { ApiTags, ApiOperation } from "@nestjs/swagger";
 import { TerPriceService, TerPrice } from "./ter-price.service";
 import { TerPriceSamplerService } from "./ter-price-sampler.service";
@@ -9,8 +16,14 @@ import { Public, JwtAuthGuard, AdminGuard } from "../auth/guards";
 @ApiTags("ter")
 @Controller("ter")
 export class TerController {
+  private readonly logger = new Logger(TerController.name);
   private readonly CACHE_KEY = "oro:cache:ter:price";
   private readonly CACHE_TTL = 30; // 30 seconds
+  // Last price we successfully fetched, kept far longer than the hot cache so we
+  // can keep serving a (stale) price when every upstream source is down instead
+  // of 500-ing. Only a fresh success overwrites it.
+  private readonly LAST_GOOD_KEY = "oro:cache:ter:price:last-good";
+  private readonly LAST_GOOD_TTL = 24 * 60 * 60; // 24 hours
 
   constructor(
     private readonly terPriceService: TerPriceService,
@@ -34,13 +47,36 @@ export class TerController {
       return cached;
     }
 
-    // Fetch fresh price
-    const price = await this.terPriceService.fetchPrice();
-
-    // Cache it
-    await this.redis.setJsonEx(this.CACHE_KEY, this.CACHE_TTL, price);
-
-    return price;
+    try {
+      // Fetch fresh price
+      const price = await this.terPriceService.fetchPrice();
+      // Cache it (hot cache) and remember it as the last known-good price.
+      await this.redis.setJsonEx(this.CACHE_KEY, this.CACHE_TTL, price);
+      await this.redis.setJsonEx(this.LAST_GOOD_KEY, this.LAST_GOOD_TTL, price);
+      return price;
+    } catch (err: any) {
+      // Every upstream source failed. Rather than 500 on a 5-second client poll
+      // — which floods the browser console AND our own logs — serve the last
+      // price we did fetch, if we have one. We also stamp it into the hot cache
+      // so we retry upstream at most once per CACHE_TTL instead of on every
+      // request while the outage lasts.
+      const lastGood = await this.redis.getJson<TerPrice>(this.LAST_GOOD_KEY);
+      if (lastGood) {
+        await this.redis.setJsonEx(this.CACHE_KEY, this.CACHE_TTL, lastGood);
+        this.logger.warn(
+          `TER price upstream failed (${err?.message ?? "unknown"}); serving last known-good price.`,
+        );
+        return lastGood;
+      }
+      // No price has ever been fetched — nothing to serve. 503 (not 500) tells
+      // the client this is a transient upstream problem, not a bug.
+      this.logger.error(
+        `TER price unavailable and no last known-good price cached: ${err?.message ?? "unknown"}`,
+      );
+      throw new ServiceUnavailableException(
+        "TER price is temporarily unavailable. Please try again shortly.",
+      );
+    }
   }
 
   @Get("price/history")
