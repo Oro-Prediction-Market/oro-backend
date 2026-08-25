@@ -36,6 +36,7 @@ import {
   UpdateMarketDto,
   ReopenMarketDto,
 } from "../markets/markets.service";
+import { isEplUclSubcategory } from "../markets/market-notify.util";
 import { CreateMarketGroupDto } from "../markets/dto/create-market-group.dto";
 import { UpdateMarketGroupDto } from "../markets/dto/update-market-group.dto";
 import { SuggestionsService } from "../suggestions/suggestions.service";
@@ -1064,21 +1065,27 @@ export class AdminController {
             ? `✅ Correct objectors: bonds returned + rewarded\n`
             : `❌ Wrong objectors: bonds forfeited`)
         : "";
-    // WINNER ANNOUNCEMENT — intentional, keep it.
+    // WINNER ANNOUNCEMENT — intentional for admin-created / one-off markets.
     // Posting the final winner + evidence when a market settles is a deliberate,
     // one-time-per-market event triggered by the admin resolving it, so it is
     // not noisy and users expect it. Keep posting it automatically here. Do not
     // remove it along with the create-time announcement cleanup.
-    await this.telegramSimple.postToChannel(
-      `✅ <b>MARKET SETTLED</b>\n\n` +
-        `📊 <b>${before.title}</b>\n\n` +
-        `🏆 <b>Winner:</b> ${winningOutcome?.label ?? "N/A"}\n` +
-        `💰 <b>Pool:</b> Nu ${Number(before.totalPool).toLocaleString()}` +
-        `${objectionNote}\n\n` +
-        `🔍 <b>Evidence:</b> <a href="${dto.evidenceUrl}">View Source</a>\n` +
-        `📝 ${dto.evidenceNote.slice(0, 200)}\n\n` +
-        `👉 <a href="${miniAppUrl}">View Results & Proof</a>`,
-    );
+    //
+    // EXCEPTION: EPL/UCL markets are excluded — they settle constantly (one per
+    // fixture) and predictors already get an individual result DM, so a channel
+    // post per football result is just noise.
+    if (!isEplUclSubcategory(before.subcategory)) {
+      await this.telegramSimple.postToChannel(
+        `✅ <b>MARKET SETTLED</b>\n\n` +
+          `📊 <b>${before.title}</b>\n\n` +
+          `🏆 <b>Winner:</b> ${winningOutcome?.label ?? "N/A"}\n` +
+          `💰 <b>Pool:</b> Nu ${Number(before.totalPool).toLocaleString()}` +
+          `${objectionNote}\n\n` +
+          `🔍 <b>Evidence:</b> <a href="${dto.evidenceUrl}">View Source</a>\n` +
+          `📝 ${dto.evidenceNote.slice(0, 200)}\n\n` +
+          `👉 <a href="${miniAppUrl}">View Results & Proof</a>`,
+      );
+    }
     return result;
   }
 
