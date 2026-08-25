@@ -190,10 +190,21 @@ export class AuthController {
     @Request() req: any,
     @Response({ passthrough: true }) res: ExpressResponse,
   ) {
+    // "Not signed in" is the normal case for a fresh visitor — this endpoint is
+    // a silent probe fired on every page load. Answer it with 200 + null rather
+    // than 401 so a logged-out visitor's console isn't littered with an error
+    // for something that is not an error. Genuine auth failures elsewhere still
+    // 401; this is only the boot session-restore path.
     const token: string | undefined = req.cookies?.["oro_auth"];
-    if (!token) throw new UnauthorizedException("No session cookie");
+    if (!token) return { token: null, user: null };
 
-    const user = await this.authService.getUserFromToken(token);
+    let user: unknown;
+    try {
+      user = await this.authService.getUserFromToken(token);
+    } catch {
+      // Cookie present but invalid/expired — same as no session to the caller.
+      return { token: null, user: null };
+    }
     // Re-issue the cookie to reset its maxAge
     this.setAuthCookie(res, token);
     return { token, user };
