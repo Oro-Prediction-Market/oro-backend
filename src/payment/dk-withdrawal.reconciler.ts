@@ -19,6 +19,7 @@ import { DKGatewayService } from "./services/dk-gateway/dk-gateway.service";
 import { RedisService } from "../redis/redis.service";
 import { SseService } from "../sse/sse.service";
 import { classifyDkStatus } from "./dk-status.util";
+import { WITHDRAWAL_CONFIRMED, WITHDRAWAL_REFUNDED } from "./dk-ledger-notes";
 import { ledgerBalance } from "../shared/utils/ledger.util";
 
 /**
@@ -204,6 +205,12 @@ export class DKWithdrawalReconciler {
       };
 
       if (verdict === "success") {
+        // Same restamp as confirmWithdrawal's success path.
+        await em.update(
+          Transaction,
+          { paymentId: locked.id, type: TransactionType.WITHDRAWAL },
+          { note: WITHDRAWAL_CONFIRMED },
+        );
         locked.status = PaymentStatus.SUCCESS;
         locked.confirmedAt = new Date();
         locked.failureReason = null;
@@ -224,7 +231,7 @@ export class DKWithdrawalReconciler {
           balanceAfter: balNow + amount,
           paymentId: locked.id,
           userId,
-          note: `DK Bank withdrawal failed — reserved funds returned`,
+          note: WITHDRAWAL_REFUNDED,
         }),
       );
       locked.status = PaymentStatus.FAILED;

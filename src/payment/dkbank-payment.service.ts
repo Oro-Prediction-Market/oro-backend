@@ -26,6 +26,11 @@ import { BhutanAppNotificationService } from "../shared/services/bhutanapp-notif
 import { AuthMethod, AuthProvider } from "../entities/auth-method.entity";
 
 import { classifyDkStatus } from "./dk-status.util";
+import {
+  WITHDRAWAL_CONFIRMED,
+  WITHDRAWAL_REFUNDED,
+  WITHDRAWAL_RESERVED,
+} from "./dk-ledger-notes";
 import { ledgerBalance } from "../shared/utils/ledger.util";
 import { BTN_CURRENCY } from "../entities/transaction.entity";
 
@@ -1069,7 +1074,7 @@ export class DKBankPaymentService {
           balanceAfter: balanceBefore - withdrawalAmount,
           paymentId: lockedPayment.id,
           userId,
-          note: `DK Bank withdrawal reserved`,
+          note: WITHDRAWAL_RESERVED,
         }),
       );
 
@@ -1206,7 +1211,7 @@ export class DKBankPaymentService {
             balanceAfter: balNow + withdrawalAmount,
             paymentId: lockedPayment.id,
             userId,
-            note: `DK Bank withdrawal failed — reserved funds returned`,
+            note: WITHDRAWAL_REFUNDED,
           }),
         );
         lockedPayment.status = PaymentStatus.FAILED;
@@ -1219,7 +1224,14 @@ export class DKBankPaymentService {
         return;
       }
 
-      // Definitive success — the debit already exists; just finalise the payment.
+      // Definitive success — the debit already exists; restamp it so the user's
+      // history reads "confirmed" rather than "reserved", then finalise.
+      await em.update(
+        Transaction,
+        { paymentId: lockedPayment.id, type: TransactionType.WITHDRAWAL },
+        { note: WITHDRAWAL_CONFIRMED },
+      );
+
       lockedPayment.status = PaymentStatus.SUCCESS;
       lockedPayment.confirmedAt = new Date();
       lockedPayment.externalPaymentId = transferResult?.txnId ?? null;

@@ -200,6 +200,8 @@ function makeDataSource(overrides: any = {}) {
     }),
     save: jest.fn().mockImplementation((_e: any, d: any) => Promise.resolve(d)),
     create: jest.fn().mockImplementation((_e: any, d: any) => d),
+    // Restamping the debit note on a confirmed payout goes through em.update().
+    update: jest.fn().mockResolvedValue({ affected: 1 }),
     findOne: jest.fn().mockResolvedValue({ id: "user-1", bonusBalance: 0 }),
     ...overrides,
   };
@@ -1023,6 +1025,68 @@ describe("Merchant vault → user DK account (withdrawal flow)", () => {
       // OTP Redis key cleaned up after use
       expect(redis.del).toHaveBeenCalledWith(
         expect.stringContaining("withdrawal-1"),
+      );
+
+      // The debit was written as "reserved" before the bank call; once DK
+      // confirms, the same row is restamped so the user's history does not
+      // keep reading "reserved" on a payout that completed.
+      expect(dataSource._em.save).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ note: "DK Bank withdrawal reserved" }),
+      );
+      expect(dataSource._em.update).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          paymentId: "withdrawal-1",
+          type: "withdrawal",
+        }),
+        { note: "DK Bank withdrawal confirmed" },
+      );
+    });
+
+    it("does not restamp the debit note when the outcome is ambiguous", async () => {
+      // Still in flight — "reserved" is exactly what it is, so it must stand.
+      const withdrawal = makeWithdrawalPayment({
+        status: PaymentStatus.PENDING,
+      });
+      const paymentRepo = makePaymentRepo(withdrawal);
+      const redis = makeRedis({ otp: "123456", userId: "user-1" });
+      const dkGateway = makeDkGateway();
+      dkGateway.transferToAccount = jest
+        .fn()
+        .mockRejectedValue(new Error("DK Bank timeout"));
+
+      const dataSource = makeDataSource();
+      dataSource._em.getRepository.mockReturnValue({
+        createQueryBuilder: jest.fn().mockReturnValue({
+          setLock: jest.fn().mockReturnThis(),
+          select: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          getOne: jest.fn().mockResolvedValue(withdrawal),
+          getRawOne: jest.fn().mockResolvedValue({ balance: 1000 }),
+        }),
+      });
+
+      const { service } = makeService({
+        payment: withdrawal,
+        redis,
+        dkGateway,
+        dataSource,
+        configService: makeProductionConfigService(),
+      });
+      (service as any).paymentRepo = paymentRepo;
+
+      await (service as any).confirmWithdrawal(
+        "user-1",
+        "withdrawal-1",
+        "123456",
+      );
+
+      expect(dataSource._em.update).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ type: "withdrawal" }),
+        { note: "DK Bank withdrawal confirmed" },
       );
     });
 
