@@ -330,7 +330,12 @@ export class EplService {
     // name for parity with the football-data.org goals/assists boards.
     const fullName = (p: any): string =>
       `${p.first_name ?? ""} ${p.second_name ?? ""}`.trim() || (p.web_name ?? "");
-    const cardBoard = (field: "yellow_cards" | "red_cards"): EplStatEntry[] =>
+    // Also used for assists: football-data's free tier returns assists mostly
+    // null, so the assists board is built from FPL (which populates it) rather
+    // than from the goal-scorers list.
+    const cardBoard = (
+      field: "yellow_cards" | "red_cards" | "assists",
+    ): EplStatEntry[] =>
       (fpl?.elements ?? [])
         .map((p: any): EplStatEntry => {
           const team = teamsById.get(p.team);
@@ -350,7 +355,8 @@ export class EplService {
     const result: EplStats = {
       updatedAt: new Date().toISOString(),
       goals: scorerBoard("goals"),
-      assists: scorerBoard("assists"),
+      // Assists from FPL (football-data's free-tier assists are mostly null).
+      assists: cardBoard("assists"),
       yellow: cardBoard("yellow_cards"),
       red: cardBoard("red_cards"),
     };
