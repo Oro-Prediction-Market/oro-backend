@@ -688,4 +688,28 @@ export class PaymentController {
   ) {
     return this.cryptoWithdrawal.reject(req.user.userId, id, body?.reason);
   }
+
+  /**
+   * Balance of the account BTN payouts are drawn from (DK_BENEFICIARY_ACCOUNT).
+   *
+   * Distinct from `/admin/revenue/account/balance`, which inquires the revenue
+   * *destination* (DK_PUBLIC_ACCOUNT_NO). If this account is empty, DK rejects
+   * every outbound transfer — so a payout that Oro recorded as successful can
+   * still have moved no money.
+   */
+  @Get("dkbank/admin/vault-balance")
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  @ApiOperation({ summary: "Balance of the DK payout source account" })
+  async vaultBalance() {
+    const accountNumber = this.configService.get<string>(
+      "DK_BENEFICIARY_ACCOUNT",
+    );
+    if (!accountNumber) {
+      throw new HttpException(
+        "DK_BENEFICIARY_ACCOUNT is not configured",
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+    return this.dkGatewayService.accountInquiry(accountNumber);
+  }
 }

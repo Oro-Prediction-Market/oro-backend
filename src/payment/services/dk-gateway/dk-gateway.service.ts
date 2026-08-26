@@ -761,9 +761,35 @@ export class DKGatewayService {
     }
 
     const code = raw?.response_code;
-    const success =
-      code === DK_RESPONSE_CODES.SUCCESS ||
-      (raw?.response_message ?? "").toUpperCase().includes("SUCCESS");
+    const txnId =
+      raw?.response_data?.transaction_id ?? raw?.response_data?.txn_id ?? null;
+
+    // Any handle DK gives us is enough to reconcile against later. The payout
+    // response does not necessarily carry `transaction_id`: the pull-payment
+    // flow returns `txn_status_id`, and batch mode returns only `bfs_txn_id`,
+    // so demanding `transaction_id` specifically would reject good transfers.
+    const anyReference =
+      txnId ??
+      raw?.response_data?.txn_status_id ??
+      raw?.response_data?.inquiry_id ??
+      (raw?.response_data as { bfs_txn_id?: string } | undefined)?.bfs_txn_id ??
+      null;
+
+    // The response CODE is the only success signal. `response_message` is free
+    // text and must never be substring-matched: `"UNSUCCESSFUL".includes(
+    // "SUCCESS")` is true, so a message-based check silently turns every DK
+    // rejection carrying that word into a confirmed payout — the user is
+    // debited, the refund branch is skipped, and no money ever leaves the bank.
+    const codeSaysSuccess = code === DK_RESPONSE_CODES.SUCCESS;
+
+    // `0000` with no reference of any kind is still treated as success. It is
+    // unreconcilable and that is worth knowing about — hence the error log
+    // below — but DK's payout response shape has never actually been captured,
+    // so refusing it here would park every payout in PROCESSING if the real
+    // field name is one we do not check. Tighten this once a real response has
+    // been observed in `payment.metadata.dkTransfer.raw`.
+    const missingTxnId = codeSaysSuccess && !anyReference;
+    const success = codeSaysSuccess;
 
     // Indeterminate outcomes: DK timed out, gave no response, or hit an internal
     // error — so it may or may NOT have moved the money. These must be surfaced
@@ -779,14 +805,21 @@ export class DKGatewayService {
       DK_RESPONSE_CODES.EXCEPTION, // 5001 — DK exception
       DK_RESPONSE_CODES.DB_ERROR, // 5002 — DK database error
     ];
-    const ambiguous = !success && AMBIGUOUS_CODES.includes(code);
+    const ambiguous = !codeSaysSuccess && AMBIGUOUS_CODES.includes(code);
     const status = success ? "SUCCESS" : ambiguous ? "AMBIGUOUS" : "FAILED";
 
+    if (missingTxnId) {
+      this.logger.error(
+        `DK transfer for ${params.reference} returned ${code} with no ` +
+          `reference of any kind — it cannot be reconciled against DK: ` +
+          JSON.stringify(raw),
+      );
+    }
+
     return {
-      txnId:
-        raw?.response_data?.transaction_id ??
-        raw?.response_data?.txn_id ??
-        null,
+      // Fall back to whichever handle DK did send, so the payout is
+      // reconcilable even when `transaction_id` is absent.
+      txnId: txnId ?? anyReference,
       txnStatusId: raw?.response_data?.txn_status_id ?? null,
       inquiryId: raw?.response_data?.inquiry_id ?? null,
       status,

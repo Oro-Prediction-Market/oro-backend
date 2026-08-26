@@ -25,6 +25,7 @@ import { SseService } from "../sse/sse.service";
 import { BhutanAppNotificationService } from "../shared/services/bhutanapp-notification.service";
 import { AuthMethod, AuthProvider } from "../entities/auth-method.entity";
 
+import { classifyDkStatus } from "./dk-status.util";
 import { ledgerBalance } from "../shared/utils/ledger.util";
 import { BTN_CURRENCY } from "../entities/transaction.entity";
 
@@ -510,6 +511,12 @@ export class DKBankPaymentService {
     if (payment.status === PaymentStatus.FAILED)
       return this.mapPayment(payment);
 
+    // Polling below drives the DEPOSIT status machine. Withdrawals now carry a
+    // dkTxnStatusId too, so without this they would fall through and fire a DK
+    // call whose result applyDKStatusUpdate discards — and race the
+    // reconciler, which is what actually finalises them.
+    if (payment.type !== PaymentType.DEPOSIT) return this.mapPayment(payment);
+
     // If the payment hasn't been confirmed with OTP yet (no txnStatusId)
     if (!payment.dkTxnStatusId && !payment.externalPaymentId) {
       return {
@@ -644,12 +651,16 @@ export class DKBankPaymentService {
     isFromWebhook: boolean;
     dkWebhookPayload?: any;
   }) {
-    const statusUpper = (params.dkStatus || "PENDING").toUpperCase();
-    const mapped = statusUpper.includes("SUCCESS")
-      ? PaymentStatus.SUCCESS
-      : statusUpper.includes("FAIL")
-        ? PaymentStatus.FAILED
-        : PaymentStatus.PENDING;
+    // Failure is tested before success — see classifyDkStatus. This path
+    // CREDITS on success, so reading "UNSUCCESSFUL" as a success would hand a
+    // user real balance for a deposit that never landed.
+    const verdict = classifyDkStatus(params.dkStatus);
+    const mapped =
+      verdict === "success"
+        ? PaymentStatus.SUCCESS
+        : verdict === "failed"
+          ? PaymentStatus.FAILED
+          : PaymentStatus.PENDING;
 
     await this.dataSource.transaction(async (em) => {
       const payment = await em
@@ -665,6 +676,27 @@ export class DKBankPaymentService {
         payment.status !== PaymentStatus.PROCESSING
       )
         return;
+
+      // Deposits only. This path CREDITS the user on success, so letting a
+      // withdrawal through would hand back the withdrawn amount as balance
+      // while the payout itself is still in flight. Withdrawals are finalised
+      // exclusively by confirmWithdrawal / the reconciler.
+      if (payment.type !== PaymentType.DEPOSIT) {
+        this.logger.warn(
+          `[DK] Ignoring status update for non-deposit payment ${payment.id} ` +
+            `(type=${payment.type}) — deposit crediting must not touch it`,
+        );
+        payment.metadata = {
+          ...(payment.metadata || {}),
+          dkIgnoredStatusUpdate: {
+            status: params.dkStatus,
+            statusDesc: params.dkStatusDesc,
+            at: new Date().toISOString(),
+          },
+        };
+        await em.save(payment);
+        return;
+      }
 
       payment.metadata = {
         ...(payment.metadata || {}),
@@ -1116,6 +1148,25 @@ export class DKBankPaymentService {
         return;
       }
 
+      // Keep DK's own words on the row, whatever the outcome. Without this the
+      // only record of what the bank actually said is a debug log line, which
+      // is off in production — so a misclassified payout is undiagnosable
+      // after the fact.
+      lockedPayment.metadata = {
+        ...(lockedPayment.metadata || {}),
+        dkTransfer: {
+          status: transferThrew ? "THREW" : (transferResult?.status ?? null),
+          statusDesc: transferThrew
+            ? transferError
+            : (transferResult?.statusDesc ?? null),
+          txnId: transferResult?.txnId ?? null,
+          txnStatusId: transferResult?.txnStatusId ?? null,
+          inquiryId: transferResult?.inquiryId ?? null,
+          raw: transferResult?.raw ?? null,
+          at: new Date().toISOString(),
+        },
+      };
+
       if (transferThrew || transferAmbiguous) {
         // Ambiguous — either the call threw (no reply at all) or DK replied with
         // an indeterminate code (timeout / no-response / internal error). Either
@@ -1128,6 +1179,14 @@ export class DKBankPaymentService {
             "DK Bank returned an indeterminate status");
         result.status = "processing";
         result.failureReason = reason;
+        // Persist whatever handle DK gave us — the reconciler needs an id to
+        // ask "did this settle?" later.
+        lockedPayment.dkTxnStatusId =
+          transferResult?.txnStatusId ?? lockedPayment.dkTxnStatusId;
+        lockedPayment.dkInquiryId =
+          transferResult?.inquiryId ?? lockedPayment.dkInquiryId;
+        lockedPayment.failureReason = reason;
+        await em.save(lockedPayment);
         this.logger.warn(
           `[Withdrawal] DK transfer ambiguous for payment ${paymentId} — left ` +
             `PROCESSING with debit intact for reconciliation: ${reason}`,
@@ -1164,6 +1223,10 @@ export class DKBankPaymentService {
       lockedPayment.status = PaymentStatus.SUCCESS;
       lockedPayment.confirmedAt = new Date();
       lockedPayment.externalPaymentId = transferResult?.txnId ?? null;
+      lockedPayment.dkTxnStatusId =
+        transferResult?.txnStatusId ?? lockedPayment.dkTxnStatusId;
+      lockedPayment.dkInquiryId =
+        transferResult?.inquiryId ?? lockedPayment.dkInquiryId;
       lockedPayment.failureReason = null;
       await em.save(lockedPayment);
       result.status = "success";

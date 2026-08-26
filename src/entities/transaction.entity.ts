@@ -43,6 +43,13 @@ export const BTN_CURRENCY = "BTN";
 // Declared here as well as in the migration: DB_SYNCHRONIZE runs TypeORM
 // synchronize at boot, which drops any index it cannot find in entity metadata.
 @Index("IDX_transactions_user_currency", ["userId", "currency"])
+// Declared here for the same reason as the index above: synchronize drops what
+// it cannot find in entity metadata, and this one is a money-safety guard —
+// it is what stops a payment being refunded twice (1775990000440).
+@Index("UQ_transactions_payment_type", ["paymentId", "type"], {
+  unique: true,
+  where: '"paymentId" IS NOT NULL',
+})
 @Entity("transactions")
 export class Transaction {
   @PrimaryGeneratedColumn("uuid")
@@ -72,8 +79,15 @@ export class Transaction {
   @Column({ type: "decimal", precision: 20, scale: 9 })
   balanceAfter: number;
 
+  /**
+   * Uniqueness is per (paymentId, type), not per paymentId — see
+   * 1775990000440-AllowRefundAlongsideDebit. A single-column UNIQUE here made
+   * refunds impossible: reversing a withdrawal writes a second row against the
+   * same payment. Declaring `unique: true` would have DB_SYNCHRONIZE put the
+   * broken constraint back.
+   */
   @Index()
-  @Column({ type: "uuid", nullable: true, unique: true })
+  @Column({ type: "uuid", nullable: true })
   paymentId: string;
 
   @Index()

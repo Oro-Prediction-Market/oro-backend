@@ -20,6 +20,7 @@ import { CryptoDepositService } from "./crypto-deposit.service";
 import { CryptoWebhookService } from "./crypto-webhook.service";
 import { CryptoSettlementService } from "./crypto-settlement.service";
 import { CryptoIntentPoller } from "./crypto-intent.poller";
+import { DKWithdrawalReconciler } from "./dk-withdrawal.reconciler";
 import { CryptoWithdrawalService } from "./crypto-withdrawal.service";
 import {
   CryptoWithdrawal,
@@ -60,6 +61,7 @@ import { CryptoPaymentIntent } from "../entities/crypto-payment-intent.entity";
     CryptoSettlementService,
     CryptoIntentPoller,
     CryptoWithdrawalService,
+    DKWithdrawalReconciler,
     Pay21WebhookGuard,
   ],
   exports: [DKGatewayService, BankLinkService, TwentyOnePayClient, CryptoDepositService, CryptoSettlementService],
