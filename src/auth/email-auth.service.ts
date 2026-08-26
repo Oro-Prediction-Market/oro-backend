@@ -336,10 +336,27 @@ export class EmailAuthService {
     try {
       const { tokens } = await this.googleCodeClient().getToken(code);
       idToken = tokens.id_token ?? undefined;
-    } catch {
+    } catch (err: any) {
+      // The client only ever sees an opaque 401, but we must be able to tell
+      // WHY the exchange failed from the logs. Google returns the real reason in
+      // the response body: `invalid_client` (wrong/missing GOOGLE_CLIENT_SECRET
+      // or id/secret from different OAuth clients), `redirect_uri_mismatch`,
+      // `invalid_grant` (code already used / expired), etc.
+      const g = err?.response?.data;
+      this.logger.error(
+        `[GoogleCode] token exchange failed: ${g?.error ?? err?.message ?? "unknown"}` +
+          (g?.error_description ? ` — ${g.error_description}` : ""),
+      );
       throw new UnauthorizedException("Google sign-in failed");
     }
-    if (!idToken) throw new UnauthorizedException("Google sign-in failed");
+    if (!idToken) {
+      // Exchange succeeded but no ID token — almost always a missing `openid`
+      // scope on the frontend request.
+      this.logger.error(
+        "[GoogleCode] token exchange returned no id_token (is the 'openid' scope requested?)",
+      );
+      throw new UnauthorizedException("Google sign-in failed");
+    }
     return this.loginWithGoogle(idToken, referralCode);
   }
 
@@ -372,8 +389,13 @@ export class EmailAuthService {
         audience: process.env.GOOGLE_CLIENT_ID!,
       });
       payload = ticket.getPayload();
-    } catch {
-      // Deliberately opaque: a caller learns only that it failed.
+    } catch (err: any) {
+      // Deliberately opaque to the caller, but log the reason: a common one is
+      // an audience mismatch — the id_token was minted for a different client id
+      // than GOOGLE_CLIENT_ID (frontend and backend using different OAuth clients).
+      this.logger.error(
+        `[Google] id_token verification failed: ${err?.message ?? "unknown"}`,
+      );
       throw new UnauthorizedException("Google sign-in failed");
     }
     if (!payload?.sub) throw new UnauthorizedException("Google sign-in failed");
