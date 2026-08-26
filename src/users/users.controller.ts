@@ -182,6 +182,20 @@ class PositionResponse {
   outcome: any;
 }
 
+/**
+ * Football season windows for the season-specific collectible badges.
+ *
+ * A badge (e.g. "Premier League 2026/27") is earned from performance INSIDE its
+ * season only: we count a user's settled EPL/UCL predictions whose market closes
+ * within the window below. Because a past window can never receive a new market,
+ * the count freezes when the season ends — so the badge is obtainable only during
+ * that season and a later season's play can never top it up. Next season: add a
+ * sibling entry here + a new badge on the client, nothing else.
+ */
+const FOOTBALL_SEASONS = [
+  { key: "2026-27", start: "2026-08-01T00:00:00Z", end: "2027-07-01T00:00:00Z" },
+] as const;
+
 @ApiTags("users")
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
@@ -205,6 +219,69 @@ export class UsersController {
     private readonly dkGateway: DKGatewayService,
     private readonly userNotifications: UserNotificationService,
   ) {}
+
+  /**
+   * Per-season EPL/UCL prediction tallies driving the season collectible badges.
+   * Counts only SETTLED positions (won+lost) in markets tagged with an epl-/ucl-
+   * subcategory (mirrors the app's isEplMarket/isUclMarket, whose category check
+   * can never fire since MarketCategory has no league values) whose market closes
+   * inside each season window. Shape:
+   *   { "2026-27": { eplSettled, eplWins, uclSettled, uclWins }, ... }
+   * The client reads a badge's season key and unlocks at settled>=15 && winrate>=60%.
+   */
+  private async footballSeasonBadgeStats(userId: string): Promise<
+    Record<
+      string,
+      { eplSettled: number; eplWins: number; uclSettled: number; uclWins: number }
+    >
+  > {
+    const out: Record<
+      string,
+      { eplSettled: number; eplWins: number; uclSettled: number; uclWins: number }
+    > = {};
+    for (const season of FOOTBALL_SEASONS) {
+      const row = await this.betRepo
+        .createQueryBuilder("p")
+        .innerJoin("p.market", "m")
+        .select(
+          "COUNT(*) FILTER (WHERE LOWER(m.subcategory) LIKE '%epl%')",
+          "eplSettled",
+        )
+        .addSelect(
+          "COUNT(*) FILTER (WHERE LOWER(m.subcategory) LIKE '%epl%' AND p.status = 'won')",
+          "eplWins",
+        )
+        .addSelect(
+          "COUNT(*) FILTER (WHERE LOWER(m.subcategory) LIKE '%ucl%')",
+          "uclSettled",
+        )
+        .addSelect(
+          "COUNT(*) FILTER (WHERE LOWER(m.subcategory) LIKE '%ucl%' AND p.status = 'won')",
+          "uclWins",
+        )
+        .where("p.userId = :userId", { userId })
+        .andWhere("p.status IN (:...settled)", {
+          settled: [PositionStatus.WON, PositionStatus.LOST],
+        })
+        .andWhere('m."closesAt" >= :start AND m."closesAt" < :end', {
+          start: season.start,
+          end: season.end,
+        })
+        .getRawOne<{
+          eplSettled: string;
+          eplWins: string;
+          uclSettled: string;
+          uclWins: string;
+        }>();
+      out[season.key] = {
+        eplSettled: Number(row?.eplSettled ?? 0),
+        eplWins: Number(row?.eplWins ?? 0),
+        uclSettled: Number(row?.uclSettled ?? 0),
+        uclWins: Number(row?.uclWins ?? 0),
+      };
+    }
+    return out;
+  }
 
   /** Unseen in-app notifications for the current user (popped on app open). */
   @Get("me/notifications")
@@ -481,6 +558,9 @@ export class UsersController {
     );
     const verifiedByAccountNumber = !!user?.dkLinkVerifiedAt;
 
+    // Season-scoped EPL/UCL tallies for the collectible season badges.
+    const seasonBadgeStats = await this.footballSeasonBadgeStats(userId);
+
     return {
       ...safeUser,
       creditsBalance,
@@ -490,6 +570,7 @@ export class UsersController {
       isDkPhoneLinked: !!dkPhoneHash,
       isPhoneVerified: verifiedByPhone || verifiedByAccountNumber,
       referralCount,
+      seasonBadgeStats,
       ...streakInfo,
     };
   }
@@ -543,8 +624,11 @@ export class UsersController {
       take: 3,
     });
 
+    const seasonBadgeStats = await this.footballSeasonBadgeStats(id);
+
     return {
       id: user.id,
+      seasonBadgeStats,
       firstName: user.firstName,
       lastName: user.lastName,
       username: user.username,
