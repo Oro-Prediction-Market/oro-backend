@@ -283,6 +283,7 @@ export class AdminController {
         SELECT DISTINCT ON (sel."marketId") sel.*
         FROM settlements sel
         INNER JOIN markets m ON m.id = sel."marketId"
+        WHERE sel.currency = 'BTN'
         ORDER BY sel."marketId", sel."settledAt" ASC, sel.id ASC
       ) s
     `);
@@ -367,6 +368,40 @@ export class AdminController {
     const marketingStreak = parseFloat(marketingResult[0].streak);
     const marketingSeason = parseFloat(marketingResult[0].season);
 
+    // ── USDT book ─────────────────────────────────────────────────────────────
+    // The BTN figures above come from markets.totalPool (the ngultrum book) and
+    // BTN settlements. The USDT book is segregated: its pools live in
+    // market_books (currency='USDT') and its house income in USDT settlements.
+    const usdtSettled = await this.dataSource.query(`
+      SELECT
+        COALESCE(SUM(s."totalPool"), 0)   AS "settledPool",
+        COALESCE(SUM(s."houseAmount"), 0) AS "houseIncome",
+        COUNT(*)                          AS "settledCount"
+      FROM (
+        SELECT DISTINCT ON (sel."marketId") sel.*
+        FROM settlements sel
+        INNER JOIN markets m ON m.id = sel."marketId"
+        WHERE sel.currency = 'USDT'
+        ORDER BY sel."marketId", sel."settledAt" ASC, sel.id ASC
+      ) s
+    `);
+    const usdtActive = await this.dataSource.query(`
+      SELECT COALESCE(SUM(mb."totalPool"), 0) AS "activePool",
+             COUNT(*) AS "activeCount"
+      FROM market_books mb
+      INNER JOIN markets m ON m.id = mb."marketId"
+      WHERE mb.currency = 'USDT'
+        AND m.status IN ('open','closed','resolving','resolved')
+    `);
+    const usdtAllTime = await this.dataSource.query(`
+      SELECT
+        COALESCE(SUM(CASE WHEN m.status != 'cancelled' THEN mb."totalPool" ELSE 0 END), 0) AS "allTimeVolume",
+        COUNT(*) AS "totalMarkets"
+      FROM market_books mb
+      INNER JOIN markets m ON m.id = mb."marketId"
+      WHERE mb.currency = 'USDT'
+    `);
+
     return {
       houseIncome: parseFloat(settledResult[0].houseIncome),
       settledPool: parseFloat(settledResult[0].settledPool),
@@ -396,6 +431,16 @@ export class AdminController {
         streak: marketingStreak,
         season: marketingSeason,
         count: parseInt(marketingResult[0].count, 10),
+      },
+      // USDT book — same shape as the BTN figures above, in USDT.
+      usdt: {
+        houseIncome: parseFloat(usdtSettled[0].houseIncome),
+        settledPool: parseFloat(usdtSettled[0].settledPool),
+        settledCount: parseInt(usdtSettled[0].settledCount, 10),
+        activePool: parseFloat(usdtActive[0].activePool),
+        activeCount: parseInt(usdtActive[0].activeCount, 10),
+        allTimeVolume: parseFloat(usdtAllTime[0].allTimeVolume),
+        totalMarkets: parseInt(usdtAllTime[0].totalMarkets, 10),
       },
     };
   }
