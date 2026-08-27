@@ -934,7 +934,7 @@ describe("KeeperService — EPL auto stat markets", () => {
     createQueryBuilder: jest.fn(),
   });
 
-  it("creates all 4 markets, sets the once-per-season flag, and notifies admin when the season is live", async () => {
+  it("creates both stat markets, sets the once-per-season flag, and notifies admin when the season is live", async () => {
     const marketsService = marketsWith();
     const redis = redisWith(null);
     const marketRepo = repoWith(null);
@@ -951,14 +951,10 @@ describe("KeeperService — EPL auto stat markets", () => {
 
     await svc.handleEplSeasonAutoMarkets();
 
-    expect(marketsService.create).toHaveBeenCalledTimes(4);
+    // Only goals + assists — the yellow/red card markets were removed.
+    expect(marketsService.create).toHaveBeenCalledTimes(2);
     const subs = marketsService.create.mock.calls.map((c: any[]) => c[0].subcategory).sort();
-    expect(subs).toEqual([
-      "epl-assists",
-      "epl-redcards",
-      "epl-topscorer",
-      "epl-yellowcards",
-    ]);
+    expect(subs).toEqual(["epl-assists", "epl-topscorer"]);
     // flag keyed by season year so it re-arms next season
     expect(redis.setJsonEx).toHaveBeenCalledWith(
       "oro:epl:auto-markets:2026",
@@ -1023,19 +1019,19 @@ describe("KeeperService — EPL auto stat markets", () => {
       redis,
       marketRepo: repoWith(null),
       epl: liveEpl({
-        // red-cards board empty (a common early-season case) → only 3 create
+        // assists board empty (a common early-season case) → only goals created
         getStats: jest.fn().mockResolvedValue({
           updatedAt: "x",
           goals: board(),
-          assists: board(),
-          yellow: board(),
+          assists: [],
+          yellow: [],
           red: [],
         }),
       }),
     });
     await svc.handleEplSeasonAutoMarkets();
-    expect(marketsService.create).toHaveBeenCalledTimes(3);
-    // flag left UNSET so a later run creates the missing red-cards market
+    expect(marketsService.create).toHaveBeenCalledTimes(1);
+    // flag left UNSET so a later run creates the missing assists market
     expect(redis.setJsonEx).not.toHaveBeenCalled();
   });
 
@@ -1054,7 +1050,7 @@ describe("KeeperService — EPL auto stat markets", () => {
   it("skips a stat that already has an active market", async () => {
     const marketsService = marketsWith();
     const marketRepo = repoWith(null);
-    // First stat (goals) already has a market; the rest do not.
+    // First stat (goals) already has a market; assists does not.
     marketRepo.findOne
       .mockResolvedValueOnce({ id: "existing" })
       .mockResolvedValue(null);
@@ -1067,7 +1063,7 @@ describe("KeeperService — EPL auto stat markets", () => {
       epl: liveEpl(),
     });
     await svc.handleEplSeasonAutoMarkets();
-    expect(marketsService.create).toHaveBeenCalledTimes(3);
+    expect(marketsService.create).toHaveBeenCalledTimes(1);
   });
 });
 

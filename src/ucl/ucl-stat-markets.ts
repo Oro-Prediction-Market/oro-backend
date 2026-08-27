@@ -5,7 +5,7 @@ import { CreateMarketDto } from "../markets/dto/create-market.dto";
 // NOTE: only goals & assists have a free-tier data source for the Champions
 // League — yellow/red boards come back empty, so the keeper skips creating
 // those two automatically. They remain here so admin can create them by hand.
-export type UclStatKey = "goals" | "assists" | "yellow" | "red";
+export type UclStatKey = "goals" | "assists";
 
 export interface UclStatMarketMeta {
   board: UclStatKey; // which getStats() board feeds the outcomes
@@ -17,8 +17,6 @@ export interface UclStatMarketMeta {
 export const UCL_STAT_MARKET_META: Record<UclStatKey, UclStatMarketMeta> = {
   goals: { board: "goals", subcategory: "ucl-topscorer", title: "Champions League — Top Scorer", word: "goals" },
   assists: { board: "assists", subcategory: "ucl-assists", title: "Champions League — Most Assists", word: "assists" },
-  yellow: { board: "yellow", subcategory: "ucl-yellowcards", title: "Champions League — Most Yellow Cards", word: "yellow cards" },
-  red: { board: "red", subcategory: "ucl-redcards", title: "Champions League — Most Red Cards", word: "red cards" },
 };
 
 export const UCL_STAT_SUBCATEGORIES = Object.values(UCL_STAT_MARKET_META).map(

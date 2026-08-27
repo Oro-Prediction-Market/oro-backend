@@ -2,7 +2,7 @@ import { CreateMarketDto } from "../markets/dto/create-market.dto";
 
 // Shared definition of the four EPL "stat" markets, used by BOTH the manual
 // admin endpoint and the auto-create keeper cron so they never drift apart.
-export type EplStatKey = "goals" | "assists" | "yellow" | "red";
+export type EplStatKey = "goals" | "assists";
 
 export interface EplStatMarketMeta {
   board: EplStatKey; // which getStats() board feeds the outcomes
@@ -14,8 +14,6 @@ export interface EplStatMarketMeta {
 export const EPL_STAT_MARKET_META: Record<EplStatKey, EplStatMarketMeta> = {
   goals: { board: "goals", subcategory: "epl-topscorer", title: "Premier League — Top Scorer", word: "goals" },
   assists: { board: "assists", subcategory: "epl-assists", title: "Premier League — Most Assists", word: "assists" },
-  yellow: { board: "yellow", subcategory: "epl-yellowcards", title: "Premier League — Most Yellow Cards", word: "yellow cards" },
-  red: { board: "red", subcategory: "epl-redcards", title: "Premier League — Most Red Cards", word: "red cards" },
 };
 
 export const EPL_STAT_SUBCATEGORIES = Object.values(EPL_STAT_MARKET_META).map(
