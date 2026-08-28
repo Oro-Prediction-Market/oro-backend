@@ -180,6 +180,8 @@ function makeDkGateway(
       status: "SUCCESS",
       statusDesc: "Transfer completed",
     }),
+    /** Liveness probe — DK reachable by default (the pre-debit guard passes). */
+    isReachable: jest.fn().mockResolvedValue(true),
   };
 }
 
@@ -1042,6 +1044,33 @@ describe("Merchant vault → user DK account (withdrawal flow)", () => {
         }),
         { note: "DK Bank withdrawal confirmed" },
       );
+    });
+
+    it("rejects without debiting when DK is unreachable (pre-debit guard)", async () => {
+      const withdrawal = makeWithdrawalPayment({ status: PaymentStatus.PENDING });
+      const paymentRepo = makePaymentRepo(withdrawal);
+      const redis = makeRedis({ otp: "123456", userId: "user-1" });
+      // DK is in maintenance / offline → the liveness probe fails.
+      const dkGateway = makeDkGateway();
+      dkGateway.isReachable = jest.fn().mockResolvedValue(false);
+      const dataSource = makeDataSource();
+
+      const { service } = makeService({
+        payment: withdrawal,
+        redis,
+        dkGateway,
+        dataSource,
+        configService: makeProductionConfigService(), // bypass OFF → guard runs
+      });
+      (service as any).paymentRepo = paymentRepo;
+
+      await expect(
+        (service as any).confirmWithdrawal("user-1", "withdrawal-1", "123456"),
+      ).rejects.toThrow(/temporarily unavailable/i);
+
+      // No debit was ever written, and DK was never asked to transfer.
+      expect(dataSource._em.save).not.toHaveBeenCalled();
+      expect(dkGateway.transferToAccount).not.toHaveBeenCalled();
     });
 
     it("does not restamp the debit note when the outcome is ambiguous", async () => {

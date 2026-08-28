@@ -3,6 +3,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from "@nestjs/common";
 import { InjectRepository, InjectDataSource } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
@@ -993,6 +994,22 @@ export class DKBankPaymentService {
 
     // OTP is valid — delete it immediately to prevent replay
     await this.redis.del(`oro:tg-otp:${paymentId}`);
+
+    // ── Pre-debit guard: don't reserve while DK is offline ────────────────────
+    // Reserving debits the user's balance BEFORE the DK call. If DK is in
+    // maintenance / unreachable, that call would throw and strand the debit in
+    // PROCESSING ("reserved") with the money gone and nothing sent — exactly the
+    // incident we hit. A quick read-only liveness probe up front lets us reject
+    // cleanly with the balance untouched, so the user just retries later.
+    // Skipped under the staging bypass, where there is no real DK to probe.
+    const stagingBypass =
+      this.configService.get<string>("DK_STAGING_WITHDRAWAL_BYPASS") === "true";
+    if (!stagingBypass && !(await this.dkGateway.isReachable())) {
+      throw new ServiceUnavailableException(
+        "Withdrawals are temporarily unavailable while the bank is offline. " +
+          "Your balance is unchanged — please try again shortly.",
+      );
+    }
 
     // ── Reserve-then-call ─────────────────────────────────────────────────────
     // The debit is written and COMMITTED before the DK network call, so we can

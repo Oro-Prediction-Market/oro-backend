@@ -694,6 +694,49 @@ export class DKGatewayService {
     };
   }
 
+  /** Bound the liveness probe well under the 60s request timeout so a hung
+   *  gateway fails the check fast instead of blocking the caller. */
+  private readonly probeTimeoutMs = 8_000;
+
+  /**
+   * Read-only liveness probe: is the DK gateway answering right now?
+   *
+   * Runs an `account_inquiry` on the merchant's own beneficiary account — no
+   * money moves, no side effects. DK responding at all counts as reachable
+   * (even a business/auth error means it's up); only a 5xx, a network-level
+   * failure, or a timeout counts as unreachable. Used as a pre-debit guard so
+   * we never take a user's balance while DK is in maintenance / offline.
+   */
+  async isReachable(): Promise<boolean> {
+    const probe = (async (): Promise<boolean> => {
+      try {
+        await this.accountInquiry(this.beneficiaryAccount);
+        return true; // DK answered a valid inquiry
+      } catch (err) {
+        // DK answered, just with a business/auth error → still up.
+        if (
+          err instanceof BadRequestException ||
+          err instanceof UnauthorizedException
+        ) {
+          return true;
+        }
+        // 5xx, network failure (ECONNREFUSED/DNS/SSL), or timeout → down.
+        this.logger.warn(
+          `[DK] liveness probe failed — treating gateway as unreachable: ${
+            (err as any)?.message ?? err
+          }`,
+        );
+        return false;
+      }
+    })();
+
+    // Fail the probe fast if the inquiry hangs past the probe budget.
+    const bail = new Promise<boolean>((resolve) =>
+      setTimeout(() => resolve(false), this.probeTimeoutMs),
+    );
+    return Promise.race([probe, bail]);
+  }
+
   /**
    * Merchant vault → user DK Bank account (withdrawal / payout transfer).
    *
