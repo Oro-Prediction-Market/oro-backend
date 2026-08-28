@@ -330,11 +330,8 @@ export class EplService {
     // name for parity with the football-data.org goals/assists boards.
     const fullName = (p: any): string =>
       `${p.first_name ?? ""} ${p.second_name ?? ""}`.trim() || (p.web_name ?? "");
-    // Also used for assists: football-data's free tier returns assists mostly
-    // null, so the assists board is built from FPL (which populates it) rather
-    // than from the goal-scorers list.
     const cardBoard = (
-      field: "yellow_cards" | "red_cards" | "assists",
+      field: "yellow_cards" | "red_cards",
     ): EplStatEntry[] =>
       (fpl?.elements ?? [])
         .map((p: any): EplStatEntry => {
@@ -355,8 +352,11 @@ export class EplService {
     const result: EplStats = {
       updatedAt: new Date().toISOString(),
       goals: scorerBoard("goals"),
-      // Assists from FPL (football-data's free-tier assists are mostly null).
-      assists: cardBoard("assists"),
+      // Assists → football-data.org (Opta-official). FPL counts assists under
+      // its own rules (won penalties, pass-before-the-pass, rebounds), so its
+      // numbers don't match the league record we settle "Most Assists" against.
+      // The trade-off is a thinner board when the free tier returns few assists.
+      assists: scorerBoard("assists"),
       yellow: cardBoard("yellow_cards"),
       red: cardBoard("red_cards"),
     };
