@@ -39,10 +39,11 @@ const SEASON_VOLUME_WEIGHT = 0.4;
 //   • ≥ SEASON_MIN_WIN_RATE win rate (nobody collects while underwater)
 // And the season only pays out at all when at least SEASON_MIN_QUALIFIERS
 // contenders exist — otherwise a single grinder could take Nu 700 unopposed
-// in a quiet month. Below the floor, the season closes with NO payout.
+// in a quiet month. Below the floor, the season closes with NO payout. At 3,
+// a full top-3 podium is enough to pay out (every prize has a distinct winner).
 const SEASON_MIN_WINS = 8;
 const SEASON_MIN_WIN_RATE = 0.5;
-const SEASON_MIN_QUALIFIERS = 5;
+const SEASON_MIN_QUALIFIERS = 3;
 
 @Injectable()
 export class SeasonService implements OnApplicationBootstrap {
