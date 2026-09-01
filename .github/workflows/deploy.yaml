@@ -144,10 +144,6 @@ jobs:
             --from-literal=MINIO_USE_SSL='${{ vars.MINIO_USE_SSL || 'false' }}' \
             | kubectl apply -f -
 
-      # Migrations run in the pod at startup, under a Postgres advisory lock
-      # (see src/main.ts). `DB_MIGRATIONS_RUN=true` in the Secret above turns
-      # it on; the lock is what makes it safe with more than one replica, and
-      # a pod refuses to serve traffic if a migration fails. No separate Job.
       - name: Roll deployment
         env:
           TAG: ${{ github.sha }}
