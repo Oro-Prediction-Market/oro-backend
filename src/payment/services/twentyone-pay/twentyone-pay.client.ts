@@ -225,14 +225,47 @@ export class TwentyOnePayClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
 
+    // Serialised exactly once. The bytes that are signed must be the bytes
+    // that are sent — stringifying separately for the signature and for the
+    // request is how a signing bug that only shows on some payloads gets in.
+    const payload = body ? JSON.stringify(body) : "";
+    const key = this.apiKey;
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const signature = crypto
+      .createHmac("sha256", key)
+      .update(timestamp + payload)
+      .digest("hex");
+
     try {
       const res = await fetch(url, {
         method,
         headers: {
-          Authorization: `Bearer ${this.apiKey}`,
+          Authorization: `Bearer ${key}`,
+          // Request signing. Bearer alone is not enough on the production
+          // engine: it answers 401 `hmac: auth: missing X-T1Pay-Timestamp
+          // header` to an unsigned call. Staging did not enforce this, which
+          // is why every call worked until the day the base URL changed.
+          //
+          // The construction is `HMAC-SHA256(apiKey, timestamp + body)`, hex,
+          // with the timestamp in whole seconds and the body the exact string
+          // sent below (empty for GET). Note two things it is *not*: the
+          // signing key is the API token, not TWENTYONE_PAY_WEBHOOK_SECRET,
+          // and there is no `t=` prefix or separator — both of which the
+          // inbound webhook scheme in verifyWebhook() does use. The two
+          // directions share a header family and nothing else.
+          //
+          // Established empirically against the live engine, because the
+          // contract this client cites — docs/usdt-oro/21PAY-ANSWERS.md — was
+          // never committed and covers only the inbound direction anyway.
+          // Verified both ways: GET /networks returns 200, and a POST with a
+          // deliberately invalid body returns 400 "missing required fields"
+          // rather than 401, which is the engine reporting that it checked the
+          // signature and accepted it before it looked at the payload.
+          "X-T1Pay-Timestamp": timestamp,
+          "X-T1Pay-Signature": signature,
           ...(body ? { "Content-Type": "application/json" } : {}),
         },
-        body: body ? JSON.stringify(body) : undefined,
+        body: body ? payload : undefined,
         signal: controller.signal,
       });
 
