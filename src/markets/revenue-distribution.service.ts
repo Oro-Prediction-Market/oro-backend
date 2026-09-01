@@ -7,6 +7,7 @@ import {
   RevenueDistribution,
   DistributionStatus,
 } from "../entities/revenue-distribution.entity";
+import { BTN_CURRENCY } from "../entities/transaction.entity";
 import { Settlement } from "../entities/settlement.entity";
 import { Market } from "../entities/market.entity";
 import { DKGatewayService } from "../payment/services/dk-gateway/dk-gateway.service";
@@ -108,6 +109,7 @@ export class RevenueDistributionService {
     houseAmount: number,
     houseEdgePct: number,
     totalPool: number,
+    currency: string,
   ): Promise<RevenueDistribution | null> {
     if (houseAmount <= 0) return null;
 
@@ -127,6 +129,7 @@ export class RevenueDistributionService {
       amount: houseAmount,
       houseEdgePct,
       totalPool,
+      currency,
       publicAccountNo: await this.getActiveAccountNo(),
       status: DistributionStatus.PENDING,
     });
@@ -182,6 +185,10 @@ export class RevenueDistributionService {
           Number(s.houseAmount),
           edgeByMarket.get(s.marketId) ?? 0,
           Number(s.totalPool),
+          // From the settlement's own book. This path books revenue for a
+          // settlement that already exists, so the currency is a fact to read,
+          // never one to infer.
+          s.currency,
         );
         if (rec) created++;
       } catch (err) {
@@ -251,6 +258,10 @@ export class RevenueDistributionService {
       amount: platformCut,
       houseEdgePct: feePct,
       totalPool: totalPot,
+      // Duels are wagered and settled in ngultrum only. Stated rather than
+      // left to the column default, so the day a duel accepts USDT this line
+      // is what has to change.
+      currency: BTN_CURRENCY,
       publicAccountNo: await this.getActiveAccountNo(),
       status: DistributionStatus.PENDING,
     });

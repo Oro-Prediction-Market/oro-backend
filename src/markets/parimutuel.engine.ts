@@ -1128,6 +1128,7 @@ export class ParimutuelEngine implements OnModuleInit {
             ? (Number(st.houseAmount) / Number(st.totalPool)) * 100
             : Number(market.houseEdgePct),
           Number(st.totalPool),
+          st.currency,
         );
       } catch (err) {
         this.logger.error(

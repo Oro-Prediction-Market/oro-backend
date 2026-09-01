@@ -2617,19 +2617,23 @@ export class AdminController {
     `);
 
     // Find canonical (first) settlement per market that doesn't have a distribution yet
+    // One row per SETTLEMENT, not per market.
+    //
+    // This used to take `DISTINCT ON (marketId)` and test for an existing
+    // distribution by `marketId`. A market has one settlement per book, so
+    // under two books that booked whichever book settled first and then
+    // considered the market done — the USDT book's house cut was never booked
+    // at all, and the backfill reported success. Keyed on `settlementId`, the
+    // same key `recordDistribution` is idempotent on, both books are booked.
     const missing = await this.dataSource.query(`
-      SELECT s.id as "settlementId", s."marketId", s."houseAmount", 
-             m."houseEdgePct", s."totalPool"
-      FROM (
-        SELECT DISTINCT ON (sel."marketId") sel.*
-        FROM settlements sel
-        INNER JOIN markets m ON m.id = sel."marketId"
-        ORDER BY sel."marketId", sel."settledAt" ASC, sel.id ASC
-      ) s
+      SELECT s.id as "settlementId", s."marketId", s."houseAmount",
+             s.currency, m."houseEdgePct", s."totalPool"
+      FROM settlements s
       INNER JOIN markets m ON m.id = s."marketId"
       WHERE CAST(s."houseAmount" AS float) > 0
+        AND s."cancelReason" IS NULL
         AND NOT EXISTS (
-          SELECT 1 FROM revenue_distributions rd WHERE rd."marketId" = s."marketId"
+          SELECT 1 FROM revenue_distributions rd WHERE rd."settlementId" = s.id
         )
       ORDER BY s."settledAt" ASC
     `);
@@ -2643,6 +2647,7 @@ export class AdminController {
           Number(row.houseAmount),
           Number(row.houseEdgePct),
           Number(row.totalPool),
+          row.currency,
         );
         created++;
       } catch (err: any) {

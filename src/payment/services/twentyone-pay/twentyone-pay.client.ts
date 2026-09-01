@@ -162,7 +162,7 @@ export class TwentyOnePayClient {
   get baseUrl(): string {
     return (
       this.config.get<string>("TWENTYONE_PAY_BASE_URL") ??
-      "https://dev-21pay.tech.bt/v1"
+      "https://21pay.tech.bt/v1"
     ).replace(/\/+$/, "");
   }
 

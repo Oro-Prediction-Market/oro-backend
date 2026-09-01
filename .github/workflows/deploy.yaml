@@ -67,7 +67,7 @@ jobs:
             exit 1
           fi
 
-          BASE='${{ vars.TWENTYONE_PAY_BASE_URL || secrets.TWENTYONE_PAY_BASE_URL || 'https://dev-21pay.tech.bt/v1' }}'
+          BASE='${{ vars.TWENTYONE_PAY_BASE_URL || secrets.TWENTYONE_PAY_BASE_URL || 'https://21pay.tech.bt/v1' }}'
           NORMALISED="$(echo "$BASE" | sed 's:/*$::')"
           if ! echo "$NORMALISED" | grep -q '/v1$'; then
             echo "::error::TWENTYONE_PAY_BASE_URL must end in /v1 (e.g. https://pay.example/v1). Stored value does not."
@@ -79,7 +79,7 @@ jobs:
           DB_PASSWORD="$(kubectl -n database get secret oro-pg-app -o jsonpath='{.data.password}' | base64 -d)"
           REDIS_QUEUE_PASSWORD="$(kubectl -n redis get secret redis-queue -o jsonpath='{.data.redis-password}' | base64 -d)"
 
-          PAY21_BASE_URL="$(echo '${{ vars.TWENTYONE_PAY_BASE_URL || secrets.TWENTYONE_PAY_BASE_URL || 'https://dev-21pay.tech.bt/v1' }}' | sed 's:/*$::')"
+          PAY21_BASE_URL="$(echo '${{ vars.TWENTYONE_PAY_BASE_URL || secrets.TWENTYONE_PAY_BASE_URL || 'https://21pay.tech.bt/v1' }}' | sed 's:/*$::')"
           USDT_NETWORKS='${{ vars.TWENTYONE_PAY_NETWORKS || secrets.TWENTYONE_PAY_NETWORKS || 'tron,arbitrum,ethereum' }}'
           USDT_ENABLED='${{ vars.USDT_ENABLED || secrets.USDT_ENABLED || 'false' }}'
           MINIO_ENDPOINT='${{ vars.MINIO_ENDPOINT || secrets.MINIO_ENDPOINT || 'minio.minio.svc.cluster.local:80' }}'

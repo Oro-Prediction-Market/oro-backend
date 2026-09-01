@@ -2,10 +2,17 @@ import { SegregationInvariantsService } from "../reconciliation/segregation-inva
 
 /**
  * These assert the shape and the reporting contract. The SQL itself was
- * verified against a real Postgres by seeding a correct world (all seven
- * report zero), then breaking each invariant in turn and confirming each one —
+ * verified against a real Postgres by seeding a correct world (every check
+ * reports zero), then breaking each invariant in turn and confirming each one —
  * and only that one — fired. A mocked DataSource cannot prove SQL correctness,
  * so it is not asked to.
+ *
+ * The two gateway-parity checks hold the ledger against the intent and
+ * withdrawal tables, which are written by a different code path. They do not
+ * reach the gateway itself: a ledger and a set of intents can agree perfectly
+ * and still both describe deposits our tenant never received. Only custody
+ * parity closes that, and it needs a 21Pay balance endpoint we have no
+ * contract for.
  */
 function build(rowsByQuery: (sql: string) => any[]) {
   const ds: any = {
@@ -22,7 +29,7 @@ describe("SegregationInvariantsService", () => {
     const res = await service.runAll();
 
     expect(res.ok).toBe(true);
-    expect(res.results).toHaveLength(7);
+    expect(res.results).toHaveLength(9);
     expect(res.results.every((r) => r.violations === 0)).toBe(true);
   });
 
@@ -37,6 +44,8 @@ describe("SegregationInvariantsService", () => {
       "positions_have_a_book",
       "settlements_balance_per_book",
       "settlements_have_a_book",
+      "usdt_credits_trace_to_intents",
+      "usdt_debits_trace_to_withdrawals",
     ]);
   });
 
@@ -53,6 +62,35 @@ describe("SegregationInvariantsService", () => {
     const failing = res.results.filter((r) => r.violations > 0);
     expect(failing).toHaveLength(1);
     expect(failing[0].key).toBe("no_wallet_overdrawn");
+  });
+
+  it("fires when a USDT credit has no 21Pay intent behind it", async () => {
+    // The mint-money shape: a credit that entered the ledger through some path
+    // other than a confirmed on-chain deposit. Every other check passes on it.
+    const { service } = build((sql) =>
+      sql.includes("no 21Pay intent behind it")
+        ? [{ reason: "USDT credit with no 21Pay intent behind it", id: "t1" }]
+        : [],
+    );
+    const res = await service.runAll();
+
+    expect(res.ok).toBe(false);
+    const failing = res.results.filter((r) => r.violations > 0);
+    expect(failing).toHaveLength(1);
+    expect(failing[0].key).toBe("usdt_credits_trace_to_intents");
+  });
+
+  it("fires when a USDT debit has no withdrawal record", async () => {
+    const { service } = build((sql) =>
+      sql.includes("no withdrawal record")
+        ? [{ reason: "USDT debit with no withdrawal record", id: "t2" }]
+        : [],
+    );
+    const res = await service.runAll();
+
+    const failing = res.results.filter((r) => r.violations > 0);
+    expect(failing).toHaveLength(1);
+    expect(failing[0].key).toBe("usdt_debits_trace_to_withdrawals");
   });
 
   it("bounds the sample it returns", async () => {

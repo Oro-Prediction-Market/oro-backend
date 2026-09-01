@@ -48,6 +48,8 @@ export class SegregationInvariantsService {
       await this.settlementsBalancePerBook(),
       await this.settlementsMatchBookCurrency(),
       await this.noOrphanBooks(),
+      await this.usdtCreditsTraceToIntents(),
+      await this.usdtDebitsTraceToWithdrawals(),
     ];
 
     const failing = results.filter((r) => r.violations > 0);
@@ -236,6 +238,107 @@ export class SegregationInvariantsService {
         GROUP BY mb.id, mb."marketId", mb.currency
        HAVING COUNT(o.id) <> COUNT(ob.id)
         LIMIT ${SAMPLE_LIMIT + 1}`,
+    );
+  }
+
+  /**
+   * Every USDT credit in the ledger came from a deposit 21Pay told us about,
+   * for the amount 21Pay said arrived.
+   *
+   * The seven checks above are all internal consistency: balances derive
+   * correctly, books add up, settlements balance. This one is wider — it holds
+   * the ledger against a second table written by a different code path — but
+   * be precise about how much wider, because it is tempting to over-trust:
+   *
+   * **It would not have caught the staging ledger that met the production
+   * gateway.** Those credits each had an intent row behind them, of the right
+   * amount, for the right user. Ledger and intents agreed perfectly; both were
+   * describing deposits that the production tenant had never received. Only
+   * custody parity catches that, and see the note at the end of this comment.
+   *
+   * What it does catch is drift between the two: a credit that entered the
+   * ledger through some path other than a settled intent, an intent credited
+   * for a different amount than the ledger row carries, or a credit landing in
+   * the wrong user's wallet.
+   *
+   * Two directions, because they fail differently:
+   *
+   * - A credited intent whose ledger row is missing, is in the wrong currency
+   *   or type, belongs to another user, or carries a different amount. That is
+   *   a deposit we recorded and then mis-credited.
+   * - Below, a USDT deposit row with no intent behind it at all. That is the
+   *   mint-money shape: a credit that entered the ledger through some path
+   *   other than a confirmed on-chain deposit.
+   *
+   * Note what this still does not do: it proves the ledger agrees with **our
+   * own** record of the gateway, not with 21Pay's custody balance. Full
+   * custody parity — SEGREGATION-MODEL §9 — needs a tenant balance endpoint
+   * the client does not have a contract for yet.
+   */
+  private usdtCreditsTraceToIntents(): Promise<InvariantResult> {
+    return this.check(
+      "usdt_credits_trace_to_intents",
+      "every USDT deposit is a credited 21Pay intent, and every credited intent is one ledger row of the same amount",
+      `SELECT reason, id, "userId", amount FROM (
+         SELECT 'intent credited without a matching ledger row' AS reason,
+                i."pay21IntentId" AS id, i."userId",
+                i."detectedAmountUsdt" AS amount
+           FROM crypto_payment_intents i
+           LEFT JOIN transactions t ON t.id = i."transactionId"
+          WHERE i."creditedAt" IS NOT NULL
+            AND (t.id IS NULL
+                 OR t.currency <> 'USDT'
+                 OR t.type <> 'deposit'
+                 OR t."userId" <> i."userId"
+                 OR t.amount <> i."detectedAmountUsdt")
+         UNION ALL
+         SELECT 'USDT credit with no 21Pay intent behind it' AS reason,
+                t.id::text AS id, t."userId", t.amount AS amount
+           FROM transactions t
+          WHERE t.currency = 'USDT'
+            AND t.type = 'deposit'
+            AND NOT EXISTS (
+              SELECT 1 FROM crypto_payment_intents i
+               WHERE i."transactionId" = t.id
+            )
+       ) x
+       LIMIT ${SAMPLE_LIMIT + 1}`,
+    );
+  }
+
+  /**
+   * Every USDT debit in the ledger is a withdrawal we actually requested.
+   *
+   * The mirror of the check above, on the side where money leaves. A debit
+   * with no withdrawal record is money removed from a user's wallet by
+   * something other than a payout, which is the shape of both a bug and a
+   * theft; a withdrawal whose debit is missing is money sent on-chain that the
+   * user was never charged for.
+   */
+  private usdtDebitsTraceToWithdrawals(): Promise<InvariantResult> {
+    return this.check(
+      "usdt_debits_trace_to_withdrawals",
+      "every USDT withdrawal debit matches one crypto_withdrawals row of the same amount",
+      `SELECT reason, id, "userId", amount FROM (
+         SELECT 'USDT debit with no withdrawal record' AS reason,
+                t.id::text AS id, t."userId", t.amount AS amount
+           FROM transactions t
+          WHERE t.currency = 'USDT'
+            AND t.type = 'withdrawal'
+            AND NOT EXISTS (
+              SELECT 1 FROM crypto_withdrawals w
+               WHERE w."debitTransactionId" = t.id
+            )
+         UNION ALL
+         SELECT 'withdrawal debited for the wrong amount or wallet' AS reason,
+                w.id::text AS id, w."userId", w."amountUsdt" AS amount
+           FROM crypto_withdrawals w
+           JOIN transactions t ON t.id = w."debitTransactionId"
+          WHERE t.currency <> 'USDT'
+             OR t."userId" <> w."userId"
+             OR ABS(t.amount) <> w."amountUsdt"
+       ) x
+       LIMIT ${SAMPLE_LIMIT + 1}`,
     );
   }
 }

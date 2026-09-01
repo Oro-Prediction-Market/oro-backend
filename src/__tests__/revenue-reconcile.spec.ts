@@ -34,8 +34,10 @@ describe("RevenueDistributionService.reconcileMissingDistributions", () => {
   it("books a distribution for every settled-but-unbooked market", async () => {
     const { svc, record } = build(
       [
-        { id: "s1", marketId: "m1", houseAmount: "24.00", totalPool: "300.00" },
-        { id: "s2", marketId: "m2", houseAmount: "10.00", totalPool: "200.00" },
+        // One settlement per book. m2's is the USDT book, which is the case
+        // that used to book its house cut as ngultrum revenue.
+        { id: "s1", marketId: "m1", houseAmount: "24.00", totalPool: "300.00", currency: "BTN" },
+        { id: "s2", marketId: "m2", houseAmount: "10.00", totalPool: "200.00", currency: "USDT" },
       ],
       [
         { id: "m1", houseEdgePct: "5" },
@@ -47,9 +49,9 @@ describe("RevenueDistributionService.reconcileMissingDistributions", () => {
 
     expect(res).toEqual({ created: 2, scanned: 2 });
     expect(record).toHaveBeenCalledTimes(2);
-    // (marketId, settlementId, houseAmount, houseEdgePct, totalPool)
-    expect(record).toHaveBeenCalledWith("m1", "s1", 24, 5, 300);
-    expect(record).toHaveBeenCalledWith("m2", "s2", 10, 8, 200);
+    // (marketId, settlementId, houseAmount, houseEdgePct, totalPool, currency)
+    expect(record).toHaveBeenCalledWith("m1", "s1", 24, 5, 300, "BTN");
+    expect(record).toHaveBeenCalledWith("m2", "s2", 10, 8, 200, "USDT");
   });
 
   it("does nothing when every settlement is already booked", async () => {
