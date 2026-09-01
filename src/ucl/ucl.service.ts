@@ -164,49 +164,28 @@ export class UclService {
     return result;
   }
 
-  /** football-data.org CL standings. In the summer gap the "current" season
-   *  exists but no games are played yet, so fall back to the just-finished
-   *  season (or honour an explicit UCL_SEASON override). */
+  /** football-data.org CL standings for the CURRENT season only (or an explicit
+   *  UCL_SEASON override). No summer-gap fallback: before the season is under
+   *  way the table is simply empty rather than showing last season's — the hub
+   *  renders its pre-season state instead of stale data. */
   private async fetchStandingsTable(): Promise<any[]> {
     const override = this.config.get<string>("UCL_SEASON");
-    const q = (s?: string | number) =>
-      `competitions/CL/standings${s ? `?season=${s}` : ""}`;
+    const path = `competitions/CL/standings${override ? `?season=${override}` : ""}`;
 
-    const data = await this.footballData<any>(q(override));
+    const data = await this.footballData<any>(path);
     if (!data) return [];
-    let table = this.extractTable(data);
-    const started = table.some((r) => num(r.playedGames) > 0);
-    if (!started && !override) {
-      const startYear = parseInt(
-        String(data.season?.startDate ?? "").slice(0, 4),
-        10,
-      );
-      if (Number.isFinite(startYear)) {
-        const prev = await this.footballData<any>(q(startYear - 1));
-        if (prev) table = this.extractTable(prev);
-      }
-    }
-    return table;
+    return this.extractTable(data);
   }
 
-  /** football-data.org CL top-scorers (goal-ranked, carries assists too). */
+  /** football-data.org CL top-scorers (goal-ranked, carries assists too) for the
+   *  CURRENT season only (or an explicit UCL_SEASON override). No summer-gap
+   *  fallback: before the season is under way the boards are empty rather than
+   *  showing last season's leaders as if they were current. */
   private async fetchScorers(): Promise<any[]> {
     const override = this.config.get<string>("UCL_SEASON");
-    const q = (s?: string | number) =>
-      `competitions/CL/scorers?limit=100${s ? `&season=${s}` : ""}`;
-
-    let data = await this.footballData<any>(q(override));
-    if (!data) return [];
-    if ((data.scorers?.length ?? 0) === 0 && !override) {
-      const startYear = parseInt(
-        String(data.season?.startDate ?? "").slice(0, 4),
-        10,
-      );
-      if (Number.isFinite(startYear)) {
-        data = (await this.footballData<any>(q(startYear - 1))) ?? data;
-      }
-    }
-    return data.scorers ?? [];
+    const path = `competitions/CL/scorers?limit=100${override ? `&season=${override}` : ""}`;
+    const data = await this.footballData<any>(path);
+    return data?.scorers ?? [];
   }
 
   /** Status of the CURRENT Champions League season (no fallback). `started` is
