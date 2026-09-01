@@ -22,7 +22,6 @@ jobs:
           chmod 600 $RUNNER_TEMP/.kube/config
           echo "KUBECONFIG=$RUNNER_TEMP/.kube/config" >> $GITHUB_ENV
 
-      # Every command is `|| true` so one failure can't hide the rest.
       - name: Pods
         run: kubectl -n $NS get pods -l app=$DEPLOY -o wide || true
 

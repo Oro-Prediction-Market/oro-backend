@@ -1,23 +1,6 @@
 name: Security scan
 run-name: "Security scan · ${{ github.event.inputs.scan_type || 'sast-sca' }} · ${{ github.event_name }}"
 
-# ═══════════════════════════════════════════════════════════════════════════
-# PORTABLE, DROP-IN SECURITY SCAN
-# Copy this single file into any repo's .github/workflows/ — it works as-is,
-# no other setup required:
-#   • Trivy auto-detects lockfiles (npm/pnpm/yarn/go/…); Semgrep auto-detects langs
-#   • Picks up project-specific Semgrep rules from ./.semgrep/ if present
-#   • Auto-skips the image + Dockerfile jobs when there is no Dockerfile
-#   • Report-only: findings go to the run Summary + artifacts; nothing blocks
-#
-# Manual runs (Actions ▸ Run workflow) offer a scan-depth choice.
-# PRs always run the fast default (sast-sca).
-#
-# Make it a blocking gate later: in Semgrep drop `| tee … || true` and add
-# `--error`; in Trivy set `exit-code: "1"`; then require the checks in the
-# branch-protection rule on main.
-# ═══════════════════════════════════════════════════════════════════════════
-
 on:
   pull_request:
     branches: [main]
