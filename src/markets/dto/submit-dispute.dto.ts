@@ -23,15 +23,22 @@ export class SubmitDisputeDto {
 
   @ApiPropertyOptional({
     description:
-      "Bond to lock, in BTN. Only the FIRST objector may choose this (minimum 10); " +
-      "every later participant must match the amount already set for the market, " +
-      "so it can be omitted by them. Defaults to the minimum / matched amount.",
+      "Bond to lock, in your account's own currency — the contest belongs to " +
+      "the market book your position is in. Only the FIRST objector may choose " +
+      "it; every later participant must match the amount already set for that " +
+      "book, so they can omit it. Defaults to the minimum / matched amount. " +
+      "The floor is per currency (Nu 10 / 0.5 USDT) and is enforced by the " +
+      "server, which is the only place the currency is known — see " +
+      "GET /markets/:id/dispute-info for the exact figure that applies to you.",
     example: 50,
-    minimum: 10,
   })
   @IsOptional()
   @IsNumber({}, { message: "Bond amount must be a number" })
-  @Min(10, { message: "The minimum bond is Nu 10" })
+  // Smallest representable unit of the finest-grained currency (USDT, 6dp).
+  // The real per-currency floor cannot live here: a DTO does not know which
+  // book the caller is bonding into, and a hardcoded Nu 10 rejected every
+  // legitimate USDT bond before the service ever saw it.
+  @Min(0.000001, { message: "Bond amount must be greater than zero" })
   bondAmount?: number;
 
   @ApiPropertyOptional({

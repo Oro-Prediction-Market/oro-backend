@@ -3,6 +3,7 @@ import { Market } from "../entities/market.entity";
 import { MarketBook } from "../entities/market-book.entity";
 import { OutcomeBook } from "../entities/outcome-book.entity";
 import { BTN_CURRENCY } from "../entities/transaction.entity";
+import { USDT } from "../shared/utils/wallet.util";
 
 /**
  * Minimum stake for the ngultrum book of a market.
@@ -29,6 +30,52 @@ export function btnMinStakeFor(market: Pick<Market, "externalSource">): number {
 export function usdtMinStake(): number {
   const raw = Number(process.env.USDT_MIN_STAKE);
   return Number.isFinite(raw) && raw > 0 ? raw : 1;
+}
+
+/**
+ * Floor for the first objector's chosen bond, per currency.
+ *
+ * A resolution contest is settled inside the book its bonds were locked in, so
+ * each book needs its own floor. Like the stake minimums above these are chosen
+ * numbers and never conversions — no exchange rate exists anywhere in this
+ * system, and inventing one here would be inventing one for the forfeit pool
+ * too.
+ *
+ * The floor exists to deter casual and abusive objections while staying
+ * reachable for a bettor with a genuine grievance, which is a judgement about
+ * each cohort separately: Nu 10 against a Nu 50 minimum stake, and 0.5 against
+ * a 1 USDT minimum stake. Both are overridable per deployment.
+ */
+export function btnMinDisputeBond(): number {
+  const raw = Number(process.env.BTN_MIN_DISPUTE_BOND);
+  return Number.isFinite(raw) && raw > 0 ? raw : 10;
+}
+
+export function usdtMinDisputeBond(): number {
+  const raw = Number(process.env.USDT_MIN_DISPUTE_BOND);
+  return Number.isFinite(raw) && raw > 0 ? raw : 0.5;
+}
+
+/**
+ * The bond floor for one book's contest.
+ *
+ * Throws rather than defaulting on an unrecognised currency: a silent fallback
+ * to the ngultrum floor would quote a bettor a number from the wrong cohort,
+ * and the same mistake in the other direction is how bonds ended up crossing
+ * books in the first place.
+ */
+export function minDisputeBondFor(currency: string): number {
+  switch (currency) {
+    case BTN_CURRENCY:
+      return btnMinDisputeBond();
+    case USDT:
+      return usdtMinDisputeBond();
+    default:
+      throw new Error(
+        `No dispute bond floor defined for currency "${currency}". ` +
+          `Add one to minDisputeBondFor before opening a contest in it.`,
+      );
+  }
 }
 
 /**

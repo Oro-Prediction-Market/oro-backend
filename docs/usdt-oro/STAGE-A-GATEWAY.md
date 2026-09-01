@@ -20,7 +20,7 @@ though the code that reads it is not:
 
 ```
 USDT_ENABLED=false
-TWENTYONE_PAY_BASE_URL=https://dev-21pay.tech.bt/v1
+TWENTYONE_PAY_BASE_URL=https://21pay.tech.bt/v1
 TWENTYONE_PAY_API_KEY=
 TWENTYONE_PAY_TENANT_ID=
 TWENTYONE_PAY_NETWORKS=tron

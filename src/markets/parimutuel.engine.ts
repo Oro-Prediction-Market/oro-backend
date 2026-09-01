@@ -38,7 +38,7 @@ import {
   ledgerBalancesForAccounts,
 } from "../shared/utils/ledger.util";
 import { BTN_CURRENCY } from "../entities/transaction.entity";
-import { roundMoney } from "../shared/utils/money.util";
+import { roundMoney, floorMoney, formatMoney } from "../shared/utils/money.util";
 import { MarketBook } from "../entities/market-book.entity";
 import { OutcomeBook } from "../entities/outcome-book.entity";
 import { resolveWalletCurrency } from "../shared/utils/wallet.util";
@@ -862,21 +862,32 @@ export class ParimutuelEngine implements OnModuleInit {
 
     await this.marketRepo.save(market);
 
-    // ── Settle the two-sided resolution contest ───────────────────────────────
+    // ── Settle the two-sided resolution contest, one book at a time ───────────
     // OBJECT participants win iff the admin changed the proposal; SUPPORT
-    // (defenders) win iff the proposal was kept. The winning side gets each
-    // bond back plus a pro-rata (here: equal, since all bonds match) share of
-    // the losing side's forfeited bonds. Any forfeited money with no winning
-    // side — objectors lost and nobody defended — plus floor-rounding dust is
-    // booked as house revenue via settleMarket()'s houseForfeit, so it flows
-    // through the normal revenue-distribution mechanism instead of leaking.
+    // (defenders) win iff the proposal was kept. That verdict is market-wide —
+    // there is one outcome and one fact to be right about — but the MONEY is
+    // per book: the winning side in a book gets each bond back plus a pro-rata
+    // (here: equal, since all bonds in a book match) share of the losing side's
+    // forfeited bonds IN THAT SAME CURRENCY. Nothing is pooled across books,
+    // because no exchange rate exists anywhere in this system and inventing one
+    // for a forfeit split would be inventing one for real money.
+    //
+    // Any forfeited money with no winning side — objectors lost and nobody
+    // defended — plus floor-rounding dust is booked as that book's house
+    // revenue, so it flows through the normal revenue-distribution mechanism
+    // instead of leaking.
     const disputes = await this.disputeRepo.find({ where: { marketId } });
-    let unclaimedForfeit = 0;
-    // Winning objectors to reward from the house cut when the admin's proposal
-    // was OVERTURNED but nobody defended it (no losing side, so no forfeited
-    // bonds to reward from). Populated below; the reward itself is paid inside
-    // settleMarket, where the real house residual is known and can cap it.
-    let challengerRewardObjectors: { userId: string; bondAmount: number }[] = [];
+    // Both keyed by currency and consumed by settleMarket, which hands each
+    // book only the entries belonging to it.
+    const unclaimedForfeitByCurrency = new Map<string, number>();
+    // Winning objectors to reward from a book's house cut when the admin's
+    // proposal was OVERTURNED but nobody in that book defended it (no losing
+    // side, so no forfeited bonds to reward from). The reward itself is paid
+    // inside settleBook, where the real house residual is known and can cap it.
+    const challengerRewardsByCurrency = new Map<
+      string,
+      { userId: string; bondAmount: number }[]
+    >();
     if (disputes.length > 0) {
       const proposalChanged =
         !!market.proposedOutcomeId &&
@@ -886,122 +897,169 @@ export class ParimutuelEngine implements OnModuleInit {
       const winningSide = proposalChanged
         ? DisputeSide.OBJECT
         : DisputeSide.SUPPORT;
-      const winners = disputes.filter((d) => d.side === winningSide);
-      const losers = disputes.filter((d) => d.side !== winningSide);
 
-      // Forfeited pool = sum of the losing side's bonds.
-      const forfeitPool = losers.reduce((s, d) => s + Number(d.bondAmount), 0);
-      const winnerTotalBond = winners.reduce(
-        (s, d) => s + Number(d.bondAmount),
-        0,
-      );
-
-      // Admin overturned with NO defending side: the correct objectors would
-      // otherwise get only their bond back (empty forfeit pool). Fund a reward
-      // for them from the house cut instead — paid & capped in settleMarket.
-      if (proposalChanged && winners.length > 0 && losers.length === 0) {
-        challengerRewardObjectors = winners.map((d) => ({
-          userId: d.userId,
-          bondAmount: Number(d.bondAmount),
-        }));
+      // One contest per book. Rows written before books existed carry the
+      // 'BTN' column default, so the fallback here is a statement of fact
+      // rather than a guess.
+      const byCurrency = new Map<string, Dispute[]>();
+      for (const d of disputes) {
+        const ccy = d.currency ?? BTN_CURRENCY;
+        const group = byCurrency.get(ccy);
+        if (group) group.push(d);
+        else byCurrency.set(ccy, [d]);
       }
 
-      // Persist the forfeit pool onto the market record for audit trail
-      market.disputeBondPool = forfeitPool;
-      await this.marketRepo.save(market);
+      for (const [currency, group] of byCurrency) {
+        const winners = group.filter((d) => d.side === winningSide);
+        const losers = group.filter((d) => d.side !== winningSide);
 
-      // Pay the winning side: bond back + share of the forfeit pool.
-      //
-      // `distributedReward` accumulates every winner's (deterministic) share so
-      // the house-forfeit remainder is correct on both a first pass and a retry.
-      // The actual PAYMENT is idempotent: each winner's reward transaction and
-      // its REWARDED status are written together inside a row-locked transaction,
-      // and a winner already marked REWARDED (by an earlier, possibly failed,
-      // pass) is skipped — so re-running resolveMarket never double-pays a bond.
-      let distributedReward = 0;
-      for (const d of winners) {
-        const rewardShare =
-          winnerTotalBond > 0
-            ? Math.floor((Number(d.bondAmount) / winnerTotalBond) * forfeitPool)
-            : 0;
-        distributedReward += rewardShare;
-        const totalReturn = Number(d.bondAmount) + rewardShare;
+        // Forfeited pool = sum of this book's losing bonds, at this book's
+        // precision.
+        const forfeitPool = roundMoney(
+          losers.reduce((s, d) => s + Number(d.bondAmount), 0),
+          currency,
+        );
+        const winnerTotalBond = winners.reduce(
+          (s, d) => s + Number(d.bondAmount),
+          0,
+        );
 
-        // Already paid on a previous pass — count the share (above) but don't
-        // pay again.
-        if (d.bondStatus !== DisputeBondStatus.LOCKED) continue;
-
-        await this.dataSource.transaction(async (em) => {
-          // Re-read the dispute under a write lock and re-check LOCKED so two
-          // concurrent resolvers can't both pay the same bond.
-          const locked = await em
-            .getRepository(Dispute)
-            .createQueryBuilder("d")
-            .setLock("pessimistic_write")
-            .where("d.id = :id", { id: d.id })
-            .getOne();
-          if (!locked || locked.bondStatus !== DisputeBondStatus.LOCKED) return;
-
-          const balBefore = await ledgerBalanceForAccount(em, d.userId);
-
-          await em.save(
-            Transaction,
-            em.create(Transaction, {
+        // Admin overturned with NO defending side in this book: the correct
+        // objectors would otherwise get only their bond back (empty forfeit
+        // pool). Fund a reward from this book's house cut instead — paid and
+        // capped in settleBook.
+        if (proposalChanged && winners.length > 0 && losers.length === 0) {
+          challengerRewardsByCurrency.set(
+            currency,
+            winners.map((d) => ({
               userId: d.userId,
-              type: TransactionType.DISPUTE_BOND_REWARD,
-              amount: totalReturn,
-              balanceBefore: balBefore,
-              balanceAfter: balBefore + totalReturn,
-              note:
-                `Resolution ${d.side === DisputeSide.OBJECT ? "objection" : "defence"} ` +
-                `WON on "${market.title}" — bond returned + Nu ${rewardShare} from the losing side`,
-            }),
+              bondAmount: Number(d.bondAmount),
+            })),
           );
-          locked.upheld = true;
-          locked.bondStatus = DisputeBondStatus.REWARDED;
-          locked.rewardAmount = rewardShare;
-          await em.save(Dispute, locked);
-          // Mirror onto the in-memory copy for the bulk save + logging below.
-          d.upheld = true;
-          d.bondStatus = DisputeBondStatus.REWARDED;
-          d.rewardAmount = rewardShare;
-        });
+        }
+
+        // Persist the forfeit pool onto the book for the audit trail. A
+        // targeted UPDATE rather than saving an entity, so it cannot carry
+        // stale pool or edge columns along with it.
+        await this.dataSource
+          .getRepository(MarketBook)
+          .update({ marketId, currency }, { disputeBondPool: forfeitPool });
+
+        // Pay the winning side: bond back + share of this book's forfeit pool.
+        //
+        // `distributedReward` accumulates every winner's (deterministic) share
+        // so the house-forfeit remainder is correct on both a first pass and a
+        // retry. The actual PAYMENT is idempotent: each winner's reward
+        // transaction and its REWARDED status are written together inside a
+        // row-locked transaction, and a winner already marked REWARDED (by an
+        // earlier, possibly failed, pass) is skipped — so re-running
+        // resolveMarket never double-pays a bond.
+        let distributedReward = 0;
+        for (const d of winners) {
+          // Floored at the book's own precision. A bare Math.floor() truncated
+          // to whole units, which is invisible on ngultrum bonds and would
+          // erase a 6dp USDT share entirely.
+          const rewardShare =
+            winnerTotalBond > 0
+              ? floorMoney(
+                  (Number(d.bondAmount) / winnerTotalBond) * forfeitPool,
+                  currency,
+                )
+              : 0;
+          distributedReward = roundMoney(
+            distributedReward + rewardShare,
+            currency,
+          );
+          const totalReturn = roundMoney(
+            Number(d.bondAmount) + rewardShare,
+            currency,
+          );
+
+          // Already paid on a previous pass — count the share (above) but don't
+          // pay again.
+          if (d.bondStatus !== DisputeBondStatus.LOCKED) continue;
+
+          await this.dataSource.transaction(async (em) => {
+            // Re-read the dispute under a write lock and re-check LOCKED so two
+            // concurrent resolvers can't both pay the same bond.
+            const locked = await em
+              .getRepository(Dispute)
+              .createQueryBuilder("d")
+              .setLock("pessimistic_write")
+              .where("d.id = :id", { id: d.id })
+              .getOne();
+            if (!locked || locked.bondStatus !== DisputeBondStatus.LOCKED)
+              return;
+
+            // Scoped to the bond's own currency: a return must be sized against
+            // the same ledger the lock was debited from.
+            const balBefore = await ledgerBalance(em, d.userId, currency);
+
+            await em.save(
+              Transaction,
+              em.create(Transaction, {
+                userId: d.userId,
+                type: TransactionType.DISPUTE_BOND_REWARD,
+                amount: totalReturn,
+                // The bond came out of this book and goes back into it. Stated
+                // rather than left to the column default so the return of a
+                // bond can never be denominated differently from its lock.
+                currency,
+                balanceBefore: balBefore,
+                balanceAfter: balBefore + totalReturn,
+                note:
+                  `Resolution ${d.side === DisputeSide.OBJECT ? "objection" : "defence"} ` +
+                  `WON on "${market.title}" — bond returned + ${formatMoney(rewardShare, currency)} from the losing side`,
+              }),
+            );
+            locked.upheld = true;
+            locked.bondStatus = DisputeBondStatus.REWARDED;
+            locked.rewardAmount = rewardShare;
+            await em.save(Dispute, locked);
+            // Mirror onto the in-memory copy for the bulk save + logging below.
+            d.upheld = true;
+            d.bondStatus = DisputeBondStatus.REWARDED;
+            d.rewardAmount = rewardShare;
+          });
+
+          this.logger.log(
+            `[Bond] User ${d.userId} (${d.side}, ${currency}) WON — returned ${formatMoney(Number(d.bondAmount), currency)} + reward ${formatMoney(rewardShare, currency)}`,
+          );
+        }
+
+        // The losing side forfeits — bond was already deducted at lock time.
+        for (const d of losers) {
+          d.upheld = false;
+          d.bondStatus = DisputeBondStatus.FORFEITED;
+          this.logger.log(
+            `[Bond] User ${d.userId} (${d.side}, ${currency}) LOST — bond ${formatMoney(Number(d.bondAmount), currency)} forfeited`,
+          );
+        }
+
+        // Whatever wasn't paid to a winning side in this book (no winners, or
+        // floor-rounding dust) is booked as that book's house revenue instead
+        // of disappearing.
+        unclaimedForfeitByCurrency.set(
+          currency,
+          roundMoney(forfeitPool - distributedReward, currency),
+        );
 
         this.logger.log(
-          `[Bond] User ${d.userId} (${d.side}) WON — returned Nu ${d.bondAmount} + reward Nu ${rewardShare}`,
+          `[Dispute] Market ${marketId} ${currency} contest: ` +
+            `winners ${winners.length}, losers ${losers.length}, ` +
+            `forfeit pool ${formatMoney(forfeitPool, currency)}, ` +
+            `booked to house revenue ${formatMoney(unclaimedForfeitByCurrency.get(currency)!, currency)}.`,
         );
       }
-
-      // The losing side forfeits — bond was already deducted at lock time.
-      for (const d of losers) {
-        d.upheld = false;
-        d.bondStatus = DisputeBondStatus.FORFEITED;
-        this.logger.log(
-          `[Bond] User ${d.userId} (${d.side}) LOST — bond Nu ${d.bondAmount} forfeited`,
-        );
-      }
-
-      // Whatever wasn't paid to a winning side (no winners, or floor-rounding
-      // dust) is booked as house revenue instead of disappearing.
-      // Dispute bonds are ngultrum, so this rounds at ngultrum precision.
-      // Named explicitly rather than left as a bare 2dp, so the day bonds can
-      // be posted in another currency this reads as a decision to revisit
-      // instead of an assumption nobody recorded.
-      unclaimedForfeit = roundMoney(
-        forfeitPool - distributedReward,
-        BTN_CURRENCY,
-      );
 
       await this.disputeRepo.save(disputes);
 
       this.logger.log(
         `[Dispute] Market ${marketId} resolved with ${disputes.length} contest entr${
           disputes.length === 1 ? "y" : "ies"
-        }. ` +
+        } across ${byCurrency.size} book(s). ` +
           `Admin ${adminId ?? "unknown"} chose outcome ${winningOutcomeId} ` +
-          `(proposal ${market.proposedOutcomeId}, changed: ${proposalChanged}). ` +
-          `Winners: ${winners.length}, losers: ${losers.length}, ` +
-          `forfeit pool: Nu ${forfeitPool}, booked to house revenue: Nu ${unclaimedForfeit}.`,
+          `(proposal ${market.proposedOutcomeId}, changed: ${proposalChanged}).`,
       );
 
       // ── Admin accountability: track & publicise wrong resolutions ───────────
@@ -1098,8 +1156,8 @@ export class ParimutuelEngine implements OnModuleInit {
     const settlements = await this.settleMarket(
       market,
       winner,
-      unclaimedForfeit,
-      challengerRewardObjectors,
+      unclaimedForfeitByCurrency,
+      challengerRewardsByCurrency,
     );
 
     // Callers downstream of this point predate books and speak in a single
@@ -1247,8 +1305,14 @@ export class ParimutuelEngine implements OnModuleInit {
   private async settleMarket(
     market: Market,
     winner: Outcome,
-    houseForfeit = 0,
-    challengerRewardObjectors: { userId: string; bondAmount: number }[] = [],
+    // Both keyed by currency. A resolution contest is settled inside the book
+    // its bonds were locked in, so each book receives only its own forfeited
+    // dust and its own objectors — never another book's.
+    unclaimedForfeitByCurrency: Map<string, number> = new Map(),
+    challengerRewardsByCurrency: Map<
+      string,
+      { userId: string; bondAmount: number }[]
+    > = new Map(),
   ): Promise<Settlement[]> {
     return await this.dataSource.transaction(async (em) => {
       const books = await em.find(MarketBook, {
@@ -1274,8 +1338,9 @@ export class ParimutuelEngine implements OnModuleInit {
         );
       }
 
-      // BTN first: dispute bonds and challenger rewards are ngultrum concepts
-      // and are applied to the BTN book only (see settleBook).
+      // BTN first, so a caller that predates books still reads the ngultrum
+      // settlement out of `settlements[0]`. Bond routing no longer depends on
+      // this order — each book is handed its own contest by currency below.
       books.sort((a, b) =>
         a.currency === BTN_CURRENCY ? -1 : b.currency === BTN_CURRENCY ? 1 : 0,
       );
@@ -1288,9 +1353,25 @@ export class ParimutuelEngine implements OnModuleInit {
             market,
             winner,
             book,
-            book.currency === BTN_CURRENCY ? houseForfeit : 0,
-            book.currency === BTN_CURRENCY ? challengerRewardObjectors : [],
+            unclaimedForfeitByCurrency.get(book.currency) ?? 0,
+            challengerRewardsByCurrency.get(book.currency) ?? [],
           ),
+        );
+      }
+
+      // ── Nothing contested a book that is not here ────────────────────────────
+      // A bond can only be locked by someone holding a position in that book,
+      // and taking a stake creates the book — so a contest without its book
+      // should be impossible. If it ever happens, that book's forfeited bonds
+      // have nowhere to be booked and would silently vanish, which is the one
+      // outcome worth making loud rather than trusting the invariant.
+      const settledCurrencies = new Set(books.map((b) => b.currency));
+      for (const currency of unclaimedForfeitByCurrency.keys()) {
+        if (settledCurrencies.has(currency)) continue;
+        this.logger.error(
+          `[Dispute] Market ${market.id} has a ${currency} contest but no ${currency} book — ` +
+            `${formatMoney(unclaimedForfeitByCurrency.get(currency)!, currency)} of forfeited bonds ` +
+            `could not be booked as revenue. Investigate before settling further markets.`,
         );
       }
 
@@ -1310,9 +1391,11 @@ export class ParimutuelEngine implements OnModuleInit {
    * arithmetic — thin-pool guard, 1.05x payout floor, edge subsidy, pro-rata
    * scale-down, residual-derived house revenue — is unchanged.
    *
-   * `houseForfeit` and `challengerRewardObjectors` arrive non-empty only for
-   * the BTN book: dispute bonds are ngultrum today, so routing them into a
-   * USDT book would move money across the boundary.
+   * `houseForfeit` and `challengerRewardObjectors` describe THIS book's
+   * resolution contest and nothing else. The caller keys both by currency and
+   * hands each book only its own, so a ngultrum forfeit can never fund a USDT
+   * reward — the boundary is kept by construction rather than by a BTN-only
+   * special case.
    */
   private async settleBook(
     em: EntityManager,
@@ -1323,11 +1406,12 @@ export class ParimutuelEngine implements OnModuleInit {
     // revenue so they flow through the normal revenue-distribution mechanism
     // (recordDistribution) instead of being kept off-ledger.
     houseForfeit = 0,
-    // Winning objectors to reward from the house cut when the admin was
-    // overturned with NO defenders (empty forfeit pool). Their bonds are
-    // returned by the caller; here they receive 50% of the market's house cut,
-    // split pro-rata by bond and CAPPED at the real house residual so the pool
-    // still balances exactly. Skipped entirely on a refunded (thin-pool) market.
+    // Winning objectors IN THIS BOOK to reward from its house cut, when the
+    // admin was overturned with NO defenders here (empty forfeit pool). Their
+    // bonds are returned by the caller; here they receive a configured fraction
+    // of this book's house cut, split pro-rata by bond and CAPPED at the real
+    // house residual so the pool still balances exactly. Skipped entirely on a
+    // refunded (thin-pool) market.
     challengerRewardObjectors: { userId: string; bondAmount: number }[] = [],
   ): Promise<Settlement> {
     {
@@ -2111,7 +2195,87 @@ Good luck! 🍀
 
       const bets = await em.find(Position, { where: { marketId } });
       await this.refundPositions(em, bets, "Market cancelled — refund");
+      await this.releaseLockedDisputeBonds(em, market);
     });
+  }
+
+  /**
+   * Return every still-locked dispute bond on a market that will never be
+   * resolved.
+   *
+   * Bonds are debited at lock time and only ever returned by resolveMarket, so
+   * without this a cancelled market kept its objectors' and defenders' bonds
+   * permanently — real money with no code path back to the user. There is no
+   * contest to win or lose once the market is void, so nobody forfeits and
+   * nobody is rewarded: every bond goes back at face value.
+   *
+   * Runs inside the caller's transaction, so the release either commits with
+   * the cancellation or not at all. Idempotent by construction — it only ever
+   * touches LOCKED rows and flips them in the same transaction, so a second
+   * cancel finds nothing to release.
+   */
+  private async releaseLockedDisputeBonds(
+    em: EntityManager,
+    market: Market,
+  ): Promise<void> {
+    const locked = await em.find(Dispute, {
+      where: { marketId: market.id, bondStatus: DisputeBondStatus.LOCKED },
+    });
+    if (locked.length === 0) return;
+
+    for (const d of locked) {
+      const bond = Number(d.bondAmount);
+      // The book the bond was locked in. A release must land in the same one,
+      // or a cancelled market becomes a currency conversion nobody priced.
+      const currency = d.currency ?? BTN_CURRENCY;
+      if (bond <= 0) {
+        // Nothing to give back, but the row must not stay LOCKED or the next
+        // reconciliation run reads it as an outstanding liability.
+        d.bondStatus = DisputeBondStatus.NOT_APPLICABLE;
+        continue;
+      }
+      // One dispute row per user per market, so no two iterations touch the
+      // same balance; re-reading per row is still correct because the
+      // transaction sees its own writes.
+      const balBefore = await ledgerBalance(em, d.userId, currency);
+      await em.save(
+        Transaction,
+        em.create(Transaction, {
+          userId: d.userId,
+          type: TransactionType.DISPUTE_REFUND,
+          amount: bond,
+          currency,
+          balanceBefore: balBefore,
+          balanceAfter: balBefore + bond,
+          note: `Market "${market.title}" was cancelled — resolution bond of ${formatMoney(bond, currency)} returned in full`,
+        }),
+      );
+      // NOT_APPLICABLE, not REWARDED: no side won. `upheld` stays null because
+      // the objection was never ruled on.
+      d.bondStatus = DisputeBondStatus.NOT_APPLICABLE;
+    }
+
+    await em.save(Dispute, locked);
+
+    await Promise.all(
+      locked.map((d) =>
+        this.redis.del(`oro:cache:balance:${d.userId}`).catch(() => undefined),
+      ),
+    );
+
+    // Totalled per currency: summing a ngultrum bond and a USDT bond into one
+    // figure would be the exact mistake this whole change removes.
+    const totals = new Map<string, number>();
+    for (const d of locked) {
+      const ccy = d.currency ?? BTN_CURRENCY;
+      totals.set(ccy, roundMoney((totals.get(ccy) ?? 0) + Number(d.bondAmount), ccy));
+    }
+    this.logger.log(
+      `[Bond] Market ${market.id} cancelled — released ${locked.length} locked bond(s) ` +
+        `totalling ${[...totals]
+          .map(([ccy, amount]) => formatMoney(amount, ccy))
+          .join(" + ")}`,
+    );
   }
 
   /**

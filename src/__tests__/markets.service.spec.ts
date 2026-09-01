@@ -656,3 +656,309 @@ describe("MarketsService.create — category assignment", () => {
     );
   });
 });
+
+// ─── submitDispute: one contest per book ─────────────────────────────────────
+//
+// The window, the proposal and the admin's final call are market-wide; the
+// money is per book. A participant bonds in their own account's currency,
+// against defenders in that same currency, and is paid from their forfeited
+// bonds. Nothing crosses books — no exchange rate exists anywhere in this
+// system, and inventing one for a forfeit split would be inventing one for
+// real money.
+//
+// The regression these cover: the lock row used to omit `currency` entirely, so
+// a USDT account passed the (unfiltered) position check, had its bond sized
+// against a USDT balance and was then debited in BTN.
+
+describe("MarketsService.submitDispute — per-book contests", () => {
+  function makeDisputeService(opts: {
+    userCurrency: string;
+    /** Currency of the caller's live position. Defaults to their account's. */
+    positionCurrency?: string;
+    /** Book rows that exist for this market, by currency. */
+    books?: Record<string, { id: string; disputeBondAmount: number | null }>;
+    /** Existing contest entries in the caller's book. */
+    existingInBook?: number;
+    balance?: number;
+  }) {
+    const {
+      userCurrency,
+      positionCurrency = opts.userCurrency,
+      books = {
+        BTN: { id: "book-btn", disputeBondAmount: null },
+        USDT: { id: "book-usdt", disputeBondAmount: null },
+      },
+      existingInBook = 0,
+      balance = 500,
+    } = opts;
+
+    const market = {
+      id: "m1",
+      title: "Test market",
+      status: "resolving",
+      totalPool: 300,
+      houseEdgePct: 8,
+      // Wide open, so a rejection can only come from the rule under test.
+      disputeDeadlineAt: new Date(Date.now() + 60 * 60 * 1000),
+      outcomes: [makeOutcome("o1"), makeOutcome("o2")],
+    };
+
+    const savedTransactions: any[] = [];
+    const savedDisputes: any[] = [];
+    const bookUpdates: any[] = [];
+    let countedWhere: any = null;
+
+    const repoFor = (entity: any) => {
+      const name = entity?.name;
+      if (name === "MarketBook") {
+        return {
+          createQueryBuilder: jest.fn().mockReturnValue({
+            setLock: jest.fn().mockReturnThis(),
+            where: jest.fn().mockReturnThis(),
+            getOne: jest
+              .fn()
+              .mockImplementation(async () =>
+                books[userCurrency]
+                  ? { currency: userCurrency, ...books[userCurrency] }
+                  : null,
+              ),
+          }),
+          update: jest.fn().mockImplementation(async (crit: any, patch: any) => {
+            bookUpdates.push({ crit, patch });
+          }),
+        };
+      }
+      if (name === "Dispute") {
+        return {
+          count: jest.fn().mockImplementation(async (args: any) => {
+            countedWhere = args?.where;
+            return existingInBook;
+          }),
+          create: jest.fn().mockImplementation((d: any) => ({ ...d })),
+          save: jest.fn().mockImplementation(async (d: any) => {
+            savedDisputes.push(d);
+            return d;
+          }),
+        };
+      }
+      // Transaction: both the ledger balance read and the lock row write.
+      return {
+        create: jest.fn().mockImplementation((d: any) => ({ ...d })),
+        save: jest.fn().mockImplementation(async (d: any) => {
+          savedTransactions.push(d);
+          return d;
+        }),
+        createQueryBuilder: jest.fn().mockReturnValue({
+          select: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          getRawOne: jest.fn().mockResolvedValue({ balance }),
+        }),
+      };
+    };
+
+    const mockEm = { getRepository: jest.fn(repoFor) };
+
+    const mockDataSource = {
+      getRepository: jest.fn().mockReturnValue({
+        // Honours the currency filter, which is the point: a stake in another
+        // book is not exposure to this book's payout.
+        findOne: jest.fn().mockImplementation(async (args: any) => {
+          if (args?.where?.currency && args.where.currency !== positionCurrency)
+            return null;
+          return {
+            id: "pos1",
+            userId: "u1",
+            marketId: "m1",
+            status: "pending",
+            currency: positionCurrency,
+          };
+        }),
+      }),
+      transaction: jest.fn().mockImplementation((cb: Function) => cb(mockEm)),
+    };
+
+    const svc = new MarketsService(
+      { findOne: jest.fn().mockResolvedValue(market) } as any,
+      null as any, // outcomeRepo
+      { findOne: jest.fn().mockResolvedValue(null) } as any, // disputeRepo
+      { findOne: jest.fn().mockResolvedValue({ id: "u1", currency: userCurrency }) } as any,
+      {
+        findOne: jest.fn().mockImplementation(async (args: any) => {
+          const ccy = args?.where?.currency;
+          return books[ccy] ? { currency: ccy, ...books[ccy] } : null;
+        }),
+        find: jest.fn().mockResolvedValue([]),
+      } as any, // marketBookRepo
+      { find: jest.fn().mockResolvedValue([]) } as any, // outcomeBookRepo
+      null as any, // engine
+      new LMSRService(),
+      mockDataSource as any,
+      {
+        getJson: jest.fn().mockResolvedValue(null),
+        setJsonEx: jest.fn().mockResolvedValue(undefined),
+        del: jest.fn().mockResolvedValue(undefined),
+      } as any,
+      {
+        computeMarketSignal: jest.fn().mockResolvedValue({}),
+        computeSignalConfidence: jest.fn().mockResolvedValue({
+          participantCount: 0,
+          reputationDepth: 0,
+          maturityScore: 0,
+          composite: 0,
+        }),
+        computeReputationWeightedShares: jest.fn().mockResolvedValue({}),
+      } as any,
+      { postToChannel: jest.fn().mockResolvedValue(undefined) } as any,
+    );
+
+    return {
+      svc,
+      savedTransactions,
+      savedDisputes,
+      bookUpdates,
+      countedWhere: () => countedWhere,
+    };
+  }
+
+  it("bonds a BTN account in BTN, at the Nu 10 floor", async () => {
+    const { svc, savedTransactions, savedDisputes, bookUpdates } =
+      makeDisputeService({ userCurrency: "BTN" });
+
+    const result = await svc.submitDispute("u1", "m1", {
+      reason: "wrong outcome",
+    } as any);
+
+    expect(savedTransactions).toHaveLength(1);
+    expect(savedTransactions[0].currency).toBe("BTN");
+    expect(savedTransactions[0].amount).toBe(-10);
+    expect(savedDisputes[0].currency).toBe("BTN");
+    expect(savedDisputes[0].bondAmount).toBe(10);
+    // The agreed bond is stamped on the BOOK, not the market — that is what a
+    // later participant matches against.
+    expect(bookUpdates).toEqual([
+      { crit: { id: "book-btn" }, patch: { disputeBondAmount: 10 } },
+    ]);
+    expect(result.bondNote).toContain("Nu 10");
+  });
+
+  it("bonds a USDT account in USDT, at the 0.5 floor, against the USDT book", async () => {
+    const { svc, savedTransactions, savedDisputes, bookUpdates } =
+      makeDisputeService({ userCurrency: "USDT" });
+
+    const result = await svc.submitDispute("u1", "m1", {
+      reason: "wrong outcome",
+    } as any);
+
+    // The regression: this row used to land as −10 BTN.
+    expect(savedTransactions).toHaveLength(1);
+    expect(savedTransactions[0].currency).toBe("USDT");
+    expect(savedTransactions[0].amount).toBe(-0.5);
+    expect(savedDisputes[0].currency).toBe("USDT");
+    expect(savedDisputes[0].bondAmount).toBe(0.5);
+    expect(bookUpdates).toEqual([
+      { crit: { id: "book-usdt" }, patch: { disputeBondAmount: 0.5 } },
+    ]);
+    // Quoted in the currency actually charged, not "Nu 0.5".
+    expect(result.bondNote).toContain("0.5 USDT");
+  });
+
+  it("counts existing entries per book, so each book has its own first objector", async () => {
+    const { svc, countedWhere } = makeDisputeService({ userCurrency: "USDT" });
+
+    await svc.submitDispute("u1", "m1", { reason: "wrong outcome" } as any);
+
+    // Without the currency scope, a BTN objection would make a USDT bettor a
+    // "later participant" of a contest that does not exist in their book.
+    expect(countedWhere()).toEqual({ marketId: "m1", currency: "USDT" });
+  });
+
+  it("makes a later participant match the bond recorded on their own book", async () => {
+    const { svc, savedTransactions } = makeDisputeService({
+      userCurrency: "USDT",
+      existingInBook: 1,
+      books: {
+        BTN: { id: "book-btn", disputeBondAmount: 500 },
+        USDT: { id: "book-usdt", disputeBondAmount: 2.5 },
+      },
+    });
+
+    await svc.submitDispute("u1", "m1", {
+      reason: "defending",
+      side: "support",
+    } as any);
+
+    // 2.5 from the USDT book — not 500 from BTN, and not the 0.5 floor.
+    expect(savedTransactions[0].amount).toBe(-2.5);
+    expect(savedTransactions[0].currency).toBe("USDT");
+  });
+
+  it("rejects a bond that does not match the book's agreed amount", async () => {
+    const { svc } = makeDisputeService({
+      userCurrency: "USDT",
+      existingInBook: 1,
+      books: { USDT: { id: "book-usdt", disputeBondAmount: 2.5 } },
+    });
+
+    await expect(
+      svc.submitDispute("u1", "m1", {
+        reason: "defending",
+        side: "support",
+        bondAmount: 2.4,
+      } as any),
+    ).rejects.toThrow(/fixed at 2.5 USDT/);
+  });
+
+  it("requires a position in the book being contested", async () => {
+    // Account settles in USDT but the only live stake is ngultrum.
+    const { svc } = makeDisputeService({
+      userCurrency: "USDT",
+      positionCurrency: "BTN",
+    });
+
+    await expect(
+      svc.submitDispute("u1", "m1", { reason: "wrong outcome" } as any),
+    ).rejects.toThrow(/active USDT position/);
+  });
+
+  it("refuses a currency with no configured bond floor, and moves no money", async () => {
+    const { svc, savedTransactions, savedDisputes } = makeDisputeService({
+      userCurrency: "EUR",
+    });
+
+    await expect(
+      svc.submitDispute("u1", "m1", { reason: "wrong outcome" } as any),
+    ).rejects.toThrow(/not open for EUR accounts yet/);
+
+    expect(savedTransactions).toHaveLength(0);
+    expect(savedDisputes).toHaveLength(0);
+  });
+
+  it("refuses when the market has no book in the caller's currency", async () => {
+    const { svc, savedTransactions } = makeDisputeService({
+      userCurrency: "USDT",
+      books: { BTN: { id: "book-btn", disputeBondAmount: null } },
+    });
+
+    await expect(
+      svc.submitDispute("u1", "m1", { reason: "wrong outcome" } as any),
+    ).rejects.toThrow(/no USDT book/);
+
+    expect(savedTransactions).toHaveLength(0);
+  });
+
+  it("sizes the bond against the caller's own ledger, refusing when short", async () => {
+    const { svc } = makeDisputeService({
+      userCurrency: "USDT",
+      existingInBook: 1,
+      books: { USDT: { id: "book-usdt", disputeBondAmount: 2.5 } },
+      balance: 1,
+    });
+
+    await expect(
+      svc.submitDispute("u1", "m1", {
+        reason: "defending",
+        side: "support",
+      } as any),
+    ).rejects.toThrow(/at least 2.5 USDT[\s\S]*balance is 1 USDT/);
+  });
+});

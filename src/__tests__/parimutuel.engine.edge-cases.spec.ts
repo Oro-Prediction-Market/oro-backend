@@ -208,7 +208,7 @@ describe("ParimutuelEngine — thin-pool guard (settleMarket)", () => {
     const em = makeEm(positions);
     const { engine } = makeEngine(em);
 
-    const [settlement] = await (engine as any).settleMarket(mkMarket(), YES, 0);
+    const [settlement] = await (engine as any).settleMarket(mkMarket(), YES, new Map());
 
     const refundTxs = em._saved.filter(([, d]: any) => d?.type === TransactionType.REFUND);
     expect(refundTxs).toHaveLength(2);
@@ -227,7 +227,7 @@ describe("ParimutuelEngine — thin-pool guard (settleMarket)", () => {
     const em = makeEm(positions);
     const { engine } = makeEngine(em);
 
-    const [settlement] = await (engine as any).settleMarket(mkMarket(), YES, 0);
+    const [settlement] = await (engine as any).settleMarket(mkMarket(), YES, new Map());
 
     const refundTxs = em._saved.filter(([, d]: any) => d?.type === TransactionType.REFUND);
     expect(refundTxs).toHaveLength(2);
@@ -248,7 +248,7 @@ describe("ParimutuelEngine — thin-pool guard (settleMarket)", () => {
     const em = makeEm(positions);
     const { engine } = makeEngine(em);
 
-    const [settlement] = await (engine as any).settleMarket(mkMarket(100), YES, 0);
+    const [settlement] = await (engine as any).settleMarket(mkMarket(100), YES, new Map());
 
     const refundTxs = em._saved.filter(([, d]: any) => d?.type === TransactionType.REFUND);
     expect(refundTxs).toHaveLength(1);
@@ -259,7 +259,7 @@ describe("ParimutuelEngine — thin-pool guard (settleMarket)", () => {
     const em = makeEm([]);
     const { engine, telegramSimple } = makeEngine(em);
 
-    const [settlement] = await (engine as any).settleMarket(mkMarket(0), YES, 0);
+    const [settlement] = await (engine as any).settleMarket(mkMarket(0), YES, new Map());
 
     // No DMs sent — nobody to notify
     expect(telegramSimple.sendRefundNotification).not.toHaveBeenCalled();
@@ -275,7 +275,7 @@ describe("ParimutuelEngine — thin-pool guard (settleMarket)", () => {
     const em = makeEm(positions);
     const { engine } = makeEngine(em);
 
-    await (engine as any).settleMarket(mkMarket(150), YES, 0);
+    await (engine as any).settleMarket(mkMarket(150), YES, new Map());
 
     const refundTx = em._saved.find(
       ([, d]: any) => d?.type === TransactionType.REFUND,
@@ -295,7 +295,7 @@ describe("ParimutuelEngine — thin-pool guard (settleMarket)", () => {
     const em = makeEm(positions);
     const { engine } = makeEngine(em);
 
-    const [settlement] = await (engine as any).settleMarket(mkMarket(100), YES, 0);
+    const [settlement] = await (engine as any).settleMarket(mkMarket(100), YES, new Map());
 
     expect(settlement.cancelReason).toBe("thin_pool");
 
@@ -309,7 +309,7 @@ describe("ParimutuelEngine — thin-pool guard (settleMarket)", () => {
     const em = makeEm(positions);
     const { engine } = makeEngine(em, 3); // requires 3 unique bettors
 
-    const [settlement] = await (engine as any).settleMarket(mkMarket(200), YES, 0);
+    const [settlement] = await (engine as any).settleMarket(mkMarket(200), YES, new Map());
 
     expect(settlement.cancelReason).toBe("thin_pool");
     const refundTxs = em._saved.filter(([, d]: any) => d?.type === TransactionType.REFUND);
@@ -322,7 +322,7 @@ describe("ParimutuelEngine — thin-pool guard (settleMarket)", () => {
     const { engine, telegramSimple } = makeEngine(em);
     const market = { ...mkMarket(100), title: "TER 15m BTC/USD", externalSource: "ter" };
 
-    const [settlement] = await (engine as any).settleMarket(market, YES, 0);
+    const [settlement] = await (engine as any).settleMarket(market, YES, new Map());
 
     expect(settlement.cancelReason).toBe("thin_pool");
     expect(settlement.totalPaidOut).toBe(0);
@@ -348,7 +348,7 @@ describe("ParimutuelEngine — thin-pool guard (settleMarket)", () => {
     const market = { ...mkMarket(1000), houseEdgePct: "8" };
     const winner = { ...YES, totalBetAmount: "900" };
 
-    const [settlement] = await (engine as any).settleMarket(market, winner, 0);
+    const [settlement] = await (engine as any).settleMarket(market, winner, new Map());
 
     expect(settlement.cancelReason).toBe("payout_floor_underfunded");
     expect(settlement.houseAmount).toBe(0);
@@ -387,7 +387,7 @@ describe("ParimutuelEngine — healthy 50/50 pool (guard regression)", () => {
 
     // totalBetAmount on winner outcome must reflect the actual winning-side pool
     const winner50 = { ...YES, totalBetAmount: "100" };
-    const [settlement] = await (engine as any).settleMarket(mkMarket(200), winner50, 0);
+    const [settlement] = await (engine as any).settleMarket(mkMarket(200), winner50, new Map());
 
     // Guard did NOT fire
     expect(settlement.cancelReason).toBeUndefined();
@@ -440,7 +440,7 @@ describe("ParimutuelEngine — payout-floor funding guard (settleMarket)", () =>
       ],
     };
     const winner = { id: "o-yes", label: "YES", totalBetAmount: "950" };
-    const [settlement] = await (engine as any).settleMarket(market, winner, 0);
+    const [settlement] = await (engine as any).settleMarket(market, winner, new Map());
 
     expect(settlement.cancelReason).toBeUndefined();
     // Winner gets the full 1.05x floor…
@@ -473,7 +473,7 @@ describe("ParimutuelEngine — payout-floor funding guard (settleMarket)", () =>
       ],
     };
     const winner = { id: "o-yes", label: "YES", totalBetAmount: "990" };
-    const [settlement] = await (engine as any).settleMarket(market, winner, 0);
+    const [settlement] = await (engine as any).settleMarket(market, winner, new Map());
 
     expect(settlement.cancelReason).toBeUndefined();
     // House edge fully absorbed, payout capped at the pool.
@@ -520,7 +520,7 @@ describe("ParimutuelEngine — exact revenue-residual conservation", () => {
       ],
     };
     const winner = { id: "o-yes", label: "YES", totalBetAmount: "300" };
-    const [settlement] = await (engine as any).settleMarket(market, winner, 0);
+    const [settlement] = await (engine as any).settleMarket(market, winner, new Map());
 
     // Exact conservation to the chhertum — nothing invented, nothing lost.
     expect(
@@ -544,7 +544,7 @@ describe("ParimutuelEngine — exact revenue-residual conservation", () => {
     const [settlement] = await (engine as any).settleMarket(
       mkMarket(200),
       winner,
-      100,
+      new Map([["BTN", 100]]),
     );
 
     // The pool half still balances exactly; the bond adds cleanly on top.
@@ -583,7 +583,7 @@ describe("ParimutuelEngine — forfeited-bond routing to house revenue", () => {
     const [settlement] = await (engine as any).settleMarket(
       mkMarket(200),
       winner50,
-      100,
+      new Map([["BTN", 100]]),
     );
 
     expect(settlement.cancelReason).toBeUndefined();
@@ -604,7 +604,7 @@ describe("ParimutuelEngine — forfeited-bond routing to house revenue", () => {
     const [settlement] = await (engine as any).settleMarket(
       mkMarket(200),
       winner50,
-      0,
+      new Map(),
     );
 
     // House edge only: houseAmount = 10, payoutPool = 190.

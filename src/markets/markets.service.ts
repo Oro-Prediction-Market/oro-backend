@@ -32,13 +32,21 @@ import { Position, PositionStatus } from "../entities/position.entity";
 import { User } from "../entities/user.entity";
 import { MarketBook } from "../entities/market-book.entity";
 import { OutcomeBook } from "../entities/outcome-book.entity";
-import { btnMinStakeFor, usdtMinStake } from "./market-book.util";
-import { BTN_CURRENCY } from "../shared/utils/money.util";
+import {
+  btnMinStakeFor,
+  usdtMinStake,
+  minDisputeBondFor,
+} from "./market-book.util";
+import {
+  BTN_CURRENCY,
+  roundMoney,
+  formatMoney,
+} from "../shared/utils/money.util";
 import { USDT as USDT_CURRENCY } from "../shared/utils/wallet.util";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { ParimutuelEngine } from "./parimutuel.engine";
 import { LMSRService } from "./lmsr.service";
-import { ledgerBalanceForAccount } from "../shared/utils/ledger.util";
+import { ledgerBalance } from "../shared/utils/ledger.util";
 import { ReputationService } from "./reputation.service";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import { bracketAdvance, WC_KICKOFFS } from "./wc-knockout";
@@ -1065,19 +1073,26 @@ export class MarketsService implements OnModuleInit {
   // bond and pick a side:
   //   OBJECT  → the admin's proposed outcome is wrong
   //   SUPPORT → the proposed outcome is right (defends it against objectors)
-  // The FIRST participant must OBJECT and chooses the per-head bond (min Nu 10);
-  // everyone after matches that exact amount. On resolution the winning side
-  // gets its bonds back plus an equal split of the losing side's forfeited bonds.
-
-  // Floor for the objector-chosen bond — high enough to deter casual/abusive
-  // objections while still being accessible to bettors with genuine grievances.
-  private static readonly MIN_DISPUTE_BOND = 10;
+  // The FIRST participant must OBJECT and chooses the per-head bond; everyone
+  // after matches that exact amount. On resolution the winning side gets its
+  // bonds back plus an equal split of the losing side's forfeited bonds.
+  //
+  // ONE CONTEST PER BOOK. The window, the proposal and the admin's final call
+  // are market-wide — there is one outcome and one fact to be right about, and
+  // an objection in any book freezes the whole market for review. The MONEY is
+  // per book: you bond in your own currency, against defenders in that same
+  // currency, and are paid from their forfeited bonds. Nothing is ever pooled
+  // across books, because no exchange rate exists anywhere in this system and
+  // inventing one for a forfeit split would be inventing one for real money.
 
   /**
    * Join a market's resolution contest during the objection window.
-   * Only bettors with an active position can participate. The first objector
-   * sets the per-head bond (≥ Nu 10); later participants must match it exactly.
-   * The bond is forfeited if your side loses, or returned + rewarded if it wins.
+   *
+   * Only bettors with an active position in the book they are bonding into can
+   * participate. The first objector in a book sets its per-head bond (at or
+   * above that currency's floor); later participants in the same book must
+   * match it exactly. The bond is forfeited if your side loses, or returned +
+   * rewarded if it wins.
    */
   async submitDispute(
     userId: string,
@@ -1096,16 +1111,41 @@ export class MarketsService implements OnModuleInit {
         "The objection window for this market has closed",
       );
 
-    // Must hold an active position to participate
+    // The contest a bettor joins is the one belonging to their own book: the
+    // bond is debited from that ledger, the forfeited bonds they win come from
+    // defenders in the same currency, and the no-defenders reward comes out of
+    // that book's house cut. Taken from the account rather than the position so
+    // it is the same currency the balance check and the ledger row use.
+    const user = await this.userRepo.findOne({ where: { id: userId } });
+    if (!user) throw new BadRequestException("User not found");
+    const currency = user.currency ?? BTN_CURRENCY;
+
+    let minBond: number;
+    try {
+      minBond = minDisputeBondFor(currency);
+    } catch {
+      // A currency with no configured floor has no contest to join. Refusing is
+      // the only safe answer: defaulting to another cohort's floor would quote a
+      // number from the wrong book.
+      throw new BadRequestException(
+        `Resolution contests are not open for ${currency} accounts yet. ` +
+          `Your position is unaffected and will be settled normally.`,
+      );
+    }
+
+    // Must hold an active position IN THIS BOOK to participate. Skin in the
+    // game means skin in the pool being contested — a stake in another currency
+    // is not exposure to this book's payout.
     const position = await this.dataSource.getRepository(Position).findOne({
-      where: { userId, marketId, status: PositionStatus.PENDING },
+      where: { userId, marketId, status: PositionStatus.PENDING, currency },
     });
     if (!position)
       throw new BadRequestException(
-        "You must have an active position in this market to raise an objection",
+        `You must have an active ${currency} position in this market to join its resolution contest`,
       );
 
-    // One entry per user per market
+    // One entry per user per market — a user has one account currency, so this
+    // is also one entry per user per book.
     const alreadyObjected = await this.disputeRepo.findOne({
       where: { userId, marketId },
     });
@@ -1116,17 +1156,36 @@ export class MarketsService implements OnModuleInit {
 
     const side = dto.side ?? DisputeSide.OBJECT;
 
-    // Determine the contest bond + lock it in one DB transaction. The "first
-    // participant" check is re-evaluated inside the transaction so two racing
-    // objectors can't disagree on the amount.
+    // Determine the contest bond + lock it in one DB transaction. Both the
+    // "first participant" check and the agreed bond are read under a row lock
+    // on the book inside the transaction, so two racing objectors cannot
+    // disagree on the amount.
     const { saved, bondAmount } = await this.dataSource.transaction(
       async (em) => {
-        const user = await em.findOne(User, { where: { id: userId } });
-        if (!user) throw new BadRequestException("User not found");
+        // ── Read the agreed bond under a write lock ─────────────────────────
+        // The book row, not the cached market: `findOne` above serves a market
+        // from a 30-second Redis cache, and reading `disputeBondAmount` from it
+        // let a second participant be charged the floor against a contest whose
+        // bond was set far higher — unequal stakes, which the pro-rata forfeit
+        // split assumes cannot happen. Locking the row also serialises the two
+        // racing first-objectors so exactly one of them sets the amount.
+        const book = await em
+          .getRepository(MarketBook)
+          .createQueryBuilder("b")
+          .setLock("pessimistic_write")
+          .where("b.marketId = :marketId AND b.currency = :currency", {
+            marketId,
+            currency,
+          })
+          .getOne();
+        if (!book)
+          throw new BadRequestException(
+            `This market has no ${currency} book, so there is no ${currency} contest to join`,
+          );
 
         const existingCount = await em
           .getRepository(Dispute)
-          .count({ where: { marketId } });
+          .count({ where: { marketId, currency } });
         const isFirst = existingCount === 0;
 
         let bond: number;
@@ -1135,41 +1194,43 @@ export class MarketsService implements OnModuleInit {
             throw new BadRequestException(
               "You can only defend a proposal after someone has objected to it. Raise an objection instead.",
             );
-          const requested =
-            dto.bondAmount ?? MarketsService.MIN_DISPUTE_BOND;
-          bond =
-            Math.round(
-              Math.max(MarketsService.MIN_DISPUTE_BOND, requested) * 100,
-            ) / 100;
+          const requested = Number(dto.bondAmount ?? minBond);
+          bond = roundMoney(Math.max(minBond, requested), currency);
         } else {
-          const required = Number(
-            market.disputeBondAmount ?? MarketsService.MIN_DISPUTE_BOND,
-          );
+          const required = Number(book.disputeBondAmount ?? minBond);
+          // Compared at the currency's own precision rather than a fixed
+          // epsilon: 0.001 is coarser than a USDT minor unit and finer than a
+          // chhertum, so it was wrong in both directions.
           if (
             dto.bondAmount != null &&
-            Math.abs(Number(dto.bondAmount) - required) > 0.001
+            roundMoney(Number(dto.bondAmount), currency) !==
+              roundMoney(required, currency)
           )
             throw new BadRequestException(
-              `This contest's bond is fixed at Nu ${required.toLocaleString()}. ` +
+              `This contest's bond is fixed at ${formatMoney(required, currency)}. ` +
                 `Everyone who joins — objecting or defending — must lock exactly that amount.`,
             );
           bond = required;
         }
 
-        const currentBalance = await ledgerBalanceForAccount(em, userId);
+        // Scoped to the contest's currency, so a bond is only ever sized
+        // against the ledger it will be debited from.
+        const currentBalance = await ledgerBalance(em, userId, currency);
 
         if (currentBalance < bond)
           throw new BadRequestException(
-            `You need at least Nu ${bond.toLocaleString()} available to join this objection. ` +
+            `You need at least ${formatMoney(bond, currency)} available to join this objection. ` +
               `This bond is non-refundable if your side loses. ` +
-              `Your current balance is Nu ${currentBalance.toFixed(0)}.`,
+              `Your current balance is ${formatMoney(currentBalance, currency)}.`,
           );
 
-        // The first objector stamps the per-head bond onto the market so every
-        // later participant matches it.
+        // The first objector stamps the per-head bond onto the book so every
+        // later participant in that book matches it. A targeted UPDATE rather
+        // than saving an entity, so it cannot carry stale columns along with it.
         if (isFirst) {
-          market.disputeBondAmount = bond;
-          await em.getRepository(Market).save(market);
+          await em
+            .getRepository(MarketBook)
+            .update({ id: book.id }, { disputeBondAmount: bond });
         }
 
         // Deduct the bond
@@ -1179,6 +1240,11 @@ export class MarketsService implements OnModuleInit {
           userId,
           type: TransactionType.DISPUTE_BOND_LOCK,
           amount: -bond,
+          // Stated, not inherited from the column default. The bond, the
+          // forfeit pool it funds and the reward paid out of it are one closed
+          // loop inside this book; leaving this implicit is what let a USDT
+          // account post a phantom ngultrum debit.
+          currency,
           balanceBefore: currentBalance,
           balanceAfter: currentBalance - bond,
           note: `Bond locked for ${verb} the outcome of "${market.title}"`,
@@ -1192,6 +1258,10 @@ export class MarketsService implements OnModuleInit {
           side,
           upheld: null,
           bondAmount: bond,
+          // Denormalised the same way transactions.currency is, so bond
+          // aggregations need no join. This is what resolveMarket groups by to
+          // settle each book's contest against its own book.
+          currency,
           bondStatus: DisputeBondStatus.LOCKED,
         });
         const savedDispute = await em.getRepository(Dispute).save(dispute);
@@ -1211,7 +1281,10 @@ export class MarketsService implements OnModuleInit {
     return {
       ...saved,
       bondAmount,
-      bondNote: `Nu ${bondAmount.toLocaleString()} has been locked as a bond. You get it back — plus a share of the other side's bonds — if ${winCondition}. If your side loses, you forfeit the bond.`,
+      bondNote:
+        `${formatMoney(bondAmount, currency)} has been locked as a bond. ` +
+        `You get it back — plus a share of the other side's bonds — if ${winCondition}. ` +
+        `If your side loses, you forfeit the bond.`,
     };
   }
 
@@ -1419,6 +1492,9 @@ export class MarketsService implements OnModuleInit {
       side: d.side,
       upheld: d.upheld,
       bondAmount: d.bondAmount,
+      // Which book's contest this entry belongs to. Without it a bond figure is
+      // ambiguous the moment two currencies contest the same market.
+      currency: d.currency,
       bondStatus: d.bondStatus,
       rewardAmount: d.rewardAmount,
       createdAt: d.createdAt,
@@ -1443,6 +1519,7 @@ export class MarketsService implements OnModuleInit {
       side: d.side,
       upheld: d.upheld,
       bondAmount: d.bondAmount,
+      currency: d.currency,
       bondStatus: d.bondStatus,
       rewardAmount: d.rewardAmount,
       createdAt: d.createdAt,
@@ -1467,6 +1544,9 @@ export class MarketsService implements OnModuleInit {
       side: d.side,
       upheld: d.upheld,
       bondAmount: d.bondAmount,
+      // Which book's contest this entry belongs to. Without it a bond figure is
+      // ambiguous the moment two currencies contest the same market.
+      currency: d.currency,
       bondStatus: d.bondStatus,
       rewardAmount: d.rewardAmount,
       createdAt: d.createdAt,
@@ -1489,15 +1569,30 @@ export class MarketsService implements OnModuleInit {
     windowClosesAt: Date | null;
     windowMinutes: number;
     canObject: boolean;
-    /** Fixed bond every participant must lock, once the first objector set it. Null until then. */
+    /** The book this answer describes — the caller's own, or BTN for an anonymous read. */
+    currency: string;
+    /** Fixed bond every participant in this book must lock, once its first objector set it. Null until then. */
     bondRequired: number | null;
-    /** Whether the per-head bond is already locked in (true after the first objection). */
+    /** Whether this book's per-head bond is already locked in (true after its first objection). */
     bondFixed: boolean;
-    /** Floor for the first objector's chosen bond. */
+    /** Floor for the first objector's chosen bond, in this book's currency. */
     minBond: number;
     bondNote: string;
   }> {
     const market = await this.findOne(marketId);
+
+    // Bond terms are per book, so this answer is only meaningful for one
+    // currency: the caller's. An anonymous read (no userId) describes the BTN
+    // book — the public dispute panel has no account to speak for.
+    let currency = BTN_CURRENCY;
+    if (userId) {
+      const user = await this.userRepo.findOne({ where: { id: userId } });
+      currency = user?.currency ?? BTN_CURRENCY;
+    }
+
+    // Counts stay market-wide: an objection in any book freezes the whole
+    // market, so "is this result contested" is not a per-book question and the
+    // panel should not show a USDT bettor a reassuring zero.
     const [objectCount, supportCount] = await Promise.all([
       this.disputeRepo.count({ where: { marketId, side: DisputeSide.OBJECT } }),
       this.disputeRepo.count({
@@ -1511,14 +1606,28 @@ export class MarketsService implements OnModuleInit {
       !!market.disputeDeadlineAt &&
       now < market.disputeDeadlineAt;
 
-    // Once the first objection is filed, the bond is fixed for everyone.
-    const bondFixed = market.disputeBondAmount != null;
-    const bondRequired = bondFixed ? Number(market.disputeBondAmount) : null;
+    // A currency with no configured floor has no contest to join.
+    let minBond: number | null = null;
+    try {
+      minBond = minDisputeBondFor(currency);
+    } catch {
+      minBond = null;
+    }
 
-    let canObject = windowOpen;
-    if (userId && windowOpen) {
+    // Once this book's first objection is filed, its bond is fixed for everyone
+    // in it. Read from the book, which is where submitDispute stamps it.
+    const book = await this.marketBookRepo.findOne({
+      where: { marketId, currency },
+    });
+    const bondFixed = book?.disputeBondAmount != null;
+    const bondRequired = bondFixed ? Number(book!.disputeBondAmount) : null;
+
+    let canObject = windowOpen && minBond != null && !!book;
+    if (userId && canObject) {
+      // The position must be in the book being contested — a stake in another
+      // currency is not exposure to this book's payout.
       const position = await this.dataSource.getRepository(Position).findOne({
-        where: { userId, marketId, status: PositionStatus.PENDING },
+        where: { userId, marketId, status: PositionStatus.PENDING, currency },
       });
       canObject = !!position;
     }
@@ -1531,14 +1640,20 @@ export class MarketsService implements OnModuleInit {
       windowClosesAt: market.disputeDeadlineAt ?? null,
       windowMinutes: market.windowMinutes ?? 60,
       canObject,
+      currency,
       bondRequired,
       bondFixed,
-      minBond: MarketsService.MIN_DISPUTE_BOND,
-      bondNote: bondFixed
-        ? `Joining this contest requires a Nu ${bondRequired!.toLocaleString()} bond (matching the first objector). ` +
-          `You get it back + a share of the losing side's bonds if your side wins, or forfeit it if it loses.`
-        : `The first objector sets the bond (minimum Nu ${MarketsService.MIN_DISPUTE_BOND}). ` +
-          `Returned + rewarded if your side wins, forfeited if it loses.`,
+      // 0 rather than null keeps the field's type stable for clients; canObject
+      // is already false, which is the signal that matters.
+      minBond: minBond ?? 0,
+      bondNote:
+        minBond == null
+          ? `Resolution contests are not open for ${currency} accounts yet.`
+          : bondFixed
+            ? `Joining this contest requires a ${formatMoney(bondRequired!, currency)} bond (matching the first objector). ` +
+              `You get it back + a share of the losing side's bonds if your side wins, or forfeit it if it loses.`
+            : `The first objector sets the bond (minimum ${formatMoney(minBond, currency)}). ` +
+              `Returned + rewarded if your side wins, forfeited if it loses.`,
     };
   }
 

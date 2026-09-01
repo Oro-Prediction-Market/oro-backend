@@ -315,7 +315,12 @@ describe("ReportingService.getDisputeStats", () => {
       .mockResolvedValueOnce(4)
       .mockResolvedValueOnce(2);
     disputeRepo._qb.getCount.mockResolvedValue(2); // resolved (rewarded/forfeited)
-    disputeRepo._qb.getRawOne.mockResolvedValue({ totalBond: "350" });
+    // Bond sums arrive grouped by currency: contests are per book, and one
+    // SUM across all of them would add ngultrum to USDT.
+    disputeRepo._qb.getRawMany.mockResolvedValue([
+      { currency: "BTN", totalBond: "350" },
+      { currency: "USDT", totalBond: "4.5" },
+    ]);
     const svc = makeService({ disputeRepo });
 
     const result = await svc.getDisputeStats();
@@ -323,7 +328,26 @@ describe("ReportingService.getDisputeStats", () => {
     expect(result.total).toBe(4);
     expect(result.pending).toBe(2);
     expect(result.resolved).toBe(2);
+    // `totalBond` stays the ngultrum figure it has always been in practice —
+    // never 354.5, which would be two currencies added together.
     expect(result.totalBond).toBe(350);
+    expect(result.bondsByCurrency).toEqual({ BTN: 350, USDT: 4.5 });
+  });
+
+  it("reports a zero ngultrum total when every bond is USDT", async () => {
+    const disputeRepo = makeRepo();
+    disputeRepo.count = jest.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(1);
+    disputeRepo._qb.getCount.mockResolvedValue(0);
+    disputeRepo._qb.getRawMany.mockResolvedValue([
+      { currency: "USDT", totalBond: "2" },
+    ]);
+    const svc = makeService({ disputeRepo });
+
+    const result = await svc.getDisputeStats();
+
+    // 0, not 2: the ngultrum total must never borrow another book's number.
+    expect(result.totalBond).toBe(0);
+    expect(result.bondsByCurrency).toEqual({ USDT: 2 });
   });
 });
 

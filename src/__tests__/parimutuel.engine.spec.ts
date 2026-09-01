@@ -827,7 +827,7 @@ describe("settleMarket — each book settles out of its own pool", () => {
       ],
     });
 
-    const result = await (engine as any).settleMarket(market, WINNER, 0);
+    const result = await (engine as any).settleMarket(market, WINNER, new Map());
 
     expect(result).toHaveLength(2);
     const btn = settlements.find((st) => st.currency === "BTN");
@@ -847,7 +847,7 @@ describe("settleMarket — each book settles out of its own pool", () => {
         { id: "x2", userId: "g2", outcomeId: "o-lose", marketId: "m1", amount: 20, status: "pending", payout: 0, currency: "USDT" },
       ],
     });
-    await (engine as any).settleMarket(market, WINNER, 0);
+    await (engine as any).settleMarket(market, WINNER, new Map());
 
     const payouts = written.filter(
       (t) => t?.type === TransactionType.POSITION_PAYOUT,
@@ -870,7 +870,7 @@ describe("settleMarket — each book settles out of its own pool", () => {
       ],
     });
 
-    await (engine as any).settleMarket(market, WINNER, 0);
+    await (engine as any).settleMarket(market, WINNER, new Map());
 
     const btn = settlements.find((st) => st.currency === "BTN");
     const usdt = settlements.find((st) => st.currency === "USDT");
@@ -897,7 +897,7 @@ describe("settleMarket — each book settles out of its own pool", () => {
       ],
     });
 
-    await (engine as any).settleMarket(market, WINNER, 0);
+    await (engine as any).settleMarket(market, WINNER, new Map());
 
     const usdt = settlements.find((st) => st.currency === "USDT");
     const payout = written.find(
@@ -922,7 +922,7 @@ describe("settleMarket — each book settles out of its own pool", () => {
         { id: "x2", userId: "g2", outcomeId: "o-lose", marketId: "m1", amount: 20, status: "pending", payout: 0, currency: "USDT" },
       ],
     });
-    await (engine as any).settleMarket(market, WINNER, 0);
+    await (engine as any).settleMarket(market, WINNER, new Map());
 
     // totalPaidOut + houseAmount === totalPool, per book. Equality, not a
     // tolerance: a tolerance hides exactly the drift this checks for.
@@ -1324,7 +1324,7 @@ describe("Settlement wallet credit — no DK transfer on market settle", () => {
     const winner = market.outcomes[0];
     bookRef.market = market;
 
-    const [settlement] = await (engine as any).settleMarket(market, winner, 0);
+    const [settlement] = await (engine as any).settleMarket(market, winner, new Map());
 
     // payoutPool = 300 * 0.92 = 276; winner holds 200/200 → full payout
     expect(settlement).toBeDefined();
@@ -1356,7 +1356,7 @@ describe("Settlement wallet credit — no DK transfer on market settle", () => {
     const winner = market.outcomes[0];
     bookRef.market = market;
 
-    await (engine as any).settleMarket(market, winner, 0);
+    await (engine as any).settleMarket(market, winner, new Map());
 
     // Calling dispatchDkPayouts (the no-op) must NEVER reach the DK gateway
     await (engine as any).dispatchDkPayouts("m1", "o-win", "Yes", {
@@ -1383,7 +1383,7 @@ describe("Settlement wallet credit — no DK transfer on market settle", () => {
     const winner = market.outcomes[0];
     bookRef.market = market;
 
-    await (engine as any).settleMarket(market, winner, 0);
+    await (engine as any).settleMarket(market, winner, new Map());
 
     const loserPayouts = savedTransactions.filter(
       (t) => t.type === TransactionType.POSITION_PAYOUT && t.userId === "u2",
@@ -1411,9 +1411,13 @@ describe("Settlement wallet credit — no DK transfer on market settle", () => {
     bookRef.market = market;
 
     // One winning objector, bond Nu 50, no defenders → funded from house cut.
-    const [settlement] = await (engine as any).settleMarket(market, winner, 0, [
-      { userId: "u3", bondAmount: 50 },
-    ]);
+    const [settlement] = await (engine as any).settleMarket(
+      market,
+      winner,
+      new Map(),
+      // Keyed by currency: this book's contest, and only this book's.
+      new Map([["BTN", [{ userId: "u3", bondAmount: 50 }]]]),
+    );
 
     // Challenger got 20% of the Nu 24 house cut = Nu 4.80.
     const rewards = savedTransactions.filter(
@@ -1570,7 +1574,7 @@ describe("Batch payment — NOT triggered on market settlement", () => {
       ],
     };
 
-    await (engine as any).settleMarket(market, market.outcomes[0], 0);
+    await (engine as any).settleMarket(market, market.outcomes[0], new Map());
     await (engine as any).dispatchDkPayouts("m1", "o-win", "Yes", {
       payoutPool: 644,
     });
@@ -1604,7 +1608,7 @@ describe("Batch payment — NOT triggered on market settlement", () => {
       ],
     };
 
-    await (engine as any).settleMarket(market, market.outcomes[0], 0);
+    await (engine as any).settleMarket(market, market.outcomes[0], new Map());
     await (engine as any).dispatchDkPayouts("m1", "o-win", "Yes", {
       payoutPool: 920,
     });
@@ -1740,7 +1744,7 @@ describe("Batch payment — NOT triggered on market settlement", () => {
       ],
     };
 
-    await (engine as any).settleMarket(market, market.outcomes[0], 0);
+    await (engine as any).settleMarket(market, market.outcomes[0], new Map());
 
     expect(savedTransactions).toHaveLength(2);
 
@@ -1776,7 +1780,7 @@ describe("Batch payment — NOT triggered on market settlement", () => {
     };
 
     const start = Date.now();
-    await (engine as any).settleMarket(market, market.outcomes[0], 0);
+    await (engine as any).settleMarket(market, market.outcomes[0], new Map());
     const elapsed = Date.now() - start;
 
     expect(elapsed).toBeLessThan(500);
@@ -1993,5 +1997,714 @@ describe("ParimutuelEngine.resolveMarket — atomic concurrency claim", () => {
 
     // The recovery guard runs before (and instead of) the atomic claim.
     expect(claimExecute).not.toHaveBeenCalled();
+  });
+});
+
+// ─── cancelMarket: locked dispute bonds are released ─────────────────────────
+//
+// Bonds are debited when an objection is filed and, before this, were only ever
+// returned by resolveMarket. A cancelled market therefore kept every locked
+// bond permanently — real money with no code path back to the user. There is no
+// contest to win once the market is void, so every bond returns at face value:
+// nobody forfeits, nobody is rewarded.
+
+describe("ParimutuelEngine.cancelMarket — dispute bond release", () => {
+  function buildCancelEngine(disputes: any[], positions: any[] = []) {
+    const savedTransactions: any[] = [];
+    const savedDisputes: any[] = [];
+    const balanceReads: any[] = [];
+    const market = {
+      id: "m1",
+      title: "Cancelled market",
+      status: "resolving",
+      outcomes: [{ id: "o1", label: "Yes" }],
+    };
+
+    const mockEm = {
+      getRepository: jest.fn().mockReturnValue({
+        createQueryBuilder: jest.fn().mockReturnValue({
+          select: jest.fn().mockReturnThis(),
+          // The balance read is currency-scoped now, so the stub records which
+          // ledger was asked for.
+          where: jest.fn().mockImplementation(function (
+            this: any,
+            _sql: string,
+            params: any,
+          ) {
+            balanceReads.push(params);
+            return this;
+          }),
+          // Balance before the release. Non-zero so the test can assert
+          // balanceBefore/After are carried, not just the amount.
+          getRawOne: jest.fn().mockResolvedValue({ balance: 120 }),
+        }),
+      }),
+      findOne: jest.fn().mockResolvedValue(market),
+      find: jest.fn().mockImplementation((entity: any) => {
+        if (entity?.name === "Dispute") {
+          // The engine filters on LOCKED in the where clause; mirror that here
+          // so the mock cannot hand back rows the real query would exclude.
+          return Promise.resolve(
+            disputes.filter((d) => d.bondStatus === "locked"),
+          );
+        }
+        return Promise.resolve(positions);
+      }),
+      save: jest.fn().mockImplementation(async (_cls: any, data: any) => {
+        if (Array.isArray(data)) savedDisputes.push(...data);
+        else if (data?.type) savedTransactions.push(data);
+        return data;
+      }),
+      create: jest
+        .fn()
+        .mockImplementation((_cls: any, data: any) => ({ ...data })),
+    };
+
+    const mockDataSource = {
+      transaction: jest.fn().mockImplementation((cb: Function) => cb(mockEm)),
+    };
+    const mockRedis = { del: jest.fn().mockResolvedValue(undefined) };
+
+    const engine = new ParimutuelEngine(
+      null as any, // marketRepo
+      null as any, // outcomeRepo
+      null as any, // betRepo
+      null as any, // paymentRepo
+      null as any, // transactionRepo
+      null as any, // settlementRepo
+      null as any, // disputeRepo
+      mockDataSource as any,
+      null as any, // lmsrService
+      mockRedis as any,
+      null as any, // reputationService
+      null as any, // telegramSimple
+      null as any, // dkGateway
+      bypassConfigService,
+      null as any, // streakService
+      null as any, // challengesService
+      null as any, // marketsGateway
+      null as any, // sse
+      null as any, // revenueDistributionService
+      ({ addBulk: async () => [] }) as any, // notificationQueue
+    );
+
+    return {
+      engine,
+      savedTransactions,
+      savedDisputes,
+      balanceReads,
+      mockRedis,
+      market,
+    };
+  }
+
+  it("returns every locked bond in full as a DISPUTE_REFUND, on both sides of the contest", async () => {
+    const { engine, savedTransactions, savedDisputes } = buildCancelEngine([
+      { id: "d1", userId: "u1", marketId: "m1", side: "object", currency: "BTN", bondAmount: 50, bondStatus: "locked", upheld: null },
+      { id: "d2", userId: "u2", marketId: "m1", side: "support", currency: "BTN", bondAmount: 50, bondStatus: "locked", upheld: null },
+    ]);
+
+    await engine.cancelMarket("m1");
+
+    const refunds = savedTransactions.filter(
+      (t) => t.type === TransactionType.DISPUTE_REFUND,
+    );
+    expect(refunds).toHaveLength(2);
+    // Face value, both sides — a void market has no winning side.
+    expect(refunds.map((r) => r.amount)).toEqual([50, 50]);
+    expect(refunds.map((r) => r.userId)).toEqual(["u1", "u2"]);
+    // Bonds are ngultrum, and a release must land in the book its lock came from.
+    expect(refunds.every((r) => r.currency === "BTN")).toBe(true);
+    // Ledger rows carry the running balance like every other transaction.
+    expect(refunds[0].balanceBefore).toBe(120);
+    expect(refunds[0].balanceAfter).toBe(170);
+
+    // NOT_APPLICABLE, not REWARDED/FORFEITED: the objection was never ruled on,
+    // so `upheld` stays null and reconciliation stops seeing a live liability.
+    expect(savedDisputes.map((d) => d.bondStatus)).toEqual([
+      "not_applicable",
+      "not_applicable",
+    ]);
+    expect(savedDisputes.every((d) => d.upheld === null)).toBe(true);
+  });
+
+  it("is idempotent — a bond already released is not paid a second time", async () => {
+    // Second cancel: the rows are no longer LOCKED, which is exactly what the
+    // real query filters on.
+    const { engine, savedTransactions } = buildCancelEngine([
+      { id: "d1", userId: "u1", marketId: "m1", side: "object", currency: "BTN", bondAmount: 50, bondStatus: "not_applicable", upheld: null },
+    ]);
+
+    await engine.cancelMarket("m1");
+
+    expect(
+      savedTransactions.filter((t) => t.type === TransactionType.DISPUTE_REFUND),
+    ).toHaveLength(0);
+  });
+
+  it("busts the balance cache for every user whose bond was returned", async () => {
+    const { engine, mockRedis } = buildCancelEngine([
+      { id: "d1", userId: "u1", marketId: "m1", side: "object", currency: "BTN", bondAmount: 50, bondStatus: "locked", upheld: null },
+    ]);
+
+    await engine.cancelMarket("m1");
+
+    expect(mockRedis.del).toHaveBeenCalledWith("oro:cache:balance:u1");
+  });
+
+  it("clears a zero-amount bond row without writing a ledger row", async () => {
+    // A zero bond has nothing to give back, but must not stay LOCKED or
+    // reconciliation reads it as an outstanding liability forever.
+    const { engine, savedTransactions, savedDisputes } = buildCancelEngine([
+      { id: "d1", userId: "u1", marketId: "m1", side: "object", currency: "BTN", bondAmount: 0, bondStatus: "locked", upheld: null },
+    ]);
+
+    await engine.cancelMarket("m1");
+
+    expect(savedTransactions).toHaveLength(0);
+    expect(savedDisputes[0].bondStatus).toBe("not_applicable");
+  });
+});
+
+// ─── Per-book resolution contests ────────────────────────────────────────────
+//
+// The verdict is market-wide — one outcome, one fact to be right about — but
+// the money is per book. Winners in a book are paid from the forfeited bonds of
+// defenders IN THAT SAME CURRENCY, and an overturned proposal with no defenders
+// is rewarded from that book's own house cut. Nothing crosses books: no
+// exchange rate exists anywhere in this system, so pooling a ngultrum bond with
+// a USDT bond would be inventing one for real money.
+
+describe("ParimutuelEngine.resolveMarket — contests settle per book", () => {
+  /**
+   * Reaches the bond payouts and stops. settleMarket runs immediately after
+   * them and needs the full settlement mock surface, which is not what these
+   * cases are about — so `em.find` is absent and settleMarket throws, exactly
+   * the way the atomic-claim tests above let it. Every bond assertion below
+   * describes work that has already committed by then.
+   */
+  function buildContestEngine(disputes: any[]) {
+    const market = {
+      id: "m1",
+      title: "Two-book market",
+      status: "resolving",
+      // Window closed, so no force-resolve validation runs.
+      disputeDeadlineAt: new Date(Date.now() - 1000),
+      // Final outcome differs from the proposal → the objectors were right, in
+      // every book at once.
+      proposedOutcomeId: "o-lose",
+      outcomes: [
+        { id: "o-win", label: "Yes" },
+        { id: "o-lose", label: "No" },
+      ],
+    };
+
+    const savedTransactions: any[] = [];
+    const bookUpdates: { crit: any; patch: any }[] = [];
+    // Balance per (user, currency) so a USDT read cannot pick up a BTN row.
+    const balances: Record<string, number> = {};
+
+    const marketRepo = {
+      findOne: jest.fn().mockResolvedValue(market),
+      save: jest.fn(async (m: any) => m),
+      createQueryBuilder: jest.fn().mockReturnValue({
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 1 }),
+      }),
+    };
+    const disputeRepo = {
+      count: jest.fn().mockResolvedValue(disputes.length),
+      find: jest.fn().mockResolvedValue(disputes),
+      save: jest.fn(async (d: any) => d),
+    };
+
+    const mockEm = {
+      getRepository: jest.fn().mockImplementation((entity: any) => {
+        if (entity?.name === "Dispute") {
+          return {
+            createQueryBuilder: jest.fn().mockReturnValue({
+              setLock: jest.fn().mockReturnThis(),
+              where: jest.fn().mockImplementation(function (
+                this: any,
+                _sql: string,
+                params: any,
+              ) {
+                this._id = params.id;
+                return this;
+              }),
+              getOne: jest.fn().mockImplementation(async function (this: any) {
+                return disputes.find((d) => d.id === this._id) ?? null;
+              }),
+            }),
+          };
+        }
+        // Transaction — the currency-scoped ledger balance read.
+        return {
+          createQueryBuilder: jest.fn().mockReturnValue({
+            select: jest.fn().mockReturnThis(),
+            where: jest.fn().mockImplementation(function (
+              this: any,
+              _sql: string,
+              params: any,
+            ) {
+              this._key = `${params.userId}|${params.currency}`;
+              return this;
+            }),
+            getRawOne: jest.fn().mockImplementation(async function (this: any) {
+              return { balance: balances[this._key] ?? 0 };
+            }),
+          }),
+        };
+      }),
+      create: jest.fn().mockImplementation((_cls: any, d: any) => ({ ...d })),
+      save: jest.fn().mockImplementation(async (_cls: any, d: any) => {
+        if (d?.type) savedTransactions.push(d);
+        return d;
+      }),
+    };
+
+    const mockDataSource = {
+      transaction: jest.fn().mockImplementation((cb: Function) => cb(mockEm)),
+      getRepository: jest.fn().mockImplementation((entity: any) => {
+        if (entity?.name === "MarketBook") {
+          return {
+            update: jest.fn().mockImplementation(async (crit: any, patch: any) => {
+              bookUpdates.push({ crit, patch });
+            }),
+          };
+        }
+        // User — admin accountability.
+        return {
+          findOne: jest.fn().mockResolvedValue(null),
+          save: jest.fn().mockResolvedValue({}),
+          increment: jest.fn().mockResolvedValue({}),
+        };
+      }),
+    };
+
+    const engine = new ParimutuelEngine(
+      marketRepo as any,
+      { save: jest.fn(async (o: any) => o) } as any, // outcomeRepo
+      null as any, // betRepo
+      null as any, // paymentRepo
+      null as any, // transactionRepo
+      { findOne: jest.fn().mockResolvedValue(null) } as any, // settlementRepo
+      disputeRepo as any,
+      mockDataSource as any,
+      null as any, // lmsrService
+      { del: jest.fn().mockResolvedValue(undefined) } as any, // redis
+      null as any, // reputationService
+      { postToChannel: jest.fn().mockResolvedValue(undefined) } as any,
+      null as any, // dkGateway
+      bypassConfigService,
+      null as any, // streakService
+      null as any, // challengesService
+      null as any, // marketsGateway
+      null as any, // sse
+      null as any, // revenueDistributionService
+      ({ addBulk: async () => [] }) as any, // notificationQueue
+    );
+
+    return { engine, savedTransactions, bookUpdates, disputes };
+  }
+
+  const mkDispute = (
+    id: string,
+    userId: string,
+    currency: string,
+    side: string,
+    bondAmount: number,
+  ) => ({
+    id,
+    userId,
+    marketId: "m1",
+    currency,
+    side,
+    bondAmount,
+    bondStatus: "locked",
+    upheld: null,
+    rewardAmount: 0,
+  });
+
+  it("pays each book's winners out of that book's forfeit pool only", async () => {
+    const disputes = [
+      mkDispute("d1", "u1", "BTN", "object", 100),
+      mkDispute("d2", "u2", "BTN", "support", 100),
+      mkDispute("d3", "u3", "USDT", "object", 2),
+      mkDispute("d4", "u4", "USDT", "support", 2),
+    ];
+    const { engine, savedTransactions } = buildContestEngine(disputes);
+
+    // Resolving to o-win overturns the o-lose proposal → objectors win in both
+    // books. settleMarket then throws, after the bonds are settled.
+    await expect(
+      engine.resolveMarket("m1", "o-win", "admin-1"),
+    ).rejects.toThrow();
+
+    const rewards = savedTransactions.filter(
+      (t) => t.type === TransactionType.DISPUTE_BOND_REWARD,
+    );
+    expect(rewards).toHaveLength(2);
+
+    // BTN objector: own 100 bond back + the 100 the BTN defender forfeited.
+    const btn = rewards.find((r) => r.userId === "u1");
+    expect(btn.currency).toBe("BTN");
+    expect(btn.amount).toBeCloseTo(200);
+
+    // USDT objector: own 2 back + the 2 the USDT defender forfeited. Emphatically
+    // NOT 200, and not funded by anything the ngultrum side lost.
+    const usdt = rewards.find((r) => r.userId === "u3");
+    expect(usdt.currency).toBe("USDT");
+    expect(usdt.amount).toBeCloseTo(4);
+
+    // Losing side in each book forfeits; winning side is rewarded.
+    expect(disputes.map((d) => d.bondStatus)).toEqual([
+      "rewarded",
+      "forfeited",
+      "rewarded",
+      "forfeited",
+    ]);
+    expect(disputes.map((d) => d.upheld)).toEqual([true, false, true, false]);
+  });
+
+  it("records each book's forfeit pool on that book, in its own currency", async () => {
+    const disputes = [
+      mkDispute("d1", "u1", "BTN", "object", 100),
+      mkDispute("d2", "u2", "BTN", "support", 100),
+      mkDispute("d3", "u3", "USDT", "object", 2),
+      mkDispute("d4", "u4", "USDT", "support", 2),
+    ];
+    const { engine, bookUpdates } = buildContestEngine(disputes);
+
+    await expect(
+      engine.resolveMarket("m1", "o-win", "admin-1"),
+    ).rejects.toThrow();
+
+    expect(bookUpdates).toEqual(
+      expect.arrayContaining([
+        {
+          crit: { marketId: "m1", currency: "BTN" },
+          patch: { disputeBondPool: 100 },
+        },
+        {
+          crit: { marketId: "m1", currency: "USDT" },
+          patch: { disputeBondPool: 2 },
+        },
+      ]),
+    );
+    expect(bookUpdates).toHaveLength(2);
+  });
+
+  it("floors a USDT reward share at 6dp rather than truncating it to zero", async () => {
+    // The share is bond/totalBond × forfeitPool = 1 × 0.5 = 0.5 USDT. A bare
+    // Math.floor() — which is what this used to be, because bonds were only ever
+    // whole ngultrum — collapses that to 0 and quietly keeps the forfeited bond.
+    const disputes = [
+      mkDispute("d1", "u1", "USDT", "object", 0.5),
+      mkDispute("d2", "u2", "USDT", "support", 0.5),
+    ];
+    const { engine, savedTransactions } = buildContestEngine(disputes);
+
+    await expect(
+      engine.resolveMarket("m1", "o-win", "admin-1"),
+    ).rejects.toThrow();
+
+    const reward = savedTransactions.find(
+      (t) => t.type === TransactionType.DISPUTE_BOND_REWARD,
+    );
+    // 0.5 bond back + 0.5 won, not 0.5 + 0.
+    expect(reward.amount).toBeCloseTo(1, 6);
+    expect(reward.currency).toBe("USDT");
+    expect(disputes[0].rewardAmount).toBeCloseTo(0.5, 6);
+  });
+
+  it("settles a USDT-only contest without touching the BTN book", async () => {
+    const disputes = [
+      mkDispute("d1", "u1", "USDT", "object", 1.25),
+      mkDispute("d2", "u2", "USDT", "support", 1.25),
+    ];
+    const { engine, savedTransactions, bookUpdates } =
+      buildContestEngine(disputes);
+
+    await expect(
+      engine.resolveMarket("m1", "o-win", "admin-1"),
+    ).rejects.toThrow();
+
+    expect(bookUpdates).toEqual([
+      {
+        crit: { marketId: "m1", currency: "USDT" },
+        patch: { disputeBondPool: 1.25 },
+      },
+    ]);
+    expect(savedTransactions.every((t) => t.currency === "USDT")).toBe(true);
+  });
+
+  it("treats a legacy bond row with no currency as ngultrum", async () => {
+    // Rows written before books existed carry the 'BTN' column default; a row
+    // read back as null must not become its own phantom book.
+    const legacy: any = mkDispute("d1", "u1", "BTN", "object", 50);
+    legacy.currency = null;
+    const defender: any = mkDispute("d2", "u2", "BTN", "support", 50);
+    defender.currency = null;
+    const { engine, savedTransactions, bookUpdates } = buildContestEngine([
+      legacy,
+      defender,
+    ]);
+
+    await expect(
+      engine.resolveMarket("m1", "o-win", "admin-1"),
+    ).rejects.toThrow();
+
+    expect(bookUpdates).toEqual([
+      {
+        crit: { marketId: "m1", currency: "BTN" },
+        patch: { disputeBondPool: 50 },
+      },
+    ]);
+    expect(savedTransactions[0].currency).toBe("BTN");
+    expect(savedTransactions[0].amount).toBeCloseTo(100);
+  });
+});
+
+// ─── Challenger reward is funded by the book that was contested ───────────────
+//
+// When the admin is overturned and nobody defended the proposal, there are no
+// forfeited bonds to reward the correct objectors from, so the reward comes out
+// of the house cut. That cut belongs to a specific book. Routing used to be a
+// BTN-only special case (`book.currency === BTN ? challengers : []`), which
+// meant a USDT objector could only ever be paid from ngultrum revenue; it is now
+// keyed by currency, so each book funds its own.
+
+describe("ParimutuelEngine.settleMarket — challenger reward routing by book", () => {
+  /** Two live books on one market, each with its own pool, edge and positions. */
+  function buildTwoBookEngine(savedTransactions: any[]) {
+    const BOOKS = [
+      { id: "book-btn", currency: "BTN", totalPool: 300, houseEdgePct: 8, minStake: 50 },
+      { id: "book-usdt", currency: "USDT", totalPool: 300, houseEdgePct: 8, minStake: 1 },
+    ];
+    const positions = [
+      { id: "p1", userId: "u1", outcomeId: "o-win", marketId: "m1", amount: 200, status: "pending", currency: "BTN", payout: 0 },
+      { id: "p2", userId: "u2", outcomeId: "o-lose", marketId: "m1", amount: 100, status: "pending", currency: "BTN", payout: 0 },
+      { id: "p3", userId: "u5", outcomeId: "o-win", marketId: "m1", amount: 200, status: "pending", currency: "USDT", payout: 0 },
+      { id: "p4", userId: "u6", outcomeId: "o-lose", marketId: "m1", amount: 100, status: "pending", currency: "USDT", payout: 0 },
+    ];
+
+    const makeQb = () => {
+      const qb: any = {
+        select: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        groupBy: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        insert: jest.fn().mockReturnThis(),
+        into: jest.fn().mockReturnThis(),
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        values: (rows: any) => {
+          for (const r of Array.isArray(rows) ? rows : [rows])
+            if (r?.type) savedTransactions.push(r);
+          return qb;
+        },
+        getRawMany: jest.fn().mockResolvedValue([]),
+        getRawOne: jest.fn().mockResolvedValue({ balance: 0 }),
+        execute: jest.fn().mockResolvedValue({}),
+      };
+      return qb;
+    };
+
+    const market = {
+      id: "m1",
+      status: "resolved",
+      title: "Two-book market",
+      totalPool: 300,
+      houseEdgePct: 8,
+      outcomes: [
+        { id: "o-win", label: "Yes", totalBetAmount: 200, isWinner: true },
+        { id: "o-lose", label: "No", totalBetAmount: 100, isWinner: false },
+      ],
+    };
+
+    const mockEm = {
+      getRepository: jest.fn().mockReturnValue({
+        createQueryBuilder: jest.fn(makeQb),
+        update: jest.fn().mockResolvedValue(undefined),
+      }),
+      createQueryBuilder: jest.fn(makeQb),
+      // Books, outcome books, and positions filtered to the book being settled —
+      // otherwise one book would settle the other's stakes.
+      find: jest.fn().mockImplementation(async (entity: any, opts: any) => {
+        if (entity?.name === "MarketBook")
+          return BOOKS.map((b) => ({ ...b, marketId: "m1", isEnabled: true }));
+        if (entity?.name === "OutcomeBook") return [];
+        const ccy = opts?.where?.currency;
+        return positions.filter((p) => !ccy || p.currency === ccy);
+      }),
+      findOne: jest.fn().mockResolvedValue(null), // no existing settlement
+      save: jest.fn().mockImplementation(async (_cls: any, d: any) => {
+        if (d?.type) savedTransactions.push(d);
+        return d;
+      }),
+      create: jest.fn().mockImplementation((_cls: any, d: any) => ({ ...d })),
+      update: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const engine = new ParimutuelEngine(
+      null as any, null as any, null as any, null as any, null as any,
+      null as any, null as any,
+      { transaction: jest.fn().mockImplementation((cb: Function) => cb(mockEm)) } as any,
+      null as any,
+      { del: jest.fn().mockResolvedValue(undefined) } as any,
+      null as any, null as any, null as any,
+      bypassConfigService,
+      null as any, null as any, null as any, null as any, null as any,
+      ({ addBulk: async () => [] }) as any,
+    );
+
+    return { engine, market, winner: market.outcomes[0] };
+  }
+
+  it("pays a USDT objector from the USDT book's house cut, and leaves BTN alone", async () => {
+    const savedTransactions: any[] = [];
+    const { engine, market, winner } = buildTwoBookEngine(savedTransactions);
+
+    const settlements = await (engine as any).settleMarket(
+      market,
+      winner,
+      new Map(),
+      // One winning objector, in the USDT book only.
+      new Map([["USDT", [{ userId: "u5", bondAmount: 2 }]]]),
+    );
+
+    const rewards = savedTransactions.filter(
+      (t) => t.type === TransactionType.DISPUTE_BOND_REWARD,
+    );
+    // Exactly one reward, in USDT: 20% of the USDT book's Nu-equivalent 24 cut.
+    expect(rewards).toHaveLength(1);
+    expect(rewards[0].userId).toBe("u5");
+    expect(rewards[0].currency).toBe("USDT");
+    expect(rewards[0].amount).toBeCloseTo(4.8, 6);
+
+    const btn = settlements.find((s: any) => s.currency === "BTN");
+    const usdt = settlements.find((s: any) => s.currency === "USDT");
+    // BTN book keeps its full cut — it had no contest.
+    expect(Number(btn.houseAmount)).toBeCloseTo(24, 2);
+    // USDT book funded the reward out of its own cut.
+    expect(Number(usdt.houseAmount)).toBeCloseTo(19.2, 6);
+
+    // Conservation, per book: pool = payouts + challenger reward + house.
+    const paidIn = (ccy: string) =>
+      savedTransactions
+        .filter(
+          (t) => t.type === TransactionType.POSITION_PAYOUT && t.currency === ccy,
+        )
+        .reduce((s, t) => s + Number(t.amount), 0);
+    expect(paidIn("BTN") + Number(btn.houseAmount)).toBeCloseTo(300, 2);
+    expect(paidIn("USDT") + 4.8 + Number(usdt.houseAmount)).toBeCloseTo(300, 6);
+  });
+
+  it("books a USDT forfeit with no winning side as USDT house revenue", async () => {
+    const savedTransactions: any[] = [];
+    const { engine, market, winner } = buildTwoBookEngine(savedTransactions);
+
+    // 2 USDT forfeited by objectors who were wrong, nobody to reward.
+    const settlements = await (engine as any).settleMarket(
+      market,
+      winner,
+      new Map([["USDT", 2]]),
+      new Map(),
+    );
+
+    const usdt = settlements.find((s: any) => s.currency === "USDT");
+    const btn = settlements.find((s: any) => s.currency === "BTN");
+    // The forfeit lands on the USDT book's revenue, not the ngultrum one.
+    expect(Number(usdt.houseAmount)).toBeCloseTo(26, 6);
+    expect(Number(btn.houseAmount)).toBeCloseTo(24, 2);
+    expect(
+      savedTransactions.filter(
+        (t) => t.type === TransactionType.DISPUTE_BOND_REWARD,
+      ),
+    ).toHaveLength(0);
+  });
+});
+
+// ─── cancelMarket releases each bond into the book it came from ───────────────
+
+describe("ParimutuelEngine.cancelMarket — mixed-currency bond release", () => {
+  it("returns a USDT bond in USDT and a BTN bond in BTN", async () => {
+    const savedTransactions: any[] = [];
+    const savedDisputes: any[] = [];
+    const balanceReads: any[] = [];
+    const market = {
+      id: "m1",
+      title: "Cancelled two-book market",
+      status: "resolving",
+      outcomes: [{ id: "o1", label: "Yes" }],
+    };
+    const disputes = [
+      { id: "d1", userId: "u1", marketId: "m1", side: "object", currency: "BTN", bondAmount: 50, bondStatus: "locked", upheld: null },
+      { id: "d2", userId: "u2", marketId: "m1", side: "support", currency: "USDT", bondAmount: 1.25, bondStatus: "locked", upheld: null },
+    ];
+
+    const mockEm = {
+      getRepository: jest.fn().mockReturnValue({
+        createQueryBuilder: jest.fn().mockReturnValue({
+          select: jest.fn().mockReturnThis(),
+          where: jest.fn().mockImplementation(function (
+            this: any,
+            _sql: string,
+            params: any,
+          ) {
+            balanceReads.push(params);
+            return this;
+          }),
+          getRawOne: jest.fn().mockResolvedValue({ balance: 0 }),
+        }),
+      }),
+      findOne: jest.fn().mockResolvedValue(market),
+      find: jest.fn().mockImplementation(async (entity: any) =>
+        entity?.name === "Dispute" ? disputes : [],
+      ),
+      save: jest.fn().mockImplementation(async (_cls: any, data: any) => {
+        if (Array.isArray(data)) savedDisputes.push(...data);
+        else if (data?.type) savedTransactions.push(data);
+        return data;
+      }),
+      create: jest.fn().mockImplementation((_cls: any, d: any) => ({ ...d })),
+    };
+
+    const engine = new ParimutuelEngine(
+      null as any, null as any, null as any, null as any, null as any,
+      null as any, null as any,
+      { transaction: jest.fn().mockImplementation((cb: Function) => cb(mockEm)) } as any,
+      null as any,
+      { del: jest.fn().mockResolvedValue(undefined) } as any,
+      null as any, null as any, null as any,
+      bypassConfigService,
+      null as any, null as any, null as any, null as any, null as any,
+      ({ addBulk: async () => [] }) as any,
+    );
+
+    await engine.cancelMarket("m1");
+
+    const refunds = savedTransactions.filter(
+      (t) => t.type === TransactionType.DISPUTE_REFUND,
+    );
+    expect(refunds).toHaveLength(2);
+    expect(refunds.map((r) => [r.currency, r.amount])).toEqual([
+      ["BTN", 50],
+      ["USDT", 1.25],
+    ]);
+    // Each balance was read from its own ledger — the release cannot be sized
+    // against a book it is not paying into.
+    expect(balanceReads.map((r) => r.currency)).toEqual(["BTN", "USDT"]);
+    // The USDT note quotes USDT, not "Nu".
+    expect(refunds[1].note).toContain("1.25 USDT");
+    expect(savedDisputes.map((d) => d.bondStatus)).toEqual([
+      "not_applicable",
+      "not_applicable",
+    ]);
   });
 });
