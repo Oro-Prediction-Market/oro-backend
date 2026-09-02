@@ -36,7 +36,12 @@ function build(intent: any) {
     }),
   };
   const ds: any = { transaction: (cb: Function) => cb(em) };
-  return { service: new CryptoSettlementService(ds), saved, updates };
+  const userNotifRepo = { create: (e: any) => e, save: async () => undefined };
+  return {
+    service: new CryptoSettlementService(ds, userNotifRepo as any),
+    saved,
+    updates,
+  };
 }
 
 const baseIntent = {

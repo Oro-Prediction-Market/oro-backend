@@ -11,6 +11,7 @@ import { usdtIdentityVerified } from "../shared/utils/wallet.util";
 import { ConfigService } from "@nestjs/config";
 import { DataSource, In, Repository } from "typeorm";
 import { User, KycStatus } from "../entities/user.entity";
+import { UserNotification } from "../entities/user-notification.entity";
 import {
   Transaction,
   TransactionType,
@@ -60,7 +61,37 @@ export class CryptoWithdrawalService {
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly client: TwentyOnePayClient,
     private readonly config: ConfigService,
+    @InjectRepository(UserNotification)
+    private readonly userNotifRepo: Repository<UserNotification>,
   ) {}
+
+  /**
+   * Fire-and-forget in-app notification, on the default connection and never
+   * throwing — a notification failure must never affect a withdrawal or its
+   * compensating refund.
+   */
+  private notifyTransaction(
+    userId: string,
+    title: string,
+    body: string,
+    metadata: Record<string, any>,
+  ): void {
+    void this.userNotifRepo
+      .save(
+        this.userNotifRepo.create({
+          userId,
+          type: "transaction",
+          title,
+          body,
+          metadata,
+        }),
+      )
+      .catch((err: any) =>
+        this.logger.warn(
+          `[Notify] USDT withdrawal notification failed for ${userId}: ${err.message}`,
+        ),
+      );
+  }
 
   private assertEnabled(): void {
     if (!this.client.enabled) {
@@ -452,6 +483,18 @@ export class CryptoWithdrawalService {
         },
       );
       this.logger.log(`[USDT] Withdrawal ${wd.id} completed`);
+      this.notifyTransaction(
+        wd.userId,
+        "Withdrawal sent",
+        `${wd.amountUsdt} USDT was sent to your wallet.`,
+        {
+          kind: "withdrawal",
+          currency: USDT,
+          amount: Number(wd.amountUsdt),
+          network: wd.network,
+          txHash,
+        },
+      );
       return;
     }
 
@@ -485,6 +528,18 @@ export class CryptoWithdrawalService {
         {
           remoteStatus: remote.status,
           failureReason: (remote.failure_reason ?? remote.status).slice(0, 255),
+        },
+      );
+      this.notifyTransaction(
+        wd.userId,
+        "Withdrawal refunded",
+        `Your ${wd.amountUsdt} USDT withdrawal couldn't be completed and has been returned to your balance.`,
+        {
+          kind: "withdrawal",
+          currency: USDT,
+          amount: Number(wd.amountUsdt),
+          network: wd.network,
+          result: "refunded",
         },
       );
       return;

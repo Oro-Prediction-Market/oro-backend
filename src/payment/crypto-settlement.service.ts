@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
-import { InjectDataSource } from "@nestjs/typeorm";
-import { DataSource, EntityManager } from "typeorm";
+import { InjectDataSource, InjectRepository } from "@nestjs/typeorm";
+import { DataSource, EntityManager, Repository } from "typeorm";
+import { UserNotification } from "../entities/user-notification.entity";
 import {
   Payment,
   PaymentMethod,
@@ -53,10 +54,47 @@ export interface SettlementOutcome {
 export class CryptoSettlementService {
   private readonly logger = new Logger(CryptoSettlementService.name);
 
-  constructor(@InjectDataSource() private readonly dataSource: DataSource) {}
+  constructor(
+    @InjectDataSource() private readonly dataSource: DataSource,
+    @InjectRepository(UserNotification)
+    private readonly userNotifRepo: Repository<UserNotification>,
+  ) {}
+
+  /**
+   * Fire-and-forget in-app notification, on the default connection (never the
+   * settlement transaction) and never throwing — a notification failure must
+   * never affect a USDT credit.
+   */
+  private notifyTransaction(
+    userId: string,
+    title: string,
+    body: string,
+    metadata: Record<string, any>,
+  ): void {
+    void this.userNotifRepo
+      .save(
+        this.userNotifRepo.create({
+          userId,
+          type: "transaction",
+          title,
+          body,
+          metadata,
+        }),
+      )
+      .catch((err: any) =>
+        this.logger.warn(
+          `[Notify] USDT deposit notification failed for ${userId}: ${err.message}`,
+        ),
+      );
+  }
 
   async settle(input: SettlementInput): Promise<SettlementOutcome> {
-    return this.dataSource.transaction(async (em) => {
+    // Captured inside the transaction, notified only after it commits. Wrapper
+    // object so the closure assignment survives TS control-flow narrowing.
+    const credited: { userId: string | null; amount: number; network: string } =
+      { userId: null, amount: 0, network: "" };
+
+    const outcome = await this.dataSource.transaction(async (em) => {
       const intent = await em
         .createQueryBuilder(CryptoPaymentIntent, "i")
         .setLock("pessimistic_write")
@@ -117,8 +155,27 @@ export class CryptoSettlementService {
       }
 
       await this.credit(em, intent, detected, input, status);
+      credited.userId = intent.userId;
+      credited.amount = detected;
+      credited.network = intent.network;
       return { handled: true, credited: true };
     });
+
+    if (credited.userId) {
+      this.notifyTransaction(
+        credited.userId,
+        "Deposit received",
+        `${credited.amount} USDT was added to your balance.`,
+        {
+          kind: "deposit",
+          currency: USDT,
+          amount: credited.amount,
+          network: credited.network,
+        },
+      );
+    }
+
+    return outcome;
   }
 
   /**

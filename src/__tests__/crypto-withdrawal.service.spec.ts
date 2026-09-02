@@ -88,6 +88,7 @@ function build(opts: {
   };
   const config: any = { get: (_k: string, d: string) => d };
 
+  const userNotifRepo = { create: (e: any) => e, save: async () => undefined };
   const service = new CryptoWithdrawalService(
     withdrawalRepo,
     destRepo,
@@ -95,6 +96,7 @@ function build(opts: {
     ds,
     client,
     config,
+    userNotifRepo as any,
   );
   return { service, saved, updates, client, withdrawalRepo, destRepo };
 }
