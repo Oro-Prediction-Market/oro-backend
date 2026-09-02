@@ -27,9 +27,13 @@ function build(opts: {
   destination?: any;
   withdrawal?: any;
   balance?: string;
+  // Simulate losing a cross-replica race: the conditional claim matches 0 rows.
+  restoreClaimAffected?: number;
+  completedClaimAffected?: number;
 } = {}) {
   const saved: { entity: string; value: any }[] = [];
   const updates: { entity: string; where: any; patch: any }[] = [];
+  const notifications: any[] = [];
 
   const mkQb = () => ({
     select: jest.fn().mockReturnThis(),
@@ -48,7 +52,13 @@ function build(opts: {
     }),
     update: jest.fn().mockImplementation((e: any, where: any, patch: any) => {
       updates.push({ entity: e?.name, where, patch });
-      return Promise.resolve(undefined);
+      // The restore() refund claim is conditional on restoreTransactionId IS
+      // NULL; let a test force it to match 0 rows (another replica won).
+      const affected =
+        patch?.restoreTransactionId !== undefined
+          ? opts.restoreClaimAffected ?? 1
+          : 1;
+      return Promise.resolve({ affected });
     }),
   };
 
@@ -59,7 +69,11 @@ function build(opts: {
     save: jest.fn().mockImplementation((d: any) => Promise.resolve(d)),
     update: jest.fn().mockImplementation((where: any, patch: any) => {
       updates.push({ entity: "CryptoWithdrawal", where, patch });
-      return Promise.resolve(undefined);
+      // The COMPLETED transition claim is conditional on completedAt IS NULL;
+      // let a test force it to match 0 rows (another replica already completed).
+      const affected =
+        patch?.completedAt !== undefined ? opts.completedClaimAffected ?? 1 : 1;
+      return Promise.resolve({ affected });
     }),
   };
   const destRepo: any = {
@@ -88,7 +102,13 @@ function build(opts: {
   };
   const config: any = { get: (_k: string, d: string) => d };
 
-  const userNotifRepo = { create: (e: any) => e, save: async () => undefined };
+  const userNotifRepo = {
+    create: (e: any) => e,
+    save: async (n: any) => {
+      notifications.push(n);
+      return n;
+    },
+  };
   const service = new CryptoWithdrawalService(
     withdrawalRepo,
     destRepo,
@@ -98,7 +118,15 @@ function build(opts: {
     config,
     userNotifRepo as any,
   );
-  return { service, saved, updates, client, withdrawalRepo, destRepo };
+  return {
+    service,
+    saved,
+    updates,
+    notifications,
+    client,
+    withdrawalRepo,
+    destRepo,
+  };
 }
 
 describe("addDestination", () => {
@@ -355,6 +383,42 @@ describe("applyRemoteState — only `completed` means paid", () => {
     });
     await service.applyRemoteState("w1", { status: "failed" });
     expect(saved.filter((r) => r.entity === "Transaction")).toHaveLength(0);
+  });
+
+  // Every replica polls the same withdrawals, so terminal handling must be
+  // exactly-once across replicas — one refund, one notification.
+  it("notifies 'sent' once, and not at all if another replica already completed it", async () => {
+    const won = build({ withdrawal: submitted });
+    await won.service.applyRemoteState("w1", { status: "completed" });
+    expect(won.notifications).toHaveLength(1);
+    expect(won.notifications[0].title).toBe("Withdrawal sent");
+
+    // completedAt-claim matches 0 rows → another replica won → we stay silent.
+    const lost = build({ withdrawal: submitted, completedClaimAffected: 0 });
+    await lost.service.applyRemoteState("w1", { status: "completed" });
+    expect(lost.notifications).toHaveLength(0);
+  });
+
+  it("refunds and notifies exactly once; a replica that loses the claim does neither", async () => {
+    const won = build({ withdrawal: submitted });
+    await won.service.applyRemoteState("w1", {
+      status: "failed",
+      failure_reason: "insufficient gas",
+    });
+    expect(
+      won.notifications.filter((n) => n.title === "Withdrawal refunded"),
+    ).toHaveLength(1);
+
+    // restoreTransactionId-claim matches 0 rows → the refund insert rolls back
+    // and no duplicate "refunded" notification is sent.
+    const lost = build({ withdrawal: submitted, restoreClaimAffected: 0 });
+    await lost.service.applyRemoteState("w1", {
+      status: "failed",
+      failure_reason: "insufficient gas",
+    });
+    expect(
+      lost.notifications.filter((n) => n.title === "Withdrawal refunded"),
+    ).toHaveLength(0);
   });
 });
 

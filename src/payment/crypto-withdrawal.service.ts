@@ -9,7 +9,7 @@ import {
 import { InjectRepository, InjectDataSource } from "@nestjs/typeorm";
 import { usdtIdentityVerified } from "../shared/utils/wallet.util";
 import { ConfigService } from "@nestjs/config";
-import { DataSource, In, Repository } from "typeorm";
+import { DataSource, In, IsNull, Repository } from "typeorm";
 import { User, KycStatus } from "../entities/user.entity";
 import { UserNotification } from "../entities/user-notification.entity";
 import {
@@ -33,6 +33,13 @@ import { isValidAddressForNetwork, toBaseUnits } from "./usdt.util";
 import { ledgerBalance } from "../shared/utils/ledger.util";
 
 const USDT = "USDT";
+
+/**
+ * Thrown inside restore()'s transaction when another replica already claimed the
+ * refund, to roll back this replica's duplicate refund insert. Never escapes
+ * restore().
+ */
+class AlreadyRestoredError extends Error {}
 
 /**
  * USDT withdrawals.
@@ -474,27 +481,33 @@ export class CryptoWithdrawalService {
     const txHash = remote.tx_hash ?? wd.txHash ?? null;
 
     if (remote.status === RemoteWithdrawalStatus.COMPLETED) {
-      await this.withdrawalRepo.update(
-        { id: wd.id },
+      // Every replica polls, so several can observe COMPLETED at once. Claim the
+      // transition with a conditional update on completedAt (set only here, so
+      // `IS NULL` means "not yet completed") and notify only if we won it —
+      // otherwise each replica would send a duplicate "Withdrawal sent".
+      const res = await this.withdrawalRepo.update(
+        { id: wd.id, completedAt: IsNull() },
         {
           remoteStatus: remote.status,
           txHash,
           completedAt: new Date(),
         },
       );
-      this.logger.log(`[USDT] Withdrawal ${wd.id} completed`);
-      this.notifyTransaction(
-        wd.userId,
-        "Withdrawal sent",
-        `${wd.amountUsdt} USDT was sent to your wallet.`,
-        {
-          kind: "withdrawal",
-          currency: USDT,
-          amount: Number(wd.amountUsdt),
-          network: wd.network,
-          txHash,
-        },
-      );
+      if (res.affected && res.affected > 0) {
+        this.logger.log(`[USDT] Withdrawal ${wd.id} completed`);
+        this.notifyTransaction(
+          wd.userId,
+          "Withdrawal sent",
+          `${wd.amountUsdt} USDT was sent to your wallet.`,
+          {
+            kind: "withdrawal",
+            currency: USDT,
+            amount: Number(wd.amountUsdt),
+            network: wd.network,
+            txHash,
+          },
+        );
+      }
       return;
     }
 
@@ -522,7 +535,10 @@ export class CryptoWithdrawalService {
         return;
       }
 
-      await this.restore(wd, remote.failure_reason ?? remote.status);
+      const didRestore = await this.restore(
+        wd,
+        remote.failure_reason ?? remote.status,
+      );
       await this.withdrawalRepo.update(
         { id: wd.id },
         {
@@ -530,18 +546,22 @@ export class CryptoWithdrawalService {
           failureReason: (remote.failure_reason ?? remote.status).slice(0, 255),
         },
       );
-      this.notifyTransaction(
-        wd.userId,
-        "Withdrawal refunded",
-        `Your ${wd.amountUsdt} USDT withdrawal couldn't be completed and has been returned to your balance.`,
-        {
-          kind: "withdrawal",
-          currency: USDT,
-          amount: Number(wd.amountUsdt),
-          network: wd.network,
-          result: "refunded",
-        },
-      );
+      // Only the replica whose restore() actually posted the refund notifies,
+      // so the user gets one "refunded" message, not one per replica.
+      if (didRestore) {
+        this.notifyTransaction(
+          wd.userId,
+          "Withdrawal refunded",
+          `Your ${wd.amountUsdt} USDT withdrawal couldn't be completed and has been returned to your balance.`,
+          {
+            kind: "withdrawal",
+            currency: USDT,
+            amount: Number(wd.amountUsdt),
+            network: wd.network,
+            result: "refunded",
+          },
+        );
+      }
       return;
     }
 
@@ -552,39 +572,67 @@ export class CryptoWithdrawalService {
     );
   }
 
-  /** Compensating credit. Idempotent via `restoreTransactionId`. */
+  /**
+   * Compensating credit. Returns true only if THIS call posted the refund.
+   *
+   * Every replica polls, so two can reach here for the same withdrawal with a
+   * stale in-memory `restoreTransactionId === null` and each try to refund. The
+   * refund insert and the `restoreTransactionId` claim run in one transaction,
+   * and the claim is conditional on `restoreTransactionId IS NULL`: the first
+   * committer wins (affected = 1), the loser's UPDATE matches zero rows once the
+   * winner's value is visible, so we throw to roll back its refund insert. The
+   * user is credited exactly once, and returning false keeps the duplicate
+   * "refunded" notification from being sent.
+   */
   private async restore(
     wd: CryptoWithdrawal,
     reason: string,
-  ): Promise<void> {
-    if (wd.restoreTransactionId) return;
+  ): Promise<boolean> {
+    if (wd.restoreTransactionId) return false; // fast path: already restored
 
-    await this.dataSource.transaction(async (em) => {
-      const amount = Number(wd.amountUsdt);
-      const balance = await ledgerBalance(em, wd.userId, USDT);
-      const credit = await em.save(
-        Transaction,
-        em.create(Transaction, {
-          userId: wd.userId,
-          type: TransactionType.REFUND,
-          amount,
-          currency: USDT,
-          balanceBefore: balance,
-          balanceAfter: balance + amount,
-          isBonus: false,
-          note: `USDT withdrawal returned · ${reason}`.slice(0, 255),
-        }),
-      );
-      await em.update(
-        CryptoWithdrawal,
-        { id: wd.id },
-        { restoreTransactionId: credit.id },
-      );
-    });
+    try {
+      await this.dataSource.transaction(async (em) => {
+        const amount = Number(wd.amountUsdt);
+        const balance = await ledgerBalance(em, wd.userId, USDT);
+        const credit = await em.save(
+          Transaction,
+          em.create(Transaction, {
+            userId: wd.userId,
+            type: TransactionType.REFUND,
+            amount,
+            currency: USDT,
+            balanceBefore: balance,
+            balanceAfter: balance + amount,
+            isBonus: false,
+            note: `USDT withdrawal returned · ${reason}`.slice(0, 255),
+          }),
+        );
+        const claim = await em.update(
+          CryptoWithdrawal,
+          { id: wd.id, restoreTransactionId: IsNull() },
+          { restoreTransactionId: credit.id },
+        );
+        if (!claim.affected) {
+          // Another replica already restored this withdrawal between our load
+          // and now. Roll back our refund insert — exactly-once.
+          throw new AlreadyRestoredError();
+        }
+      });
+    } catch (err) {
+      if (err instanceof AlreadyRestoredError) {
+        this.logger.warn(
+          `[USDT] Withdrawal ${wd.id} already restored by another worker — ` +
+            `duplicate refund rolled back`,
+        );
+        return false;
+      }
+      throw err;
+    }
 
     this.logger.log(
       `[USDT] Restored ${wd.amountUsdt} USDT to user ${wd.userId} (${reason})`,
     );
+    return true;
   }
 
   async listForUser(userId: string, limit = 20): Promise<CryptoWithdrawal[]> {
