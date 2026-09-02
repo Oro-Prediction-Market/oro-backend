@@ -372,8 +372,12 @@ export class EplService {
     });
     for (const e of allEntries) e.faceBackup = backups.get(e.player) ?? "";
 
-    // Cache only when at least one source returned data.
-    if (scorers.length > 0 || (fpl?.elements?.length ?? 0) > 0) {
+    // Cache only when football-data returned scorers — goals/assists are the
+    // only visible boards and both come from that source, so caching on FPL
+    // alone would pin EMPTY goals/assists for a full hour whenever football-data
+    // is briefly down or rate-limited. Requiring scorers here lets the Stats tab
+    // self-heal on the next request the moment the provider recovers.
+    if (scorers.length > 0) {
       await this.redis.setJsonEx(cacheKey, CACHE_TTL_SEC, result);
     }
     return result;
