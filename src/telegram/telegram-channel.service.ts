@@ -21,8 +21,13 @@ export class TelegramChannelService {
       this.configService.get<string>("TELEGRAM_CHANNEL_ID") || "";
     this.miniAppUrl =
       this.configService.get<string>("TELEGRAM_MINI_APP_URL") || "";
-    this.botUsername =
-      this.configService.get<string>("TELEGRAM_BOT_USERNAME") || "";
+    // Env var name varies by deployment: BOT_USERNAME in .env,
+    // TELEGRAM_BOT_USERNAME elsewhere. Strip a leading @ so deep links are valid.
+    this.botUsername = (
+      this.configService.get<string>("TELEGRAM_BOT_USERNAME") ||
+      this.configService.get<string>("BOT_USERNAME") ||
+      ""
+    ).replace(/^@/, "");
   }
 
   async initializeChannel(): Promise<void> {

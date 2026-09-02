@@ -621,6 +621,19 @@ export class AdminController {
   async announceMarket(@Param("id") id: string, @Request() req: any) {
     const market = await this.marketsService.findOne(id);
     const miniAppUrl = process.env.TELEGRAM_MINI_APP_URL || "";
+    // Deep link that opens the mini app straight on this market (the client's
+    // DeepLinkRedirect routes `m_<id>` startapp params to /market/:id), instead
+    // of dropping people on the feed at the bare web URL. Falls back to the web
+    // URL if the bot username isn't configured. Env var name varies by
+    // deployment (BOT_USERNAME in .env, TELEGRAM_BOT_USERNAME elsewhere).
+    const botUsername = (
+      process.env.TELEGRAM_BOT_USERNAME ||
+      process.env.BOT_USERNAME ||
+      ""
+    ).replace(/^@/, "");
+    const marketLink = botUsername
+      ? `https://t.me/${botUsername}?startapp=m_${market.id}`
+      : miniAppUrl;
     const outcomes = (market.outcomes ?? [])
       .map((o) => `• ${o.label}`)
       .join("\n");
@@ -631,7 +644,7 @@ export class AdminController {
         })
       : "TBD";
     await this.telegramSimple.postToChannel(
-      `🚀 <b>NEW MARKET</b>\n\n📊 <b>${market.title}</b>\n\n🎲 <b>Outcomes:</b>\n${outcomes}\n\n⏰ Closes: ${closesAt}\n\n👉 <a href="${miniAppUrl}">Predict Now</a>`,
+      `🚀 <b>NEW MARKET</b>\n\n📊 <b>${market.title}</b>\n\n🎲 <b>Outcomes:</b>\n${outcomes}\n\n⏰ Closes: ${closesAt}\n\n👉 <a href="${marketLink}">Predict Now</a>`,
     );
     await this.auditService.log({
       adminId: req.user.userId,
