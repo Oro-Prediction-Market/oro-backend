@@ -132,6 +132,7 @@ import { UserNotification } from "./entities/user-notification.entity";
           GroupMembership,
           Reconciliation,
           UserEvent,
+          UserNotification,
           LinkedBankAccount,
           RevenueDistribution,
           AmlAlert,

@@ -297,6 +297,7 @@ function makeService(
     { emit: jest.fn(), broadcast: jest.fn(), forUser: jest.fn() } as any,
     bhutanAppNotification as any,
     authMethodRepo as any,
+    { create: (e: any) => e, save: async () => undefined } as any, // userNotifRepo
   );
 
   return {

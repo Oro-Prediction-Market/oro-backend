@@ -30,6 +30,7 @@ import { MarketsGateway } from "./markets.gateway";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import { DKGatewayService } from "../payment/services/dk-gateway/dk-gateway.service";
 import { StreakService, STREAK_BONUS_MULT } from "../users/streak.service";
+import { UserNotificationService } from "../users/user-notification.service";
 import {
   ledgerBalance,
   ledgerBalanceForAccount,
@@ -101,6 +102,7 @@ export class ParimutuelEngine implements OnModuleInit {
     private marketsGateway: MarketsGateway,
     private sse: SseService,
     private revenueDistributionService: RevenueDistributionService,
+    private userNotifications: UserNotificationService,
     @InjectQueue(NOTIFICATION_QUEUE) private notificationQueue: Queue,
   ) {}
 
@@ -2076,8 +2078,10 @@ Good luck! 🍀
 
       const chatId = user.telegramId ? Number(user.telegramId) : null;
       const externalUserId = bhutanExternalIdByUser[userId] ?? null;
-      // No reachable channel (neither Telegram nor BhutanApp) — skip.
-      if (chatId == null && !externalUserId) continue;
+      // Note: we no longer skip channel-less users — the in-app notification
+      // (created below) is a universal channel, so a PWA user with neither a
+      // Telegram chat nor BhutanApp still gets a settlement notification in the
+      // bell/center. notifyUser() is a no-op when both DM channels are absent.
       const tierNow = user.reputationTier ?? "rookie";
       const tierBefore = tiersBefore[userId] ?? "rookie";
       const totalPredictions = user.totalPredictions ?? 0;
@@ -2138,6 +2142,18 @@ Good luck! 🍀
         }
 
         notifyUser(chatId, externalUserId, msg, "🎉 You won!");
+        // In-app notification for the bell/center (fire-and-forget, never throws).
+        void this.userNotifications.create(userId, {
+          type: "market_won",
+          title: "🎉 You won!",
+          body: `${market.title} — you backed ${winner.label} and won Nu ${totalPayout.toLocaleString()}.`,
+          metadata: {
+            marketId: market.id,
+            outcomeId: winner.id,
+            payout: totalPayout,
+            result: "won",
+          },
+        });
       } else {
         const outcome = market.outcomes.find(
           (o) => o.id === userBets[0].outcomeId,
@@ -2151,6 +2167,17 @@ Good luck! 🍀
         if (record) msg += `⭐ Record: <b>${record}</b>\n`;
 
         notifyUser(chatId, externalUserId, msg, "Market settled");
+        // In-app notification for the bell/center (fire-and-forget, never throws).
+        void this.userNotifications.create(userId, {
+          type: "market_lost",
+          title: "Market settled",
+          body: `${market.title} — winner: ${winner.label}. Your pick: ${outcome?.label ?? "unknown"}.`,
+          metadata: {
+            marketId: market.id,
+            winnerOutcomeId: winner.id,
+            result: "lost",
+          },
+        });
       }
     }
 

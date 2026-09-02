@@ -18,6 +18,7 @@ import {
   PaymentType,
 } from "../entities/payment.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
+import { UserNotification } from "../entities/user-notification.entity";
 import { PaymentOtp, OtpStatus } from "../entities/payment-otp.entity";
 import { DKGatewayService } from "./services/dk-gateway/dk-gateway.service";
 import { RedisService } from "../redis/redis.service";
@@ -98,7 +99,37 @@ export class DKBankPaymentService {
     private readonly bhutanAppNotification: BhutanAppNotificationService,
     @InjectRepository(AuthMethod)
     private readonly authMethodRepo: Repository<AuthMethod>,
+    @InjectRepository(UserNotification)
+    private readonly userNotifRepo: Repository<UserNotification>,
   ) {}
+
+  /**
+   * Fire-and-forget in-app notification for a completed transaction. Runs on the
+   * default connection (NOT any caller's transaction) and never throws — a
+   * notification failure must never affect a deposit or withdrawal.
+   */
+  private notifyTransaction(
+    userId: string,
+    title: string,
+    body: string,
+    metadata: Record<string, any>,
+  ): void {
+    void this.userNotifRepo
+      .save(
+        this.userNotifRepo.create({
+          userId,
+          type: "transaction",
+          title,
+          body,
+          metadata,
+        }),
+      )
+      .catch((err: any) =>
+        this.logger.warn(
+          `[Notify] transaction notification failed for ${userId}: ${err.message}`,
+        ),
+      );
+  }
 
   /**
    * Step 1: Look up customer account by CID and call DK account_auth.
@@ -668,6 +699,12 @@ export class DKBankPaymentService {
           ? PaymentStatus.FAILED
           : PaymentStatus.PENDING;
 
+    // Captured inside the transaction below; the in-app notification is fired
+    // AFTER commit so it can never roll back a real deposit credit. An object
+    // wrapper is used because TS control-flow can't track a plain `let`
+    // reassigned inside the transaction callback.
+    const deposit: { amount: number | null } = { amount: null };
+
     await this.dataSource.transaction(async (em) => {
       const payment = await em
         .getRepository(Payment)
@@ -746,6 +783,7 @@ export class DKBankPaymentService {
 
         // Invalidate cached balance so the next /users/me returns the updated value
         await this.redis.del(`oro:cache:balance:${params.userId}`);
+        deposit.amount = depositAmount;
       } else if (mapped === PaymentStatus.FAILED) {
         payment.status = PaymentStatus.FAILED;
         payment.failureReason = params.dkStatusDesc || "Payment failed";
@@ -754,6 +792,19 @@ export class DKBankPaymentService {
 
       await em.save(payment);
     });
+
+    if (deposit.amount != null) {
+      this.notifyTransaction(
+        params.userId,
+        "Deposit received",
+        `Nu ${deposit.amount.toLocaleString()} has been added to your wallet.`,
+        {
+          kind: "deposit",
+          amount: deposit.amount,
+          currency: BTN_CURRENCY,
+        },
+      );
+    }
   }
 
   // ── Withdrawal: merchant vault → user DK Bank account ─────────────────────
@@ -1154,6 +1205,13 @@ export class DKBankPaymentService {
       !transferThrew && transferStatus === "AMBIGUOUS";
 
     // ── Phase 3: finalise (short txn) ─────────────────────────────────────────
+    // Set only when THIS call finalises the withdrawal (not on the idempotent
+    // early-return), so a repeated confirm never re-notifies. Object wrapper so
+    // the assignment inside the transaction callback is visible after commit.
+    const finalized: { outcome: "success" | "failed" | null } = {
+      outcome: null,
+    };
+
     await this.dataSource.transaction(async (em) => {
       const lockedPayment = await em
         .getRepository(Payment)
@@ -1237,6 +1295,7 @@ export class DKBankPaymentService {
         lockedPayment.confirmedAt = new Date();
         await em.save(lockedPayment);
         result.status = "failed";
+        finalized.outcome = "failed";
         result.failureReason = lockedPayment.failureReason ?? undefined;
         return;
       }
@@ -1259,7 +1318,35 @@ export class DKBankPaymentService {
       lockedPayment.failureReason = null;
       await em.save(lockedPayment);
       result.status = "success";
+      finalized.outcome = "success";
     });
+
+    // Fire-and-forget in-app notification for the finalised withdrawal.
+    if (finalized.outcome === "success") {
+      this.notifyTransaction(
+        userId,
+        "Withdrawal sent",
+        `Nu ${withdrawalAmount.toLocaleString()} has been sent to your bank account.`,
+        {
+          kind: "withdrawal",
+          amount: withdrawalAmount,
+          currency: BTN_CURRENCY,
+          status: "sent",
+        },
+      );
+    } else if (finalized.outcome === "failed") {
+      this.notifyTransaction(
+        userId,
+        "Withdrawal failed",
+        `Your Nu ${withdrawalAmount.toLocaleString()} withdrawal could not be completed and has been refunded to your wallet.`,
+        {
+          kind: "withdrawal",
+          amount: withdrawalAmount,
+          currency: BTN_CURRENCY,
+          status: "refunded",
+        },
+      );
+    }
 
     // ── Cleanup ──────────────────────────────────────────────────────────────
     if (otpRecord) {

@@ -66,6 +66,52 @@ export class UserNotificationService {
   }
 
   /**
+   * All notifications for the center, newest first, cursor-paginated by
+   * createdAt. `before` (an ISO timestamp from the last row of the previous
+   * page) fetches the next page; omit it for the first page.
+   */
+  async listAll(
+    userId: string,
+    opts: { limit?: number; before?: string } = {},
+  ): Promise<UserNotification[]> {
+    const take = Math.min(Math.max(opts.limit ?? 30, 1), 100);
+    const qb = this.repo
+      .createQueryBuilder("n")
+      .where("n.userId = :userId", { userId })
+      .orderBy("n.createdAt", "DESC")
+      .take(take);
+    if (opts.before) {
+      const before = new Date(opts.before);
+      if (!Number.isNaN(before.getTime())) {
+        qb.andWhere("n.createdAt < :before", { before });
+      }
+    }
+    return qb.getMany().catch(() => []);
+  }
+
+  /** Count of unread (unseen) notifications — drives the bell badge. */
+  async unreadCount(userId: string): Promise<number> {
+    return this.repo
+      .count({ where: { userId, seenAt: IsNull() } })
+      .catch(() => 0);
+  }
+
+  /** Mark the given ids as unread (null their seenAt) for this user. */
+  async markUnread(userId: string, ids: string[]): Promise<void> {
+    if (!ids?.length) return;
+    await this.repo
+      .update({ userId, id: In(ids) }, { seenAt: null })
+      .catch(() => undefined);
+  }
+
+  /** Delete the given ids, or every notification for the user when omitted. */
+  async remove(userId: string, ids?: string[]): Promise<void> {
+    const where: Record<string, unknown> = { userId };
+    if (ids?.length) where.id = In(ids);
+    await this.repo.delete(where).catch(() => undefined);
+  }
+
+  /**
    * Turn newly-unlocked achievement badges into notifications, deduped by
    * badgeId against rows this user already has — so each badge is only ever
    * celebrated once, reliably and cross-device (replaces the old localStorage

@@ -306,6 +306,61 @@ export class UsersController {
     return { ok: true };
   }
 
+  /** Full notification history for the center, newest first (cursor by `before`). */
+  @Get("me/notifications/list")
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "List all of the current user's notifications" })
+  async listNotifications(
+    @Request() req: any,
+    @Query("limit") limit?: string,
+    @Query("before") before?: string,
+  ) {
+    return this.userNotifications.listAll(req.user.userId, {
+      limit: limit ? Number(limit) : undefined,
+      before,
+    });
+  }
+
+  /** Unread (unseen) count — drives the header bell badge. */
+  @Get("me/notifications/unread-count")
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Count the current user's unread notifications" })
+  async unreadNotificationCount(
+    @Request() req: any,
+  ): Promise<{ count: number }> {
+    return { count: await this.userNotifications.unreadCount(req.user.userId) };
+  }
+
+  /** Mark the given notification ids as unread (null their seenAt). */
+  @Post("me/notifications/unread")
+  @HttpCode(200)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Mark the current user's notifications as unread" })
+  async markNotificationsUnread(
+    @Request() req: any,
+    @Body() body: { ids?: string[] },
+  ): Promise<{ ok: boolean }> {
+    await this.userNotifications.markUnread(req.user.userId, body?.ids ?? []);
+    return { ok: true };
+  }
+
+  /** Delete notifications by id, or clear all when `ids` is omitted. */
+  @Post("me/notifications/delete")
+  @HttpCode(200)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Delete the current user's notifications" })
+  async deleteNotifications(
+    @Request() req: any,
+    @Body() body: { ids?: string[] },
+  ): Promise<{ ok: boolean }> {
+    await this.userNotifications.remove(req.user.userId, body?.ids);
+    return { ok: true };
+  }
+
   /**
    * Reconcile achievement-badge unlocks into notifications. The client computes
    * its unlocked badges (single source of truth) and reports them; the backend

@@ -102,6 +102,7 @@ describe("ParimutuelEngine.calcOdds", () => {
       null as any, // marketsGateway
       null as any, // sse
       null as any, // revenueDistributionService
+      ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
     );
   });
@@ -210,6 +211,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any, // marketsGateway
       null as any, // sse
       null as any, // revenueDistributionService
+      ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
     );
     await expect(engine.placePosition("u1", "m1", "o1", 0)).rejects.toThrow(
@@ -280,6 +282,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any, // marketsGateway
       null as any, // sse
       null as any, // revenueDistributionService
+      ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
     );
 
@@ -348,6 +351,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any, // marketsGateway
       null as any, // sse
       null as any, // revenueDistributionService
+      ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
     );
 
@@ -428,6 +432,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any, // marketsGateway
       null as any, // sse
       null as any, // revenueDistributionService
+      ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
     );
 
@@ -507,6 +512,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any, // marketsGateway
       null as any, // sse
       null as any, // revenueDistributionService
+      ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
     );
 
@@ -590,6 +596,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any, // marketsGateway
       null as any, // sse
       null as any, // revenueDistributionService
+      ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
     );
 
@@ -638,6 +645,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       mockRedis as any, null as any, null as any, null as any,
       bypassConfigService, null as any, null as any, null as any,
       null as any, null as any,
+      ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any,
     );
     return { engine, mockEm };
@@ -811,6 +819,7 @@ describe("settleMarket — each book settles out of its own pool", () => {
       null as any, null as any, null as any,
       { get: (_k: string, d: string) => d } as any,
       null as any, null as any, null as any, null as any, null as any,
+      ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any,
     );
     return { engine, market, written, settlements, books };
@@ -1051,6 +1060,7 @@ describe("placePosition — a stake enters its own book and no other", () => {
       { broadcastMarketUpdate: jest.fn() } as any, // 17 marketsGateway
       { publish: jest.fn(), emit: jest.fn() } as any, // 18 sse
       null as any, // 19 revenueDistribution
+      ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // 20 notificationQueue
     );
     return { engine, saved, mockEm, btnBook, usdtBook, market };
@@ -1300,6 +1310,7 @@ describe("Settlement wallet credit — no DK transfer on market settle", () => {
       null as any, // marketsGateway
       null as any, // sse
       null as any, // revenueDistributionService
+      ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
     );
 
@@ -1534,6 +1545,7 @@ describe("Batch payment — NOT triggered on market settlement", () => {
       null as any,
       null as any, // sse
       null as any, // revenueDistributionService
+      ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
     );
 
@@ -1726,6 +1738,7 @@ describe("Batch payment — NOT triggered on market settlement", () => {
       null as any,
       null as any, // sse
       null as any, // revenueDistributionService
+      ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
     );
 
@@ -1849,6 +1862,7 @@ describe("ParimutuelEngine.resolveMarket — atomic concurrency claim", () => {
       null as any, // marketsGateway
       null as any, // sse
       null as any, // revenueDistributionService
+      ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
     );
 
@@ -2085,6 +2099,7 @@ describe("ParimutuelEngine.cancelMarket — dispute bond release", () => {
       null as any, // marketsGateway
       null as any, // sse
       null as any, // revenueDistributionService
+      ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
     );
 
@@ -2304,6 +2319,7 @@ describe("ParimutuelEngine.resolveMarket — contests settle per book", () => {
       null as any, // marketsGateway
       null as any, // sse
       null as any, // revenueDistributionService
+      ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
     );
 
@@ -2560,6 +2576,7 @@ describe("ParimutuelEngine.settleMarket — challenger reward routing by book", 
       null as any, null as any, null as any,
       bypassConfigService,
       null as any, null as any, null as any, null as any, null as any,
+      ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any,
     );
 
@@ -2684,6 +2701,7 @@ describe("ParimutuelEngine.cancelMarket — mixed-currency bond release", () => 
       null as any, null as any, null as any,
       bypassConfigService,
       null as any, null as any, null as any, null as any, null as any,
+      ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any,
     );
 

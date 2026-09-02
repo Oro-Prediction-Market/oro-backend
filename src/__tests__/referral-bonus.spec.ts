@@ -108,6 +108,7 @@ function makeEngine(ds: any) {
     null as any, // marketsGateway
     null as any, // sse (overridden below)
     null as any, // revenueDistributionService
+    ({ create: async () => {} }) as any, // userNotifications
     ({ addBulk: async () => [] }) as any, // notificationQueue
   );
 

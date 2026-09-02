@@ -95,6 +95,7 @@ function makeEngine(ds: any): ParimutuelEngine {
     noop,  // marketsGateway
     sse,   // sse
     noop,  // revenueDistributionService
+    ({ create: async () => {} }) as any, // userNotifications
     ({ addBulk: async () => [] }) as any, // notificationQueue
   );
   return engine;

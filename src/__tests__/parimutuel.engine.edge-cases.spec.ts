@@ -163,6 +163,7 @@ function makeEngine(em: any, minUniqueBettors = 2) {
     null as any, // marketsGateway
     null as any, // sse
     null as any, // revenueDistributionService
+    ({ create: async () => {} }) as any, // userNotifications
     ({ addBulk: async () => [] }) as any, // notificationQueue
   );
   return { engine, telegramSimple: mockTelegramSimple, dataSource: mockDataSource };

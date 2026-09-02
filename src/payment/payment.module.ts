@@ -4,6 +4,7 @@ import { TypeOrmModule } from "@nestjs/typeorm";
 import { PaymentController } from "./payment.controller";
 import { Payment } from "../entities/payment.entity";
 import { Transaction } from "../entities/transaction.entity";
+import { UserNotification } from "../entities/user-notification.entity";
 import { User } from "../entities/user.entity";
 import { DKGatewayAuthToken } from "../entities/dk-gateway-auth-token.entity";
 import { PaymentOtp } from "../entities/payment-otp.entity";
@@ -36,6 +37,7 @@ import { CryptoPaymentIntent } from "../entities/crypto-payment-intent.entity";
     TypeOrmModule.forFeature([
       Payment,
       Transaction,
+      UserNotification,
       User,
       DKGatewayAuthToken,
       PaymentOtp,
