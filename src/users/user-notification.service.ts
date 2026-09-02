@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { In, IsNull, Repository } from "typeorm";
 import { UserNotification } from "../entities/user-notification.entity";
+import { User } from "../entities/user.entity";
 
 export interface CreateNotificationInput {
   type?: string;
@@ -23,6 +24,8 @@ export class UserNotificationService {
   constructor(
     @InjectRepository(UserNotification)
     private readonly repo: Repository<UserNotification>,
+    @InjectRepository(User)
+    private readonly userRepo: Repository<User>,
   ) {}
 
   /**
@@ -129,34 +132,65 @@ export class UserNotificationService {
   ): Promise<void> {
     if (!badges?.length) return;
     try {
+      const user = await this.userRepo.findOne({
+        where: { id: userId },
+        select: ["id", "notifiedAchievementIds"],
+      });
+      if (!user) return;
+
+      // The durable dedupe key: badges we've already notified about. Persisted
+      // on the user, so deleting/clearing an achievement notification does NOT
+      // resurrect it here on the next sync. Baseline it with any existing
+      // achievement rows too, so users who earned badges before this column
+      // existed don't get a duplicate notification on the first run.
+      const persisted = new Set(
+        (user.notifiedAchievementIds ?? []).filter(
+          (x): x is string => !!x,
+        ),
+      );
       const existing = await this.repo.find({
         where: { userId, type: "achievement" },
         select: ["metadata"],
       });
-      const notified = new Set(
-        existing
+      const notified = new Set<string>([
+        ...persisted,
+        ...existing
           .map((n) => (n.metadata as any)?.badgeId)
           .filter((x): x is string => !!x),
-      );
+      ]);
       const seenSet = new Set(seenIds);
 
       const fresh = badges.filter((b) => b.id && !notified.has(b.id));
-      if (!fresh.length) return;
 
-      await this.repo.save(
-        fresh.map((b) =>
-          this.repo.create({
-            userId,
-            type: "achievement",
-            title: `Achievement Unlocked: ${b.name}`,
-            body: b.requirement || "New badge earned!",
-            metadata: { badgeId: b.id, name: b.name },
-            // Already-acknowledged badges are baselined as seen so they never
-            // pop; only genuinely new unlocks are left unseen to celebrate.
-            seenAt: seenSet.has(b.id) ? new Date() : null,
-          }),
-        ),
-      );
+      if (fresh.length) {
+        await this.repo.save(
+          fresh.map((b) =>
+            this.repo.create({
+              userId,
+              type: "achievement",
+              title: `Achievement Unlocked: ${b.name}`,
+              body: b.requirement || "New badge earned!",
+              metadata: { badgeId: b.id, name: b.name },
+              // Already-acknowledged badges are baselined as seen so they never
+              // pop; only genuinely new unlocks are left unseen to celebrate.
+              seenAt: seenSet.has(b.id) ? new Date() : null,
+            }),
+          ),
+        );
+      }
+
+      // Persist everything now considered notified (baseline rows + fresh) so
+      // the memory survives future deletions. Only write when it grew.
+      const toPersist = new Set<string>([
+        ...notified,
+        ...fresh.map((b) => b.id),
+      ]);
+      if (toPersist.size !== persisted.size) {
+        await this.userRepo.update(
+          { id: userId },
+          { notifiedAchievementIds: [...toPersist] },
+        );
+      }
     } catch (err: any) {
       this.logger.warn(
         `syncAchievements failed for ${userId}: ${err.message}`,

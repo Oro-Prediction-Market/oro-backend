@@ -170,6 +170,15 @@ export class User {
   featuredAchievementIds: string[];
 
   /**
+   * Badge IDs the user has already been notified about. Dedupe key for
+   * achievement notifications so a badge is never re-notified — checking this
+   * instead of "does a notification row still exist" means clearing/deleting an
+   * achievement notification doesn't resurrect it on the next profile sync.
+   */
+  @Column({ type: "jsonb", nullable: true, default: () => "'[]'" })
+  notifiedAchievementIds: string[];
+
+  /**
    * Brier score — measures calibration quality (lower = better, 0–1).
    * Computed as rolling average of (predictedProbability - actual)² across
    * all resolved predictions. Null until first prediction with a stored prob.
