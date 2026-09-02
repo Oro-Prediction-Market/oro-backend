@@ -4,6 +4,7 @@ import { InjectDataSource, InjectRepository } from "@nestjs/typeorm";
 import { DataSource, LessThan, Repository } from "typeorm";
 
 import { User } from "../entities/user.entity";
+import { UserNotification } from "../entities/user-notification.entity";
 import {
   Payment,
   PaymentMethod,
@@ -53,7 +54,37 @@ export class DKWithdrawalReconciler {
     private readonly dkGateway: DKGatewayService,
     private readonly redis: RedisService,
     private readonly sse: SseService,
+    @InjectRepository(UserNotification)
+    private readonly userNotifRepo: Repository<UserNotification>,
   ) {}
+
+  /**
+   * Fire-and-forget in-app notification, on the default connection and never
+   * throwing — a notification failure must never affect a reconciled
+   * withdrawal or its refund.
+   */
+  private notifyTransaction(
+    userId: string,
+    title: string,
+    body: string,
+    metadata: Record<string, any>,
+  ): void {
+    void this.userNotifRepo
+      .save(
+        this.userNotifRepo.create({
+          userId,
+          type: "transaction",
+          title,
+          body,
+          metadata,
+        }),
+      )
+      .catch((err: any) =>
+        this.logger.warn(
+          `[Reconcile] transaction notification failed for ${userId}: ${err.message}`,
+        ),
+      );
+  }
 
   @Cron(CronExpression.EVERY_5_MINUTES)
   async reconcileStuckWithdrawals() {
@@ -172,6 +203,12 @@ export class DKWithdrawalReconciler {
   ) {
     const userId = payment.userId;
     const amount = Number(payment.amount);
+    // Set only past the `status === PROCESSING` guard below, so the notification
+    // fires exactly once — only for the run that actually finalised the row.
+    // Wrapper object so the closure assignment survives TS narrowing.
+    const finalized: { outcome: "success" | "failed" | null } = {
+      outcome: null,
+    };
 
     await this.dataSource.transaction(async (em) => {
       // Same lock order as confirmWithdrawal — user first, then payment — so
@@ -215,6 +252,7 @@ export class DKWithdrawalReconciler {
         locked.confirmedAt = new Date();
         locked.failureReason = null;
         await em.save(locked);
+        finalized.outcome = "success";
         this.logger.log(
           `[Reconcile] payment ${payment.id} settled at DK — marked SUCCESS`,
         );
@@ -239,6 +277,7 @@ export class DKWithdrawalReconciler {
         result.statusDesc || "DK Bank transfer failed (reconciled)";
       locked.confirmedAt = new Date();
       await em.save(locked);
+      finalized.outcome = "failed";
       this.logger.warn(
         `[Reconcile] payment ${payment.id} failed at DK — refunded Nu ${amount}`,
       );
@@ -246,5 +285,33 @@ export class DKWithdrawalReconciler {
 
     await this.redis.del(`oro:cache:balance:${userId}`);
     this.sse.emit(userId, "balance:updated", { paymentId: payment.id });
+
+    // Same messages as the instant path (confirmWithdrawal), so a withdrawal
+    // notifies identically whether DK answered at once or was reconciled later.
+    if (finalized.outcome === "success") {
+      this.notifyTransaction(
+        userId,
+        "Withdrawal sent",
+        `Nu ${amount.toLocaleString()} has been sent to your bank account.`,
+        {
+          kind: "withdrawal",
+          amount,
+          currency: BTN_CURRENCY,
+          status: "sent",
+        },
+      );
+    } else if (finalized.outcome === "failed") {
+      this.notifyTransaction(
+        userId,
+        "Withdrawal failed",
+        `Your Nu ${amount.toLocaleString()} withdrawal could not be completed and has been refunded to your wallet.`,
+        {
+          kind: "withdrawal",
+          amount,
+          currency: BTN_CURRENCY,
+          status: "refunded",
+        },
+      );
+    }
   }
 }
