@@ -118,6 +118,19 @@ export class TelegramChannelService {
     }
   }
 
+  /**
+   * Deep link that opens the mini app directly on this market, rather than the
+   * feed. Uses the `m_<id>` startapp convention that the client's
+   * DeepLinkRedirect routes to `/market/:id`. Falls back to the bare mini-app
+   * URL when the bot username isn't configured.
+   */
+  private marketDeepLink(market: Market): string {
+    if (this.botUsername) {
+      return `https://t.me/${this.botUsername}?startapp=m_${market.id}`;
+    }
+    return this.miniAppUrl;
+  }
+
   private async sendChannelMessage(
     text: string,
     keyboard?: any,
@@ -315,7 +328,7 @@ ${outcomes}
 💰 <b>Pool:</b> Nu ${Number(market.totalPool).toLocaleString()}
 
 👇 <b>Predict Now:</b>
-• <a href="${this.miniAppUrl}">Open Oro</a>
+• <a href="${this.marketDeepLink(market)}">Open Oro</a>
 
 #PredictionMarkets #Oro
     `.trim();
@@ -338,7 +351,7 @@ ${winningOutcome?.label || "Pending"}
 ⏰ <b>Resolved:</b> ${resolvedAt}
 
 👇 <b>View Details:</b>
-• <a href="${this.miniAppUrl}">Open Oro</a>
+• <a href="${this.marketDeepLink(market)}">Open Oro</a>
 
 #MarketResults #OroPredictions
     `.trim();
@@ -358,12 +371,12 @@ ${content.message}
     return message;
   }
 
-  private createChannelKeyboard(_market: Market): any {
+  private createChannelKeyboard(market: Market): any {
     return [
       [
         {
           text: "🎯 Predict Now",
-          url: this.miniAppUrl,
+          url: this.marketDeepLink(market),
         },
         {
           text: "📈 View All Markets",
