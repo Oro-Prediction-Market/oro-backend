@@ -179,6 +179,16 @@ export class User {
   notifiedAchievementIds: string[];
 
   /**
+   * Monthly leaderboard podium finishes (top 3). Append-only; the tuple
+   * (year, month, rank) is the dedupe key. Populated by the season rollover
+   * when prizes are credited, and by a one-time backfill from closed seasons'
+   * winnersSnapshot. Powers the Monthly Champion/Runner-Up/Third collectibles,
+   * which — unlike every stat-derived badge — can't be computed client-side.
+   */
+  @Column({ type: "jsonb", nullable: true, default: () => "'[]'" })
+  monthlyPodiums: Array<{ year: number; month: number; rank: number }>;
+
+  /**
    * Brier score — measures calibration quality (lower = better, 0–1).
    * Computed as rolling average of (predictedProbability - actual)² across
    * all resolved predictions. Null until first prediction with a stored prob.

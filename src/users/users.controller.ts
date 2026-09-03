@@ -626,6 +626,7 @@ export class UsersController {
         "contrarianBadge",
         "contrarianWins",
         "featuredAchievementIds",
+        "monthlyPodiums",
         "contrarianAttempts",
         // hashes loaded only for boolean derivation — never forwarded to client
         "dkPhoneHash",
@@ -663,8 +664,10 @@ export class UsersController {
         ? await ledgerBalance(this.transactionRepo, userId, "USDT")
         : null;
 
-    // Derive boolean flags — never send raw hashes to the client
-    const { dkPhoneHash, telegramPhoneHash, ...safeUser } = user as any;
+    // Derive boolean flags — never send raw hashes to the client. The raw
+    // monthlyPodiums array is stripped too; only its derived counts go out.
+    const { dkPhoneHash, telegramPhoneHash, monthlyPodiums, ...safeUser } =
+      user as any;
 
     // Streak info (cached key reused from balance; separate small query)
     const streakInfo = await this.streakService.getStreakInfo(userId);
@@ -694,7 +697,20 @@ export class UsersController {
       isPhoneVerified: verifiedByPhone || verifiedByAccountNumber,
       referralCount,
       seasonBadgeStats,
+      monthlyPodiumStats: this.podiumStats(monthlyPodiums),
       ...streakInfo,
+    };
+  }
+
+  /** Count monthly podium finishes by rank for the Champion/Runner-Up/Third badges. */
+  private podiumStats(
+    podiums?: Array<{ rank: number }> | null,
+  ): { gold: number; silver: number; bronze: number } {
+    const p = Array.isArray(podiums) ? podiums : [];
+    return {
+      gold: p.filter((x) => Number(x?.rank) === 1).length,
+      silver: p.filter((x) => Number(x?.rank) === 2).length,
+      bronze: p.filter((x) => Number(x?.rank) === 3).length,
     };
   }
 
@@ -723,6 +739,7 @@ export class UsersController {
         "contrarianBadge", "contrarianWins",
         "betStreakCount", "betStreakLastAt",
         "featuredAchievementIds",
+        "monthlyPodiums",
       ],
     });
     if (!user) throw new NotFoundException("Predictor not found");
@@ -752,6 +769,7 @@ export class UsersController {
     return {
       id: user.id,
       seasonBadgeStats,
+      monthlyPodiumStats: this.podiumStats(user.monthlyPodiums),
       firstName: user.firstName,
       lastName: user.lastName,
       username: user.username,

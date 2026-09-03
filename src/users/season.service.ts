@@ -16,6 +16,16 @@ import { ledgerBalanceForAccount } from "../shared/utils/ledger.util";
 // #1 → Nu 700, #2 → Nu 500, #3 → Nu 350
 const SEASON_PRIZES: Record<number, number> = { 1: 700, 2: 500, 3: 350 };
 
+// Collectible badge earned by finishing on the monthly podium. Keyed by rank;
+// these ids must match the frontend badge definitions in BadgeGrid.tsx. Stored
+// in the user's notifiedAchievementIds so the normal badge-sync doesn't also
+// pop a "new badge" toast — the season-prize notification is the celebration.
+const PODIUM_BADGE_ID: Record<number, string> = {
+  1: "monthly_champion",
+  2: "monthly_runner_up",
+  3: "monthly_third",
+};
+
 // ── Season leaderboard scoring ──────────────────────────────────────────────
 // Ranking blends prediction skill with volume so the board rewards
 // players who are both accurate AND active — not pure luck on a tiny sample.
@@ -74,6 +84,12 @@ export class SeasonService implements OnApplicationBootstrap {
       // Ensure a season exists for the current month even if none is active yet
       await this.openNewSeason();
     }
+
+    // One-time (idempotent) backfill of podium badges from closed seasons'
+    // snapshots. Isolated so a failure can never break boot.
+    await this.backfillPodiums().catch((err: Error) =>
+      this.logger.warn(`Podium backfill failed: ${err.message}`),
+    );
   }
 
   /** Run on the 1st of each month at 00:05 UTC to close the previous month and open the next. */
@@ -208,12 +224,18 @@ export class SeasonService implements OnApplicationBootstrap {
       return;
     }
 
+    const podiumWinners = top10.slice(0, 3).map((r) => r.user);
+
     // Credit top-3 prizes and send DMs (fire-and-forget so rollover isn't blocked)
-    this.creditSeasonPrizes(
-      top10.slice(0, 3).map((r) => r.user),
-      active,
-    ).catch((err: Error) =>
+    this.creditSeasonPrizes(podiumWinners, active).catch((err: Error) =>
       this.logger.error(`Season prize crediting failed: ${err.message}`),
+    );
+
+    // Award the podium collectible badge to the same top-3. Fully decoupled
+    // from prize crediting — its own transactions, fire-and-forget, so a badge
+    // failure can never touch a payout.
+    this.awardPodiumBadges(podiumWinners, active).catch((err: Error) =>
+      this.logger.error(`Podium badge award failed: ${err.message}`),
     );
   }
 
@@ -263,6 +285,112 @@ export class SeasonService implements OnApplicationBootstrap {
       order: { startsAt: "DESC" },
       take: limit,
     });
+  }
+
+  /**
+   * Grant the monthly podium collectible to the top-3 finishers. Idempotent
+   * per (user, year, month, rank), so a rollover re-run — or overlap with the
+   * backfill — never duplicates a podium or inflates its ×N count.
+   */
+  private async awardPodiumBadges(
+    winners: User[],
+    season: Season,
+  ): Promise<void> {
+    const { weekNumber: month, year } = season;
+    for (let i = 0; i < winners.length; i++) {
+      const rank = i + 1;
+      await this.recordPodium(winners[i].id, year, month, rank).catch(
+        (err: Error) =>
+          this.logger.warn(
+            `Podium badge award failed for user ${winners[i].id}: ${err.message}`,
+          ),
+      );
+    }
+  }
+
+  /**
+   * Idempotently append one podium finish to a user's monthlyPodiums and mark
+   * the corresponding badge id as notified (so the client's badge-sync doesn't
+   * also pop a "new badge" toast on top of the season-prize notification).
+   * Returns true only when a new podium was actually recorded.
+   */
+  private async recordPodium(
+    userId: string,
+    year: number,
+    month: number,
+    rank: number,
+  ): Promise<boolean> {
+    return this.dataSource.transaction(async (em) => {
+      const repo = em.getRepository(User);
+      const user = await repo.findOne({
+        where: { id: userId },
+        select: ["id", "monthlyPodiums", "notifiedAchievementIds"],
+      });
+      if (!user) return false;
+
+      const podiums = user.monthlyPodiums ?? [];
+      if (
+        podiums.some(
+          (p) => p.year === year && p.month === month && p.rank === rank,
+        )
+      ) {
+        return false; // already recorded — nothing to do
+      }
+      podiums.push({ year, month, rank });
+
+      // Pre-mark the badge notified so it appears unlocked without a duplicate
+      // celebration popup.
+      const notified = user.notifiedAchievementIds ?? [];
+      const badgeId = PODIUM_BADGE_ID[rank];
+      if (badgeId && !notified.includes(badgeId)) notified.push(badgeId);
+
+      await repo.update(userId, {
+        monthlyPodiums: podiums,
+        notifiedAchievementIds: notified,
+      });
+      return true;
+    });
+  }
+
+  /**
+   * One-time (idempotent) backfill: grant podium badges to the top-3 of every
+   * already-closed season from its stored winnersSnapshot. Guarded so only one
+   * replica does the bulk work, and deduped per finish so re-running is safe.
+   */
+  private async backfillPodiums(): Promise<void> {
+    const lock = await this.redis.acquireLock("cron:podium-backfill", 3600);
+    if (!lock) return; // another replica is handling / has handled it
+
+    const closed = await this.seasonRepo.find({
+      where: { status: SeasonStatus.CLOSED },
+    });
+    let granted = 0;
+    for (const season of closed) {
+      const snapshot = Array.isArray(season.winnersSnapshot)
+        ? (season.winnersSnapshot as Array<{ userId?: string; rank?: number }>)
+        : [];
+      // Mirror the live award: only seasons with a real contest (a full ranked
+      // podium) counted for prizes, so only those grant a badge.
+      if (snapshot.length < SEASON_MIN_QUALIFIERS) continue;
+
+      for (const entry of snapshot) {
+        const rank = Number(entry?.rank);
+        const uid = entry?.userId;
+        if (!uid || !(rank >= 1 && rank <= 3)) continue;
+        const added = await this.recordPodium(
+          uid,
+          season.year,
+          season.weekNumber,
+          rank,
+        ).catch(() => false);
+        if (added) granted++;
+      }
+    }
+    if (granted > 0) {
+      this.logger.log(
+        `Podium backfill: recorded ${granted} podium finish(es) from ${closed.length} closed season(s)`,
+      );
+    }
   }
 
   private async creditSeasonPrizes(
