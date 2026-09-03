@@ -79,9 +79,14 @@ export class AmlService {
       "ASC",
     ).addOrderBy("a.createdAt", "DESC");
 
+    // Use offset/limit rather than skip/take: skip/take makes TypeORM wrap the
+    // query in a `SELECT DISTINCT` subquery to paginate parent rows, and Postgres
+    // rejects our raw `CASE ... ` ORDER BY there ("ORDER BY expressions must
+    // appear in select list") — a 500. The user join is ManyToOne (one row per
+    // alert), so plain offset/limit paginates correctly without the DISTINCT.
     const [data, total] = await qb
-      .skip((params.page - 1) * params.limit)
-      .take(params.limit)
+      .offset((params.page - 1) * params.limit)
+      .limit(params.limit)
       .getManyAndCount();
 
     return { data, total, page: params.page, pages: Math.ceil(total / params.limit) || 1 };
