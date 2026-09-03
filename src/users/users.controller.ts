@@ -42,6 +42,7 @@ import { OnboardService } from "./onboard.service";
 import { ParimutuelEngine } from "../markets/parimutuel.engine";
 import { DKGatewayService } from "../payment/services/dk-gateway/dk-gateway.service";
 import { UserNotificationService } from "./user-notification.service";
+import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import {
   ledgerBalance,
   ledgerBalanceForAccount,
@@ -218,6 +219,7 @@ export class UsersController {
     private readonly onboardService: OnboardService,
     private readonly dkGateway: DKGatewayService,
     private readonly userNotifications: UserNotificationService,
+    private readonly telegramSimple: TelegramSimpleService,
   ) {}
 
   /**
@@ -403,15 +405,28 @@ export class UsersController {
   async avatar(@Param("id") id: string, @Res() res: Response) {
     res.setHeader("Access-Control-Allow-Origin", "*");
     const user = await this.userRepo
-      .findOne({ where: { id }, select: ["photoUrl"] })
+      .findOne({ where: { id }, select: ["id", "telegramId", "photoUrl"] })
       .catch(() => null);
-    const url = user?.photoUrl;
+    let url = user?.photoUrl;
     if (!url) {
       res.status(404).end();
       return;
     }
     try {
-      const upstream = await fetch(url); // follows t.me redirects to the real photo
+      let upstream = await fetch(url); // follows t.me redirects to the real photo
+      // The Bot API's file link expires after ~1hr; a Mini App session can
+      // easily outlive that with no re-login to trigger AuthService's
+      // refresh, so re-resolve a fresh one here rather than 404ing forever.
+      if (!upstream.ok && this.telegramSimple.isEphemeralPhotoUrl(url) && user?.telegramId) {
+        const fresh = await this.telegramSimple
+          .getUserProfilePhotoUrl(Number(user.telegramId))
+          .catch(() => null);
+        if (fresh) {
+          await this.userRepo.update(user.id, { photoUrl: fresh });
+          url = fresh;
+          upstream = await fetch(url);
+        }
+      }
       if (!upstream.ok) {
         res.status(404).end();
         return;
