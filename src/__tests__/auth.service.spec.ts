@@ -144,6 +144,9 @@ function makeTelegramSimple() {
   return {
     sendMessage: jest.fn().mockResolvedValue(undefined),
     getUserProfilePhotoUrl: jest.fn().mockResolvedValue(null),
+    isEphemeralPhotoUrl: jest.fn(
+      (url?: string | null) => !!url && /api\.telegram\.org\/file\/bot/i.test(url),
+    ),
   };
 }
 

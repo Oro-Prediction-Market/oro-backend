@@ -161,14 +161,8 @@ export class AuthService {
     return !!url && !/\.svg(\?|$)/i.test(url);
   }
 
-  /**
-   * A temporary Telegram Bot API file link (`api.telegram.org/file/bot.../*.jpg`),
-   * which Telegram only guarantees for ~1 hour before it 404s. Every OTHER real
-   * photo (t.me / telegram.me CDN links, etc.) is long-lived and safe to keep;
-   * only these must be re-resolved each login or the avatar eventually breaks.
-   */
   private isEphemeralPhoto(url?: string | null): boolean {
-    return !!url && /api\.telegram\.org\/file\/bot/i.test(url);
+    return this.telegramSimple.isEphemeralPhotoUrl(url);
   }
 
   // ── Login / Register via Telegram ─────────────────────────────────────────

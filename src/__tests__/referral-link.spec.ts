@@ -39,6 +39,7 @@ describe("UsersController.getReferral link format", () => {
       {} as any, // onboardService
       {} as any, // dkGateway
       {} as any, // userNotifications
+      {} as any, // telegramSimple
     );
     return controller;
   }

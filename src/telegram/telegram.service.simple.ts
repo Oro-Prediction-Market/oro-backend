@@ -69,6 +69,10 @@ export class TelegramSimpleService {
     this.botToken = this.configService.getOrThrow<string>("TELEGRAM_BOT_TOKEN");
   }
 
+  isEphemeralPhotoUrl(url?: string | null): boolean {
+    return !!url && /api\.telegram\.org\/file\/bot/i.test(url);
+  }
+
   /**
    * Fetch user's Telegram profile photo URL via Bot API.
    * Returns the HTTPS URL or null if no photo is available.
