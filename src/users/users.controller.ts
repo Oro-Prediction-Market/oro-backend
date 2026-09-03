@@ -397,7 +397,12 @@ export class UsersController {
    * <canvas> can't draw them with crossOrigin without tainting (which breaks
    * the share card's PNG export). We re-serve the user's stored photo from our
    * own origin with `Access-Control-Allow-Origin: *` so the card can draw AND
-   * export it. Falls through to 404 when there's no photo.
+   * export it.
+   *
+   * This endpoint ALWAYS answers with an image, never a 404: the clients render
+   * an <img> whenever `photoUrl` is set, so an error status paints a broken-image
+   * icon rather than falling back to initials. When no real photo can be
+   * resolved we draw the initials ourselves — see {@link initialsAvatarSvg}.
    */
   @Get("avatar/:id")
   @Public()
@@ -405,42 +410,90 @@ export class UsersController {
   async avatar(@Param("id") id: string, @Res() res: Response) {
     res.setHeader("Access-Control-Allow-Origin", "*");
     const user = await this.userRepo
-      .findOne({ where: { id }, select: ["id", "telegramId", "photoUrl"] })
+      .findOne({
+        where: { id },
+        select: ["id", "telegramId", "photoUrl", "firstName", "username"],
+      })
       .catch(() => null);
-    let url = user?.photoUrl;
-    if (!url) {
+
+    if (!user) {
       res.status(404).end();
       return;
     }
-    try {
-      let upstream = await fetch(url); // follows t.me redirects to the real photo
-      // The Bot API's file link expires after ~1hr; a Mini App session can
-      // easily outlive that with no re-login to trigger AuthService's
-      // refresh, so re-resolve a fresh one here rather than 404ing forever.
-      if (!upstream.ok && this.telegramSimple.isEphemeralPhotoUrl(url) && user?.telegramId) {
-        const fresh = await this.telegramSimple
-          .getUserProfilePhotoUrl(Number(user.telegramId))
-          .catch(() => null);
-        if (fresh) {
-          await this.userRepo.update(user.id, { photoUrl: fresh });
-          url = fresh;
-          upstream = await fetch(url);
-        }
-      }
-      if (!upstream.ok) {
-        res.status(404).end();
-        return;
-      }
-      const buf = Buffer.from(await upstream.arrayBuffer());
-      res.setHeader(
-        "Content-Type",
-        upstream.headers.get("content-type") || "image/jpeg",
-      );
+
+    const photo = await this.resolveRealPhoto(user).catch(() => null);
+    if (photo) {
+      res.setHeader("Content-Type", photo.contentType);
       res.setHeader("Cache-Control", "public, max-age=1800");
-      res.end(buf);
-    } catch {
-      res.status(502).end();
+      res.end(photo.body);
+      return;
     }
+
+    // No real photo anywhere. Serve generated initials so the <img> still
+    // renders, on a shorter TTL so a newly-set photo appears reasonably soon.
+    res.setHeader("Content-Type", "image/svg+xml");
+    res.setHeader("Cache-Control", "public, max-age=300");
+    res.end(
+      this.initialsAvatarSvg(user.firstName || user.username || "", user.id),
+    );
+  }
+
+  /**
+   * The user's actual photo bytes, or null when they have none.
+   *
+   * Telegram serves a generated SVG placeholder (rather than a 404) for users
+   * with no public photo, so an SVG response counts as "no real photo" — the
+   * same rule `AuthService.isRealPhoto` applies to `photo_url`. Either that or
+   * an expired Bot API file link then triggers one Bot API re-resolve, whose
+   * result is persisted so the next request skips the round trip.
+   */
+  private async resolveRealPhoto(
+    user: Pick<User, "id" | "telegramId" | "photoUrl">,
+  ): Promise<{ body: Buffer; contentType: string } | null> {
+    const fetchImage = async (url: string) => {
+      const upstream = await fetch(url, {
+        signal: AbortSignal.timeout(8000),
+      }).catch(() => null);
+      if (!upstream?.ok) return null;
+      const contentType = upstream.headers.get("content-type") || "image/jpeg";
+      if (/svg/i.test(contentType)) return null; // placeholder, not a photo
+      return {
+        body: Buffer.from(await upstream.arrayBuffer()),
+        contentType,
+      };
+    };
+
+    if (user.photoUrl) {
+      const stored = await fetchImage(user.photoUrl);
+      if (stored) return stored;
+    }
+
+    if (!user.telegramId) return null;
+
+    const fresh = await this.telegramSimple
+      .getUserProfilePhotoUrl(Number(user.telegramId))
+      .catch(() => null);
+    if (!fresh || fresh === user.photoUrl) return null;
+
+    await this.userRepo.update(user.id, { photoUrl: fresh }).catch(() => {});
+    return fetchImage(fresh);
+  }
+
+  /**
+   * A circular initial on a colour derived from the user id, so the same person
+   * always gets the same colour and two people side by side rarely collide.
+   */
+  private initialsAvatarSvg(name: string, seed: string): string {
+    const initial = (name.trim().match(/[A-Za-z0-9]/)?.[0] ?? "?").toUpperCase();
+    let hash = 0;
+    for (const char of seed) hash = (hash * 31 + char.charCodeAt(0)) % 360;
+    return (
+      `<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160">` +
+      `<circle cx="80" cy="80" r="80" fill="hsl(${hash} 55% 42%)"/>` +
+      `<text x="80" y="80" fill="#fff" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" ` +
+      `font-size="76" font-weight="700" text-anchor="middle" dominant-baseline="central">${initial}</text>` +
+      `</svg>`
+    );
   }
 
   // ── Onboarding ────────────────────────────────────────────────────────────
