@@ -28,14 +28,26 @@ export class WeeklyReportJob {
     private readonly redis: RedisService,
   ) {}
 
-  /** Every Monday at 3:00 AM UTC (9:00 AM Bhutan time) */
-  @Cron("0 3 * * 1")
+  /**
+   * Every Monday at 9:00 AM Bhutan time.
+   *
+   * The timeZone is pinned explicitly rather than relying on the ambient
+   * process TZ. This used to read `@Cron("0 3 * * 1")` with a comment claiming
+   * "3:00 AM UTC (9:00 AM Bhutan time)" — but main.ts sets
+   * process.env.TZ = "Asia/Thimphu" before bootstrap, so the cron library read
+   * 3 AM as *Bhutan* time and the report landed at 3 AM local, six hours early.
+   */
+  @Cron("0 9 * * 1", { timeZone: "Asia/Thimphu" })
   async sendWeeklyReport(): Promise<void> {
     // Single-leader guard: the app runs multiple instances, each with its own
     // scheduler, so without this every instance would send the report. The lock
     // key is week-specific and intentionally NOT released — the first instance
     // to win sends, the rest skip, and the key expires before next Monday.
-    const weekKey = new Date().toISOString().slice(0, 10); // Monday's UTC date
+    // en-CA gives YYYY-MM-DD; pinning the zone keeps this on Monday's Bhutan
+    // date (the old toISOString() form resolved to Sunday's UTC date at 3 AM).
+    const weekKey = new Date().toLocaleDateString("en-CA", {
+      timeZone: "Asia/Thimphu",
+    });
     const lock = await this.redis.acquireLock(
       `cron:weekly-report:${weekKey}`,
       6 * 3600,
@@ -55,12 +67,19 @@ export class WeeklyReportJob {
   }
 
   private async _sendWeeklyReport(): Promise<void> {
+    // Boundaries are BHUTAN midnights, not UTC ones. process.env.TZ is
+    // Asia/Thimphu (main.ts), so plain setHours/setDate are already local.
+    //
+    // These used to be setUTCHours(0,0,0,0). Firing Monday morning, that
+    // floored to the preceding UTC midnight — 06:00 Bhutan time — so every
+    // report covered Sun 06:00 → Sun 06:00 BTT and silently dropped the back
+    // 18 hours of Sunday into the following week's numbers, while the header
+    // still claimed "Asia/Thimphu". Now the window is a clean Mon–Sun week.
     const now = new Date();
-    const weekStart = new Date(now);
-    weekStart.setUTCDate(now.getUTCDate() - 7);
-    weekStart.setUTCHours(0, 0, 0, 0);
     const weekEnd = new Date(now);
-    weekEnd.setUTCHours(0, 0, 0, 0);
+    weekEnd.setHours(0, 0, 0, 0);
+    const weekStart = new Date(weekEnd);
+    weekStart.setDate(weekEnd.getDate() - 7);
 
     const [growth, revenue, moneyFlow, gameplay, escrow, winners] =
       await Promise.all([
