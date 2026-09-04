@@ -2539,6 +2539,166 @@ export class AdminController {
     };
   }
 
+  // ── User Growth / Acquisition ─────────────────────────────────────────────
+  //
+  // Sibling implementation: WeeklyReportJob.fetchGrowth() in
+  // src/jobs/weekly-report.job.ts computes the same figures for the Monday
+  // Telegram digest. The SQL is duplicated on purpose — that job is a live cron
+  // that isn't exported from JobsModule, and extracting it buys nothing here.
+  // Keep the two in sync if the definition of "acquisition" ever changes.
+  @Get("user-growth")
+  @ApiOperation({
+    summary: "User acquisition stats — signups, source, referral, activation",
+  })
+  @ApiQuery({
+    name: "days",
+    required: false,
+    description: "Window size: 7, 30, 90, or 0 for all-time. Defaults to 30.",
+  })
+  async userGrowth(@Query("days") daysRaw?: string) {
+    const db = this.dataSource;
+
+    // Whitelist rather than parse-and-trust: the value is bound into
+    // make_interval() below, and an unbounded window is a free table scan.
+    const parsed = Number.parseInt(daysRaw ?? "", 10);
+    const days = [7, 30, 90, 0].includes(parsed) ? parsed : 30;
+
+    // days === 0 means all-time, so the window predicate drops out entirely and
+    // the queries take no bind parameters.
+    const inWindow =
+      days === 0
+        ? "TRUE"
+        : // $1::int is explicit so Postgres never has to infer the bind type.
+          `u."createdAt" >= NOW() - make_interval(days => $1::int)`;
+    const windowParams = days === 0 ? [] : [days];
+
+    // Signups are bucketed by BHUTAN day, not UTC. users."createdAt" is a bare
+    // TIMESTAMP (no zone) holding UTC, so it needs the double cast — unlike the
+    // timestamptz columns in aml-detector.service.ts, which take a single one.
+    // Note the DAU chart in behavioral-analytics buckets in UTC, so the two
+    // charts' day boundaries differ by six hours. That is deliberate: DAU reads
+    // from user_events, and re-bucketing it is out of scope here.
+    const localDay = `("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu')`;
+    // NOW() is already timestamptz, so it takes a SINGLE cast to reach Thimphu
+    // wall-clock. Double-casting it like the column above would round-trip the
+    // offset and land six hours off — which near midnight is the wrong day.
+    const nowLocalDay = `(NOW() AT TIME ZONE 'Asia/Thimphu')`;
+
+    // Admins are counted like anyone else — there are only a handful, and
+    // silently dropping them would make totals disagree with User Management.
+    const [
+      totalsRows,
+      signupsPerDay,
+      byProvider,
+      referralRows,
+      topReferrers,
+      activationRows,
+    ] = await Promise.all([
+      // All-time total plus fixed today/7d/30d context. Independent of `days`
+      // so the headline "Total Users" tile never moves when the range changes.
+      db.query(`
+        SELECT
+          COUNT(*)::int                                                        AS "allTime",
+          COUNT(*) FILTER (WHERE DATE(${localDay}) = DATE(${nowLocalDay}))::int AS today,
+          COUNT(*) FILTER (WHERE "createdAt" >= NOW() - INTERVAL '7 days')::int  AS last7,
+          COUNT(*) FILTER (WHERE "createdAt" >= NOW() - INTERVAL '30 days')::int AS last30
+        FROM users
+      `),
+
+      // Daily signups across the window, Thimphu days.
+      db.query(
+        `SELECT DATE(${localDay}) AS date, COUNT(*)::int AS count
+         FROM users u
+         WHERE ${inWindow}
+         GROUP BY 1
+         ORDER BY 1 ASC`,
+        windowParams,
+      ),
+
+      // Acquisition source. DISTINCT ON picks each user's EARLIEST auth method,
+      // so a user with both telegram and dkbank counts once, under whichever
+      // they signed up with — these counts sum to newUsers.
+      db.query(
+        `SELECT provider, COUNT(*)::int AS count FROM (
+           SELECT DISTINCT ON (u.id) u.id, am.provider
+           FROM users u
+           JOIN auth_methods am ON am."userId" = u.id
+           WHERE ${inWindow}
+           ORDER BY u.id, am."createdAt" ASC
+         ) t
+         GROUP BY provider
+         ORDER BY count DESC`,
+        windowParams,
+      ),
+
+      // Referred vs organic within the window.
+      db.query(
+        `SELECT
+           COUNT(*)::int                                                AS acquired,
+           COUNT(*) FILTER (WHERE u."referredByUserId" IS NOT NULL)::int AS "viaReferral"
+         FROM users u
+         WHERE ${inWindow}`,
+        windowParams,
+      ),
+
+      // Who brought them in. All-time, not windowed — a leaderboard of
+      // referrers is only useful cumulatively.
+      db.query(`
+        SELECT
+          u."referredByUserId"                                  AS "userId",
+          COALESCE(NULLIF(TRIM(CONCAT_WS(' ', r."firstName", r."lastName")), ''), r.username, 'Unknown') AS name,
+          COUNT(*)::int                                         AS count
+        FROM users u
+        JOIN users r ON r.id = u."referredByUserId"
+        WHERE u."referredByUserId" IS NOT NULL
+        GROUP BY u."referredByUserId", r."firstName", r."lastName", r.username
+        ORDER BY count DESC
+        LIMIT 5
+      `),
+
+      // Activation: of the users acquired in this window, how many have ever
+      // placed a bet. EXISTS rather than a join so a user with 50 bets counts
+      // once. The EXISTS is computed in a subquery and FILTERed on as a plain
+      // boolean — Postgres restricts what may appear directly in a FILTER clause.
+      db.query(
+        `SELECT
+           COUNT(*)::int                          AS acquired,
+           COUNT(*) FILTER (WHERE activated)::int AS "placedBet"
+         FROM (
+           SELECT EXISTS (
+             SELECT 1 FROM positions p WHERE p."userId" = u.id
+           ) AS activated
+           FROM users u
+           WHERE ${inWindow}
+         ) t`,
+        windowParams,
+      ),
+    ]);
+
+    const totals = totalsRows[0] ?? {
+      allTime: 0,
+      today: 0,
+      last7: 0,
+      last30: 0,
+    };
+    const referral = referralRows[0] ?? { acquired: 0, viaReferral: 0 };
+    const activation = activationRows[0] ?? { acquired: 0, placedBet: 0 };
+
+    return {
+      days,
+      totals,
+      newUsers: referral.acquired,
+      signupsPerDay,
+      byProvider,
+      referral: {
+        viaReferral: referral.viaReferral,
+        organic: referral.acquired - referral.viaReferral,
+        topReferrers,
+      },
+      activation,
+    };
+  }
+
   // ── Revenue Distribution ────────────────────────────────────────────────────
 
   @Get("revenue/summary")

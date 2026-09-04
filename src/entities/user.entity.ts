@@ -25,6 +25,8 @@ export enum KycStatus {
 // form does not register, and DB_SYNCHRONIZE drops any index it cannot find in
 // entity metadata.
 @Index("IDX_users_kycStatus", ["kycStatus"])
+// Backs the admin user-growth panel, which filters and groups on createdAt.
+@Index("IDX_users_createdAt", ["createdAt"])
 @Entity("users")
 export class User {
   @PrimaryGeneratedColumn("uuid")
