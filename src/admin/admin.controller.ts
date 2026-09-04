@@ -741,6 +741,36 @@ export class AdminController {
     }
     const [data, total] = await qb.getManyAndCount();
     await this.marketsService.attachBooksTo(data);
+
+    // Attach the currency each market's pool is denominated in, so the admin
+    // odds panel can label pool amounts "Nu" vs "$" instead of assuming BTN.
+    // Markets carry no currency column — the pool takes whatever currency the
+    // bettors used, and a user's currency is fixed at signup, so in practice a
+    // market is single-currency. MIN() collapses the group; a market that
+    // somehow mixed would show its alphabetically-first currency, which is
+    // wrong but no worse than today's hardcoded "NU.".
+    if (data.length > 0) {
+      const rows = await this.dataSource.query(
+        `SELECT "marketId", MIN(currency) AS currency
+           FROM positions
+          WHERE "marketId" = ANY($1)
+          GROUP BY "marketId"`,
+        [data.map((m) => m.id)],
+      );
+      const byMarket = new Map<string, string>(
+        (rows as { marketId: string; currency: string }[]).map((r) => [
+          r.marketId,
+          r.currency,
+        ]),
+      );
+      for (const m of data) {
+        // No positions yet → nothing staked, so the label is cosmetic; BTN is
+        // the platform default and matches users.currency's default.
+        (m as Market & { poolCurrency: string }).poolCurrency =
+          byMarket.get(m.id) ?? "BTN";
+      }
+    }
+
     return {
       data,
       total,
