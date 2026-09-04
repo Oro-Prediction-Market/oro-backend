@@ -1847,6 +1847,246 @@ export class AdminController {
     };
   }
 
+  // ── Per-user dossier (AML investigation / user detail) ────────────────────
+  //
+  // Everything an admin needs to judge one account: lifetime money in/out per
+  // book, which rails it moved through, betting behaviour, bank identity, and
+  // a recent ledger slice. Backs the User Dossier drawer, opened from both the
+  // AML alerts table and User Management.
+  //
+  // Two invariants this endpoint must never break:
+  //  1. NEVER sum across currencies. There is no BTN<->USDT rate, and
+  //     ledger-currency-guard.spec fails the build on an unfiltered balance
+  //     read. Every figure below is grouped by currency and returned per book.
+  //  2. transactions.amount is SIGNED (debits negative) while payments.amount,
+  //     positions.amount and crypto_withdrawals.amountUsdt are all POSITIVE.
+  //     Hence SUM(amount) for balances but SUM(ABS(amount)) for gross flows.
+  @Get("users/:userId/dossier")
+  @ApiOperation({
+    summary: "Full financial + behavioural dossier for one user",
+  })
+  @ApiQuery({
+    name: "reveal",
+    required: false,
+    description:
+      "true to return unmasked CID/account number. Writes an audit log.",
+  })
+  async getUserDossier(
+    @Param("userId", ParseUUIDPipe) userId: string,
+    @Request() req: any,
+    @Query("reveal") revealRaw?: string,
+  ) {
+    const db = this.dataSource;
+    const reveal = revealRaw === "true";
+
+    const user = await this.userRepo.findOneBy({ id: userId });
+    if (!user) throw new NotFoundException("User not found");
+
+    const [bankRows, ledgerRows, paymentRows, cryptoRows, betRows, txRows] =
+      await Promise.all([
+        // Bank identity. linked_bank_accounts is canonical; users.dk* is the
+        // legacy PWA CID-only fallback, so COALESCE exactly as listUsers does.
+        db.query(
+          `SELECT
+             COALESCE(lba.cid, u."dkCid")                     AS cid,
+             COALESCE(lba."accountNumber", u."dkAccountNumber") AS "accountNumber",
+             COALESCE(lba."accountName", u."dkAccountName")     AS "accountName",
+             (lba.id IS NOT NULL)                             AS verified
+           FROM users u
+           LEFT JOIN linked_bank_accounts lba
+             ON lba."userId" = u.id AND lba."isDefault" = true AND lba."isVerified" = true
+           WHERE u.id = $1`,
+          [userId],
+        ),
+
+        // The whole ledger folded to one row per (currency, type). Every
+        // headline total is derived from this in TS rather than in six more
+        // round trips. Covers BOTH withdrawal rails: the USDT path writes a
+        // negative transaction too, so type='withdrawal' is rail-agnostic.
+        db.query(
+          `SELECT currency, type,
+                  SUM(amount)::float      AS net,
+                  SUM(ABS(amount))::float AS gross,
+                  COUNT(*)::int           AS count
+           FROM transactions
+           WHERE "userId" = $1
+           GROUP BY currency, type`,
+          [userId],
+        ),
+
+        // Where the money physically moved — BTN/DK rail and USDT deposits.
+        // Only status='success' counts as money actually moved.
+        db.query(
+          `SELECT method, type, currency,
+                  COUNT(*)::int      AS count,
+                  SUM(amount)::float AS total
+           FROM payments
+           WHERE "userId" = $1 AND status = 'success'
+           GROUP BY method, type, currency
+           ORDER BY total DESC`,
+          [userId],
+        ),
+
+        // USDT withdrawals live in their own table and never write a payments
+        // row, so the rail breakdown above would miss them entirely. The
+        // three-state split (completed / in-flight / awaiting approval) is
+        // deliberate — a reserved-but-unsent withdrawal is not money gone.
+        db.query(
+          `SELECT
+             COUNT(*)::int AS count,
+             SUM("amountUsdt") FILTER (
+               WHERE "approvalStatus" = 'approved' AND "remoteStatus" = 'completed'
+             )::float AS completed,
+             SUM("amountUsdt") FILTER (
+               WHERE "approvalStatus" = 'approved' AND "remoteStatus" IS DISTINCT FROM 'completed'
+             )::float AS "inFlight",
+             SUM("amountUsdt") FILTER (
+               WHERE "approvalStatus" = 'pending_approval'
+             )::float AS pending
+           FROM crypto_withdrawals
+           WHERE "userId" = $1`,
+          [userId],
+        ),
+
+        // Betting behaviour. Reads positions, not the ledger: positions.amount
+        // includes bonus-funded stakes, which is the right denominator for
+        // "how does this person bet" even though it overstates real money.
+        db.query(
+          `SELECT
+             p.currency,
+             COUNT(*)::int                                        AS count,
+             SUM(p.amount)::float                                 AS staked,
+             AVG(p.amount)::float                                 AS "avgStake",
+             MAX(p.amount)::float                                 AS "largestBet",
+             COUNT(*) FILTER (WHERE p.status = 'won')::int        AS won,
+             COUNT(*) FILTER (WHERE p.status = 'lost')::int       AS lost,
+             COUNT(*) FILTER (WHERE p.status = 'pending')::int    AS pending,
+             SUM(p.payout)::float                                 AS payout,
+             (SELECT m2.category FROM positions p2
+                JOIN markets m2 ON m2.id = p2."marketId"
+               WHERE p2."userId" = $1
+               GROUP BY m2.category ORDER BY COUNT(*) DESC LIMIT 1) AS "topCategory"
+           FROM positions p
+           WHERE p."userId" = $1
+           GROUP BY p.currency`,
+          [userId],
+        ),
+
+        // Recent ledger slice. Deliberately capped — this is a preview, not
+        // the audit trail; the full history lives on the Payment Log page.
+        db.query(
+          `SELECT id, type, amount::float AS amount, currency,
+                  "balanceAfter"::float AS "balanceAfter",
+                  note, "isBonus", "createdAt"
+           FROM transactions
+           WHERE "userId" = $1
+           ORDER BY "createdAt" DESC
+           LIMIT 25`,
+          [userId],
+        ),
+      ]);
+
+    // Fold the ledger rows into one block per currency book.
+    const books: Record<string, any> = {};
+    const bookFor = (currency: string) =>
+      (books[currency] ??= {
+        currency,
+        balance: 0,
+        deposited: 0,
+        withdrawn: 0,
+        bet: 0,
+        won: 0,
+        bonusCredited: 0,
+      });
+    for (const r of ledgerRows as {
+      currency: string;
+      type: string;
+      net: number;
+      gross: number;
+    }[]) {
+      const b = bookFor(r.currency);
+      b.balance += r.net; // signed — this is the actual balance
+      if (r.type === "deposit") b.deposited += r.gross;
+      else if (r.type === "withdrawal") b.withdrawn += r.gross;
+      else if (r.type === "bet_placed") b.bet += r.gross;
+      else if (r.type === "bet_payout") b.won += r.gross;
+      else if (
+        r.type === "free_credit" ||
+        r.type === "referral_bonus" ||
+        r.type === "streak_bonus"
+      )
+        b.bonusCredited += r.gross;
+    }
+    for (const b of Object.values(books) as any[]) {
+      b.net = b.deposited - b.withdrawn;
+    }
+
+    const bank = bankRows[0] ?? {
+      cid: null,
+      accountNumber: null,
+      accountName: null,
+      verified: false,
+    };
+
+    // Mask by default. A reveal is a deliberate, audited act — an admin
+    // pulling up a dossier to triage an alert should not casually expose a
+    // customer's CID and account number to whoever is looking at the screen.
+    const mask = (v: string | null) =>
+      !v ? null : v.length <= 4 ? "••••" : `••••${v.slice(-4)}`;
+
+    if (reveal) {
+      await this.auditService.log({
+        adminId: req.user.userId,
+        isAdmin: true,
+        action: AuditAction.USER_VIEW,
+        entityType: "user",
+        entityId: userId,
+        after: { revealed: ["cid", "accountNumber"] },
+        ipAddress: req.ip,
+      });
+    }
+
+    const crypto = cryptoRows[0] ?? {};
+
+    return {
+      user: {
+        id: user.id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        username: user.username,
+        email: user.email,
+        phoneNumber: user.phoneNumber,
+        telegramId: user.telegramId,
+        currency: user.currency,
+        kycStatus: user.kycStatus,
+        reputationTier: user.reputationTier,
+        totalPredictions: user.totalPredictions,
+        isAdmin: user.isAdmin,
+        referredByUserId: user.referredByUserId,
+        createdAt: user.createdAt,
+      },
+      bank: {
+        accountName: bank.accountName,
+        verified: bank.verified,
+        cid: reveal ? bank.cid : mask(bank.cid),
+        accountNumber: reveal
+          ? bank.accountNumber
+          : mask(bank.accountNumber),
+        masked: !reveal,
+      },
+      books: Object.values(books),
+      sources: paymentRows,
+      usdtWithdrawals: {
+        count: crypto.count ?? 0,
+        completed: crypto.completed ?? 0,
+        inFlight: crypto.inFlight ?? 0,
+        pending: crypto.pending ?? 0,
+      },
+      betting: betRows,
+      recentTransactions: txRows,
+    };
+  }
+
   // ── Reconciliation ────────────────────────────────────────────────────────
   @Get("reconciliation")
   @ApiOperation({ summary: "Financial reconciliation snapshot" })
