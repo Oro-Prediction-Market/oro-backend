@@ -67,17 +67,21 @@ export class WeeklyReportJob {
   }
 
   private async _sendWeeklyReport(): Promise<void> {
-    // Boundaries are BHUTAN midnights, not UTC ones. process.env.TZ is
-    // Asia/Thimphu (main.ts), so plain setHours/setDate are already local.
+    // The window ENDS AT SEND TIME, not at Monday midnight, and starts exactly
+    // 7 days earlier — so it is still a clean week with no gap and no overlap.
     //
-    // These used to be setUTCHours(0,0,0,0). Firing Monday morning, that
-    // floored to the preceding UTC midnight — 06:00 Bhutan time — so every
-    // report covered Sun 06:00 → Sun 06:00 BTT and silently dropped the back
-    // 18 hours of Sunday into the following week's numbers, while the header
-    // still claimed "Asia/Thimphu". Now the window is a clean Mon–Sun week.
+    // Ending at midnight left a nine-hour blind spot. 73% of Sunday-closing
+    // markets settle on Monday (avg lag 7.9h), so a Sunday 21:30 match settles
+    // ~05:30 Monday: after a midnight cutoff, but before the 09:00 send. The
+    // data was on the server when the report was built and still got excluded,
+    // pushing essentially every Sunday match's revenue and payouts a week late.
+    // Anchoring the boundary to `now` closes that gap.
+    //
+    // (These were setUTCHours(0,0,0,0) before that — 06:00 Bhutan time — which
+    // dropped the back 18 hours of Sunday outright. process.env.TZ is
+    // Asia/Thimphu per main.ts, so plain Date arithmetic is already local.)
     const now = new Date();
     const weekEnd = new Date(now);
-    weekEnd.setHours(0, 0, 0, 0);
     const weekStart = new Date(weekEnd);
     weekStart.setDate(weekEnd.getDate() - 7);
 
@@ -194,15 +198,25 @@ export class WeeklyReportJob {
         settled: "0",
       };
 
-    // Top market by pool this week
+    // Biggest EVENT that ran this week — keyed on closesAt, not settledAt.
+    //
+    // This used to join settlements and filter on s.settledAt, which ranked by
+    // when money was booked rather than when the event happened. A market
+    // settled late then hijacked a later week's headline: a UFC fight that
+    // closed 29 Aug took 3.1 days to settle and became the 31 Aug–6 Sep top
+    // market, while that week's actual biggest match (Arsenal, closing Sunday)
+    // was absent because it settled after the window.
+    //
+    // closesAt is immune to settlement lag, and needs no settlement join — a
+    // market that closed this week is this week's, however long payout takes.
+    // Cancelled markets are excluded; their pool was refunded, not contested.
     const top = await this.dataSource
       .getRepository(Market)
       .createQueryBuilder("m")
-      .leftJoin(Settlement, "s", "s.marketId = m.id")
       .addSelect("m.title", "title")
       .addSelect("m.totalPool", "pool")
-      .where("s.settledAt >= :from AND s.settledAt < :to", { from, to })
-      .andWhere("s.cancelReason IS NULL")
+      .where("m.closesAt >= :from AND m.closesAt < :to", { from, to })
+      .andWhere("m.status != :cancelled", { cancelled: "cancelled" })
       .orderBy("m.totalPool", "DESC")
       .limit(1)
       .getRawOne<{ title: string; pool: string }>();
