@@ -8,6 +8,17 @@ import { User } from "../entities/user.entity";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import { RedisService } from "../redis/redis.service";
 
+/** Display names for the reputation ladder — see calcTier in reputation.service.ts. */
+const TIER_LABELS: Record<string, string> = {
+  legend: "Legend",
+  prophet: "Prophet",
+  hot_hand: "Hot Hand",
+  analyst: "Analyst",
+  sharpshooter: "Sharpshooter",
+  scout: "Scout",
+  rookie: "Rookie",
+};
+
 export interface LeaderboardEntry {
   rank: number;
   userId: string;
@@ -200,14 +211,7 @@ export class LeaguesService {
     const lines = board.map((e) => {
       const medal = medals[e.rank - 1] ?? `${e.rank}.`;
       const name = e.username ? `@${e.username}` : (e.firstName ?? "Unknown");
-      const tierLabel =
-        e.reputationTier === "legend"
-          ? "Legend"
-          : e.reputationTier === "hot_hand"
-            ? "Hot Hand"
-            : e.reputationTier === "sharpshooter"
-              ? "Sharpshooter"
-              : "Rookie";
+      const tierLabel = TIER_LABELS[e.reputationTier ?? "rookie"] ?? "Rookie";
       const score =
         e.reputationScore != null
           ? `${Math.round(e.reputationScore * 100)}%`

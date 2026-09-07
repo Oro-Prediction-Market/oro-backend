@@ -2093,7 +2093,18 @@ Good luck! 🍀
           ? `${correctPredictions}/${totalPredictions} correct`
           : null;
 
-      const tierOrder = ["rookie", "sharpshooter", "hot_hand", "legend"];
+      // Must list every rung, lowest first, and stay in sync with calcTier in
+      // reputation.service.ts — a tier missing here has indexOf() === -1, so a
+      // promotion into it silently never fires a notification.
+      const tierOrder = [
+        "rookie",
+        "scout",
+        "sharpshooter",
+        "analyst",
+        "hot_hand",
+        "prophet",
+        "legend",
+      ];
       const tierUpgraded =
         tierOrder.indexOf(tierNow) > tierOrder.indexOf(tierBefore);
 

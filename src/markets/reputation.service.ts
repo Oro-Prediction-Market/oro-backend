@@ -38,6 +38,22 @@ import { Market } from "../entities/market.entity";
  *   prior      = 0.52 if CID-verified, else 0.50
  *   adjusted   = raw × confidence + prior × (1 − confidence)
  */
+
+/**
+ * How much each rung of the ladder contributes to a market's reputationDepth.
+ * Graded, not binary — see the comment at the depthSum reduction below.
+ * Ordered lowest to highest; keep in sync with calcTier.
+ */
+const TIER_DEPTH_WEIGHT: Record<string, number> = {
+  rookie: 0,
+  scout: 0.15,
+  sharpshooter: 0.35,
+  analyst: 0.6,
+  hot_hand: 0.8,
+  prophet: 0.9,
+  legend: 1,
+};
+
 @Injectable()
 export class ReputationService {
   private readonly logger = new Logger(ReputationService.name);
@@ -431,10 +447,18 @@ export class ReputationService {
 
     const bettors = Array.from(seen.values());
 
-    // reputationDepth — decay-weighted fraction of reliable/expert bettors
+    // reputationDepth — decay-weighted average standing of this market's
+    // bettors, graded across the ladder rather than a binary expert flag.
+    //
+    // This was `hot_hand || legend ? 1 : 0`, which made the term ~0 on nearly
+    // every market: those tiers hold a handful of users platform-wide. Since
+    // depth is 35% of the composite, that capped the market confidence score
+    // at ~0.65 against a 0.60 "High" threshold — so High was effectively
+    // unreachable. Grading it lets an ordinary market of decent predictors
+    // register, while still rewarding genuine expertise most.
     const depthSum = bettors.reduce((sum, b) => {
-      const isQualified = b.tier === "hot_hand" || b.tier === "legend" ? 1 : 0;
-      return sum + isQualified * this.decayFactor(b.lastActiveAt);
+      const weight = TIER_DEPTH_WEIGHT[b.tier] ?? 0;
+      return sum + weight * this.decayFactor(b.lastActiveAt);
     }, 0);
     const reputationDepth = parseFloat(
       (depthSum / participantCount).toFixed(4),
@@ -483,18 +507,46 @@ export class ReputationService {
   }
 
   /**
-   * Tier based on volume and accuracy (unchanged thresholds).
-   *   rookie        < 10 predictions
-   *   sharpshooter  10–49 predictions
-   *   hot_hand      50+ predictions AND accuracy >= 65%
-   *   legend        100+ predictions AND accuracy >= 75%
+   * Tier: a seven-rung career ladder, each rung gated on BOTH a minimum number
+   * of resolved predictions and a minimum raw win rate. Evaluated top-down —
+   * the first rung whose two conditions both hold wins.
+   *
+   *   legend        > 200 picks AND >= 80%
+   *   prophet       > 100 picks AND >= 70%
+   *   hot_hand      >  70 picks AND >= 65%
+   *   analyst       >  50 picks AND >= 60%
+   *   sharpshooter  >  30 picks AND >= 50%
+   *   scout         >= 10 picks           (volume milestone, no accuracy bar)
+   *   rookie        <  10 picks
+   *
+   * Rookie and Scout carry no accuracy requirement on purpose: they are the
+   * first two steps, and gating them on win rate would punish beginners at
+   * exactly the point we most want them to keep predicting. Scout's threshold
+   * is also the leaderboard's entry bar, so reaching it means two things at
+   * once.
+   *
+   * The win rate here is the RAW record, not the confidence-adjusted
+   * reputationScore. The pick-count gate performs the small-sample control
+   * instead — you cannot reach Legend off a short hot streak because you need
+   * 200 resolved predictions regardless of accuracy. This is why the ladder is
+   * independent of the shrinkage used for reputationScore.
+   *
+   * NOTE: tiers therefore do NOT track leaderboard order, which sorts on the
+   * shrunk reputationScore. A Scout can outrank a Hot Hand. That is intended:
+   * a tier is a career achievement, a rank is current form.
+   *
+   * Keep TIER_ORDER in parimutuel.engine.ts in sync — it drives the promotion
+   * notification, and a rung missing from that array never fires one.
    */
   calcTier(total: number, correct: number): string {
     if (total < 10) return "rookie";
     const accuracy = correct / total;
-    if (total >= 100 && accuracy >= 0.75) return "legend";
-    if (total >= 50 && accuracy >= 0.65) return "hot_hand";
-    return "sharpshooter";
+    if (total > 200 && accuracy >= 0.8) return "legend";
+    if (total > 100 && accuracy >= 0.7) return "prophet";
+    if (total > 70 && accuracy >= 0.65) return "hot_hand";
+    if (total > 50 && accuracy >= 0.6) return "analyst";
+    if (total > 30 && accuracy >= 0.5) return "sharpshooter";
+    return "scout";
   }
 
   /**

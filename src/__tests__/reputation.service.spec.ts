@@ -100,30 +100,52 @@ describe("ReputationService.adjustedScore", () => {
 describe("ReputationService.calcTier", () => {
   const svc = new ReputationService(null as any, null as any, null as any);
 
-  it("rookie when total < 10", () => {
-    expect(svc.calcTier(5, 5)).toBe("rookie");
+  it("rookie below 10 predictions, whatever the accuracy", () => {
+    expect(svc.calcTier(5, 5)).toBe("rookie"); // 100% but too few
     expect(svc.calcTier(0, 0)).toBe("rookie");
+    expect(svc.calcTier(9, 9)).toBe("rookie"); // boundary: 9 is still rookie
   });
 
-  it("sharpshooter when 10–49 predictions regardless of accuracy", () => {
-    expect(svc.calcTier(10, 2)).toBe("sharpshooter");
-    expect(svc.calcTier(49, 49)).toBe("sharpshooter");
+  it("scout at 10+ predictions with no accuracy requirement", () => {
+    expect(svc.calcTier(10, 0)).toBe("scout"); // 0% still promotes
+    expect(svc.calcTier(10, 2)).toBe("scout");
+    expect(svc.calcTier(30, 30)).toBe("scout"); // 100% but 30 is not > 30
   });
 
-  it("hot_hand when 50+ predictions and accuracy >= 65%", () => {
-    expect(svc.calcTier(50, 33)).toBe("hot_hand"); // 33/50 = 66%
+  it("sharpshooter above 30 predictions at 50%+", () => {
+    expect(svc.calcTier(31, 16)).toBe("sharpshooter"); // 51.6%
+    expect(svc.calcTier(50, 25)).toBe("sharpshooter"); // exactly 50%
   });
 
-  it("still sharpshooter when 50+ predictions but accuracy < 65%", () => {
-    expect(svc.calcTier(50, 30)).toBe("sharpshooter"); // 30/50 = 60%
+  it("falls back to scout when the pick bar is cleared but the accuracy bar is not", () => {
+    expect(svc.calcTier(31, 15)).toBe("scout"); // 48.4% — under 50%
+    expect(svc.calcTier(250, 100)).toBe("scout"); // 40% over a long record
   });
 
-  it("legend when 100+ predictions and accuracy >= 75%", () => {
-    expect(svc.calcTier(100, 80)).toBe("legend"); // 80%
+  it("analyst above 50 predictions at 60%+", () => {
+    expect(svc.calcTier(51, 31)).toBe("analyst"); // 60.8%
+    expect(svc.calcTier(70, 42)).toBe("analyst"); // exactly 60%, 70 is not > 70
   });
 
-  it("hot_hand (not legend) when 100+ predictions but accuracy < 75%", () => {
-    expect(svc.calcTier(100, 70)).toBe("hot_hand"); // 70%
+  it("hot_hand above 70 predictions at 65%+", () => {
+    expect(svc.calcTier(71, 47)).toBe("hot_hand"); // 66.2%
+    expect(svc.calcTier(100, 80)).toBe("hot_hand"); // 80% but 100 is not > 100
+  });
+
+  it("prophet above 100 predictions at 70%+", () => {
+    expect(svc.calcTier(101, 71)).toBe("prophet"); // 70.3%
+    expect(svc.calcTier(200, 180)).toBe("prophet"); // 90% but 200 is not > 200
+  });
+
+  it("legend above 200 predictions at 80%+", () => {
+    expect(svc.calcTier(201, 161)).toBe("legend"); // 80.1%
+  });
+
+  it("drops to the highest rung whose BOTH conditions hold", () => {
+    // Volume for legend, accuracy only good enough for hot_hand.
+    expect(svc.calcTier(300, 200)).toBe("hot_hand"); // 66.7%
+    // Accuracy for legend, volume only good enough for analyst.
+    expect(svc.calcTier(60, 54)).toBe("analyst"); // 90%
   });
 });
 
