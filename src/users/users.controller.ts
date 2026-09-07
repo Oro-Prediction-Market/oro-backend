@@ -1079,7 +1079,7 @@ export class UsersController {
         };
       });
 
-      // One row per qualifying user (>=10 monthly predictions); count the rows.
+      // One row per qualifying user (>=15 monthly predictions); count the rows.
       // NB: GROUP BY u.id + COUNT(DISTINCT u.id) + getRawOne() always returns 1,
       // because each group is a single user — hence the old "1 ranked" bug.
       const totalRankedRows = await this.betRepo
@@ -1153,15 +1153,40 @@ export class UsersController {
       if (meInBoard) {
         myRank = meInBoard.rank;
       } else {
-        const above = await this.userRepo
-          .createQueryBuilder("u")
-          .where("u.totalPredictions >= 10")
-          .andWhere(
-            '(u.reputationScore > (SELECT "reputationScore" FROM users WHERE id = :myId) OR (u.reputationScore = (SELECT "reputationScore" FROM users WHERE id = :myId) AND u.correctPredictions > (SELECT "correctPredictions" FROM users WHERE id = :myId)))',
-            { myId },
-          )
-          .getCount();
-        myRank = above + 1;
+        // Rank the caller only if they clear the board's own entry bar. The
+        // count below filters everyone ELSE to >= 10 predictions but never
+        // checked the caller, which broke two ways:
+        //
+        //   1. A user with 1-9 predictions is not eligible for the board, yet
+        //      still got a position ("300th of 424") instead of the
+        //      "N more to rank" state.
+        //   2. A user with no predictions has reputationScore NULL, and in SQL
+        //      `u.reputationScore > NULL` is NULL — never true. Nothing counted
+        //      as "above" them, so `above + 1` handed them rank #1, above the
+        //      actual leaders.
+        //
+        // `myRank: null` is the not-ranked state the client already renders,
+        // and is what the weekly branch above already returns.
+        const me = await this.userRepo.findOne({
+          where: { id: myId },
+          select: ["id", "totalPredictions", "reputationScore"],
+        });
+        const eligible =
+          me != null &&
+          Number(me.totalPredictions) >= 10 &&
+          me.reputationScore != null;
+
+        if (eligible) {
+          const above = await this.userRepo
+            .createQueryBuilder("u")
+            .where("u.totalPredictions >= 10")
+            .andWhere(
+              '(u.reputationScore > (SELECT "reputationScore" FROM users WHERE id = :myId) OR (u.reputationScore = (SELECT "reputationScore" FROM users WHERE id = :myId) AND u.correctPredictions > (SELECT "correctPredictions" FROM users WHERE id = :myId)))',
+              { myId },
+            )
+            .getCount();
+          myRank = above + 1;
+        }
       }
     }
 
