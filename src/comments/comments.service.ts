@@ -15,6 +15,7 @@ import {
   CommentFlagReason,
   MarketCommentFlag,
 } from "../entities/market-comment-flag.entity";
+import { MarketCommentLike } from "../entities/market-comment-like.entity";
 import { Market, MarketStatus } from "../entities/market.entity";
 import { User } from "../entities/user.entity";
 import { UserNotificationService } from "../users/user-notification.service";
@@ -65,6 +66,10 @@ export interface CommentView {
   parentId: string | null;
   /** Live replies under this comment. Always 0 on a reply — depth is capped at 1. */
   replyCount: number;
+  /** Hearts on this comment. */
+  likeCount: number;
+  /** Whether the caller is one of them. False when signed out. */
+  hasLiked: boolean;
   /** True once the author has rewritten it, so the apps can mark it. */
   edited: boolean;
   /**
@@ -87,6 +92,8 @@ export class CommentsService {
     private readonly repo: Repository<MarketComment>,
     @InjectRepository(MarketCommentFlag)
     private readonly flagRepo: Repository<MarketCommentFlag>,
+    @InjectRepository(MarketCommentLike)
+    private readonly likeRepo: Repository<MarketCommentLike>,
     @InjectRepository(Market)
     private readonly marketRepo: Repository<Market>,
     @InjectRepository(User)
@@ -174,15 +181,21 @@ export class CommentsService {
     if (rows.length === 0) return [];
 
     const authorIds = [...new Set(rows.map((r) => r.userId))];
-    const [sides, flagged] = await Promise.all([
+    const [sides, flagged, liked] = await Promise.all([
       this.resolveSides(marketId, authorIds),
       this.flaggedByViewer(
         rows.map((r) => r.id),
         viewerId,
       ),
+      this.likedByViewer(
+        rows.map((r) => r.id),
+        viewerId,
+      ),
     ]);
 
-    return rows.map((row) => this.toView(row, viewerId, sides, flagged));
+    return rows.map((row) =>
+      this.toView(row, viewerId, sides, flagged, liked),
+    );
   }
 
   /**
@@ -219,7 +232,7 @@ export class CommentsService {
 
     if (rows.length === 0) return [];
 
-    const [sides, flagged] = await Promise.all([
+    const [sides, flagged, liked] = await Promise.all([
       this.resolveSides(parent.marketId, [
         ...new Set(rows.map((r) => r.userId)),
       ]),
@@ -227,9 +240,15 @@ export class CommentsService {
         rows.map((r) => r.id),
         viewerId,
       ),
+      this.likedByViewer(
+        rows.map((r) => r.id),
+        viewerId,
+      ),
     ]);
 
-    return rows.map((row) => this.toView(row, viewerId, sides, flagged));
+    return rows.map((row) =>
+      this.toView(row, viewerId, sides, flagged, liked),
+    );
   }
 
   /**
@@ -292,11 +311,28 @@ export class CommentsService {
     return new Set(rows.map((r) => r.commentId));
   }
 
+  /** Which of these comments the caller has already liked. */
+  private likedByViewer(
+    commentIds: string[],
+    viewerId: string | null,
+  ): Promise<Set<string>> {
+    if (!viewerId || commentIds.length === 0) {
+      return Promise.resolve(new Set<string>());
+    }
+    return this.likeRepo
+      .find({
+        where: { userId: viewerId, commentId: In(commentIds) },
+        select: { commentId: true },
+      })
+      .then((rows) => new Set(rows.map((r) => r.commentId)));
+  }
+
   private toView(
     row: MarketComment,
     viewerId: string | null,
     sides: Map<string, { outcomeId: string; label: string }>,
     flagged: Set<string>,
+    liked: Set<string> = new Set(),
   ): CommentView {
     const removed = row.deletedAt != null;
     return {
@@ -318,6 +354,8 @@ export class CommentsService {
       side: removed ? null : (sides.get(row.userId) ?? null),
       isMine: viewerId != null && row.userId === viewerId,
       hasFlagged: flagged.has(row.id),
+      likeCount: row.likeCount ?? 0,
+      hasLiked: liked.has(row.id),
       deleted: removed,
       deletedBy: row.deletedBy ?? null,
       parentId: row.parentId ?? null,
@@ -608,6 +646,73 @@ export class CommentsService {
 
     await this.repo.increment({ id: commentId }, "flagCount", 1);
     return { ok: true, alreadyFlagged: false };
+  }
+
+  /**
+   * Toggle the caller's like on a comment.
+   *
+   * One endpoint rather than a like/unlike pair: the button is a toggle, and
+   * two endpoints let a double tap leave the client's idea of the state and
+   * the server's disagreeing.
+   *
+   * Idempotent under a race. Both directions lean on the DB rather than on a
+   * read-then-write: inserting relies on UQ_comment_like rejecting a
+   * duplicate, and deleting reads back the affected row count. Two
+   * simultaneous taps therefore land on one row and one count change, not two.
+   *
+   * You may like your own comment. It is a bookmark as much as an endorsement,
+   * and policing it costs more than it is worth — unlike reporting, where
+   * self-reporting is meaningless.
+   */
+  async toggleLike(
+    commentId: string,
+    userId: string,
+  ): Promise<{ liked: boolean; likeCount: number }> {
+    const comment = await this.repo.findOne({
+      where: { id: commentId },
+      select: { id: true, deletedAt: true },
+    });
+    if (!comment) throw new NotFoundException("Comment not found");
+    if (comment.deletedAt) {
+      throw new BadRequestException("That comment has been removed.");
+    }
+
+    const existing = await this.likeRepo.findOne({
+      where: { commentId, userId },
+      select: { id: true },
+    });
+
+    if (existing) {
+      const res = await this.likeRepo.delete({ commentId, userId });
+      // Only move the count if this call is the one that removed the row.
+      if (res.affected) {
+        // Clamped in SQL rather than decrement(): the count is cosmetic, but
+        // "-1" under a comment is the kind of thing nobody goes back to fix.
+        await this.repo.query(
+          `UPDATE market_comments
+             SET "likeCount" = GREATEST("likeCount" - 1, 0)
+           WHERE "id" = $1`,
+          [commentId],
+        );
+      }
+    } else {
+      try {
+        await this.likeRepo.insert({ commentId, userId });
+        await this.repo.increment({ id: commentId }, "likeCount", 1);
+      } catch (err: any) {
+        // Someone else's tap won the race; the like already exists.
+        if (err?.code !== PG_UNIQUE_VIOLATION) throw err;
+      }
+    }
+
+    // Read the count back rather than computing it locally, so the number the
+    // client renders is the one the database holds.
+    const fresh = await this.repo.findOne({
+      where: { id: commentId },
+      select: { likeCount: true },
+    });
+    const liked = !existing;
+    return { liked, likeCount: fresh?.likeCount ?? 0 };
   }
 
   // ── Moderation ─────────────────────────────────────────────────────────────

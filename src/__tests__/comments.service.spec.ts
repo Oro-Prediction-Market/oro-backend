@@ -35,6 +35,13 @@ function makeService(overrides: any = {}) {
     find: jest.fn(async () => []),
     ...overrides.flagRepo,
   };
+  const likeRepo = {
+    find: jest.fn(async () => []),
+    findOne: jest.fn(async () => null),
+    insert: jest.fn(async () => ({})),
+    delete: jest.fn(async () => ({ affected: 1 })),
+    ...overrides.likeRepo,
+  };
   const marketRepo = {
     findOne: jest.fn(async () => ({
       id: "market-1",
@@ -58,12 +65,22 @@ function makeService(overrides: any = {}) {
   const service = new CommentsService(
     repo as any,
     flagRepo as any,
+    likeRepo as any,
     marketRepo as any,
     userRepo as any,
     notifications as any,
     dataSource as any,
   );
-  return { service, repo, flagRepo, marketRepo, userRepo, notifications, dataSource };
+  return {
+    service,
+    repo,
+    flagRepo,
+    likeRepo,
+    marketRepo,
+    userRepo,
+    notifications,
+    dataSource,
+  };
 }
 
 // ── Blocklist ────────────────────────────────────────────────────────────────
@@ -495,6 +512,123 @@ describe("CommentsService.edit", () => {
     await expect(
       service.edit("comment-1", "user-1", "Still talking."),
     ).rejects.toThrow(ForbiddenException);
+  });
+});
+
+// ── Likes ────────────────────────────────────────────────────────────────────
+
+describe("CommentsService.toggleLike", () => {
+  const live = { id: "comment-1", userId: "author-1", deletedAt: null };
+
+  it("likes a comment that the caller has not liked", async () => {
+    const { service, repo, likeRepo } = makeService({
+      repo: {
+        findOne: jest
+          .fn()
+          .mockResolvedValueOnce(live)
+          .mockResolvedValueOnce({ likeCount: 1 }),
+      },
+      likeRepo: { findOne: async () => null },
+    });
+    await expect(service.toggleLike("comment-1", "user-1")).resolves.toEqual({
+      liked: true,
+      likeCount: 1,
+    });
+    expect(likeRepo.insert).toHaveBeenCalledWith({
+      commentId: "comment-1",
+      userId: "user-1",
+    });
+    expect(repo.increment).toHaveBeenCalledWith(
+      { id: "comment-1" },
+      "likeCount",
+      1,
+    );
+  });
+
+  it("unlikes one the caller had already liked", async () => {
+    const { service, likeRepo } = makeService({
+      repo: {
+        findOne: jest
+          .fn()
+          .mockResolvedValueOnce(live)
+          .mockResolvedValueOnce({ likeCount: 0 }),
+      },
+      likeRepo: { findOne: async () => ({ id: "like-1" }) },
+    });
+    await expect(service.toggleLike("comment-1", "user-1")).resolves.toEqual({
+      liked: false,
+      likeCount: 0,
+    });
+    expect(likeRepo.delete).toHaveBeenCalledWith({
+      commentId: "comment-1",
+      userId: "user-1",
+    });
+    expect(likeRepo.insert).not.toHaveBeenCalled();
+  });
+
+  it("swallows a duplicate insert instead of double-counting", async () => {
+    const { service, repo } = makeService({
+      repo: {
+        findOne: jest
+          .fn()
+          .mockResolvedValueOnce(live)
+          .mockResolvedValueOnce({ likeCount: 1 }),
+      },
+      likeRepo: {
+        findOne: async () => null,
+        // The other tap won the race between our read and our write.
+        insert: jest.fn(async () => {
+          throw Object.assign(new Error("dup"), { code: "23505" });
+        }),
+      },
+    });
+    await expect(service.toggleLike("comment-1", "user-1")).resolves.toEqual({
+      liked: true,
+      likeCount: 1,
+    });
+    expect(repo.increment).not.toHaveBeenCalled();
+  });
+
+  it("leaves the count alone when the delete removed nothing", async () => {
+    const { service, repo } = makeService({
+      repo: {
+        findOne: jest
+          .fn()
+          .mockResolvedValueOnce(live)
+          .mockResolvedValueOnce({ likeCount: 3 }),
+      },
+      likeRepo: {
+        findOne: async () => ({ id: "like-1" }),
+        delete: jest.fn(async () => ({ affected: 0 })),
+      },
+    });
+    await service.toggleLike("comment-1", "user-1");
+    expect(repo.query).not.toHaveBeenCalled();
+  });
+
+  it("refuses on a removed comment", async () => {
+    const { service } = makeService({
+      repo: { findOne: async () => ({ ...live, deletedAt: new Date() }) },
+    });
+    await expect(service.toggleLike("comment-1", "user-1")).rejects.toThrow(
+      BadRequestException,
+    );
+  });
+
+  it("lets you like your own comment", async () => {
+    const { service } = makeService({
+      repo: {
+        findOne: jest
+          .fn()
+          .mockResolvedValueOnce({ ...live, userId: "user-1" })
+          .mockResolvedValueOnce({ likeCount: 1 }),
+      },
+      likeRepo: { findOne: async () => null },
+    });
+    await expect(service.toggleLike("comment-1", "user-1")).resolves.toEqual({
+      liked: true,
+      likeCount: 1,
+    });
   });
 });
 

@@ -59,6 +59,7 @@ import { MarketSuggestionVote } from "./entities/market-suggestion-vote.entity";
 import { CommentsModule } from "./comments/comments.module";
 import { MarketComment } from "./entities/market-comment.entity";
 import { MarketCommentFlag } from "./entities/market-comment-flag.entity";
+import { MarketCommentLike } from "./entities/market-comment-like.entity";
 import { EplModule } from "./epl/epl.module";
 import { UclModule } from "./ucl/ucl.module";
 import { FeedbackModule } from "./feedback/feedback.module";
@@ -144,6 +145,7 @@ import { UserNotification } from "./entities/user-notification.entity";
           MarketSuggestionVote,
           MarketComment,
           MarketCommentFlag,
+          MarketCommentLike,
         ],
         // Schema changes ship as migrations ONLY. synchronize silently DROPs a
         // column when an entity property is renamed — irrecoverable financial

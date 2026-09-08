@@ -108,6 +108,22 @@ export class CommentsController {
     return this.comments.remove(commentId, req.user.userId);
   }
 
+  /**
+   * Toggle your like. Throttled well above the composer's 5/min: liking is a
+   * cheap, frequent gesture and a reader scrolling a thread can easily tap a
+   * dozen hearts in a minute without being a spammer.
+   */
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  @Post("comments/:id/like")
+  @HttpCode(200)
+  @ApiOperation({ summary: "Like or unlike a comment" })
+  async like(
+    @Request() req: any,
+    @Param("id", ParseUUIDPipe) commentId: string,
+  ) {
+    return this.comments.toggleLike(commentId, req.user.userId);
+  }
+
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post("comments/:id/flag")
   @HttpCode(200)

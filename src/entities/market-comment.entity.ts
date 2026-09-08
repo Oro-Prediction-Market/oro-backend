@@ -107,6 +107,17 @@ export class MarketComment {
   createdAt: Date;
 
   /**
+   * Denormalised count of market_comment_likes rows.
+   *
+   * Kept on the comment for the same reason flagCount is: the thread query
+   * would otherwise need a correlated subquery per row to render a heart,
+   * on the hottest read path in the feature. Reconcilable from the join
+   * table at any time, and clamped at zero in SQL when a like is withdrawn.
+   */
+  @Column({ type: "int", default: 0 })
+  likeCount: number;
+
+  /**
    * When the author last rewrote this comment, or null if they never have.
    *
    * Its only job is to drive the "edited" marker: a comment someone argued
