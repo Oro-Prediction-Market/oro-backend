@@ -30,3 +30,17 @@ export class CreateCommentDto {
   @IsUUID()
   parentId?: string;
 }
+
+/**
+ * An edit carries only the new text — the parent never changes, because moving
+ * a comment to another thread would strand the replies underneath it.
+ */
+export class EditCommentDto {
+  @ApiProperty({ maxLength: COMMENT_MAX_LENGTH })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(COMMENT_MAX_LENGTH, {
+    message: `A comment cannot be longer than ${COMMENT_MAX_LENGTH} characters.`,
+  })
+  body: string;
+}

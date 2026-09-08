@@ -25,6 +25,10 @@ export class CreateMarketComments1775990000490 implements MigrationInterface {
         -- JS ISO string cannot carry the microseconds now() would otherwise
         -- store. See the note on the entity.
         "createdAt"     TIMESTAMPTZ(3) NOT NULL DEFAULT now(),
+        -- Set the first time the author rewrites the comment; drives the
+        -- "edited" marker. Never the edit deadline — that comes off
+        -- "createdAt", so an edit cannot extend its own window.
+        "editedAt"      TIMESTAMPTZ,
         CONSTRAINT "PK_market_comments" PRIMARY KEY ("id"),
         CONSTRAINT "FK_market_comments_market"
           FOREIGN KEY ("marketId") REFERENCES "markets"("id") ON DELETE CASCADE,

@@ -6,6 +6,7 @@ import {
   HttpCode,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
   Request,
@@ -15,7 +16,10 @@ import { Throttle } from "@nestjs/throttler";
 import { ApiBearerAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
 import { JwtAuthGuard, Public } from "../auth/guards";
 import { CommentsService } from "./comments.service";
-import { CreateCommentDto } from "./dto/create-comment.dto";
+import {
+  CreateCommentDto,
+  EditCommentDto,
+} from "./dto/create-comment.dto";
 import { FlagCommentDto } from "./dto/flag-comment.dto";
 
 @ApiTags("comments")
@@ -78,6 +82,21 @@ export class CommentsController {
     @Param("id", ParseUUIDPipe) commentId: string,
   ) {
     return this.comments.listReplies(commentId, req.user?.userId ?? null);
+  }
+
+  /**
+   * Rewrite your own comment, inside the edit window. Throttled like posting:
+   * an edit publishes text to the same audience a new comment does.
+   */
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Patch("comments/:id")
+  @ApiOperation({ summary: "Edit your own comment, shortly after posting" })
+  async edit(
+    @Request() req: any,
+    @Param("id", ParseUUIDPipe) commentId: string,
+    @Body() dto: EditCommentDto,
+  ) {
+    return this.comments.edit(commentId, req.user.userId, dto.body);
   }
 
   @Delete("comments/:id")

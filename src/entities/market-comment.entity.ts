@@ -105,4 +105,18 @@ export class MarketComment {
    */
   @CreateDateColumn({ type: "timestamptz", precision: 3 })
   createdAt: Date;
+
+  /**
+   * When the author last rewrote this comment, or null if they never have.
+   *
+   * Its only job is to drive the "edited" marker: a comment someone argued
+   * with must not be able to change out from under the reply quietly. The
+   * body itself is overwritten — no revision history, which is the honest
+   * trade for a market thread rather than a wiki.
+   *
+   * NOT the edit deadline. That is derived from `createdAt`, so editing a
+   * comment can never extend the window to edit it again.
+   */
+  @Column({ type: "timestamptz", nullable: true })
+  editedAt: Date | null;
 }

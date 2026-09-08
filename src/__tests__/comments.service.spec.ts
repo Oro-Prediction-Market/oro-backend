@@ -3,7 +3,7 @@ import {
   ForbiddenException,
   NotFoundException,
 } from "@nestjs/common";
-import { CommentsService } from "../comments/comments.service";
+import { CommentsService, EDIT_WINDOW_MS } from "../comments/comments.service";
 import { CommentDeletedBy } from "../entities/market-comment.entity";
 import { CommentFlagReason } from "../entities/market-comment-flag.entity";
 import { MarketStatus } from "../entities/market.entity";
@@ -364,6 +364,137 @@ describe("CommentsService.remove", () => {
     await expect(service.remove("comment-1", "user-1")).rejects.toThrow(
       ForbiddenException,
     );
+  });
+});
+
+// ── Editing ──────────────────────────────────────────────────────────────────
+
+describe("CommentsService.edit", () => {
+  const fresh = (v: Record<string, unknown> = {}) => ({
+    id: "comment-1",
+    userId: "user-1",
+    marketId: "market-1",
+    body: "Original text.",
+    parentId: null,
+    deletedAt: null,
+    editedAt: null,
+    replyCount: 0,
+    createdAt: new Date(Date.now() - 60_000),
+    ...v,
+  });
+
+  it("rewrites the body and stamps editedAt", async () => {
+    const { service, repo } = makeService({
+      repo: { findOne: async () => fresh() },
+    });
+    const view = await service.edit("comment-1", "user-1", "  New text.  ");
+    expect(repo.update).toHaveBeenCalledWith(
+      "comment-1",
+      expect.objectContaining({ body: "New text." }),
+    );
+    expect(view.body).toBe("New text.");
+    expect(view.edited).toBe(true);
+  });
+
+  it("leaves editedAt alone when the text has not changed", async () => {
+    const { service, repo } = makeService({
+      repo: { findOne: async () => fresh() },
+    });
+    const view = await service.edit("comment-1", "user-1", "Original text.");
+    expect(repo.update).not.toHaveBeenCalled();
+    expect(view.edited).toBe(false);
+  });
+
+  it("refuses once the edit window has passed", async () => {
+    const { service } = makeService({
+      repo: {
+        findOne: async () =>
+          fresh({ createdAt: new Date(Date.now() - EDIT_WINDOW_MS - 1000) }),
+      },
+    });
+    await expect(
+      service.edit("comment-1", "user-1", "Too late."),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it("measures the window from createdAt, so an edit cannot extend it", async () => {
+    const { service } = makeService({
+      repo: {
+        findOne: async () =>
+          fresh({
+            createdAt: new Date(Date.now() - EDIT_WINDOW_MS - 1000),
+            // Edited a moment ago — irrelevant, the window is off createdAt.
+            editedAt: new Date(),
+          }),
+      },
+    });
+    await expect(
+      service.edit("comment-1", "user-1", "Sneaky."),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it("refuses to edit someone else's comment", async () => {
+    const { service } = makeService({
+      repo: { findOne: async () => fresh({ userId: "someone-else" }) },
+    });
+    await expect(
+      service.edit("comment-1", "user-1", "Hijack."),
+    ).rejects.toThrow(ForbiddenException);
+  });
+
+  it("refuses to edit a removed comment", async () => {
+    const { service } = makeService({
+      repo: { findOne: async () => fresh({ deletedAt: new Date() }) },
+    });
+    await expect(
+      service.edit("comment-1", "user-1", "Back from the dead."),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it("still applies the blocklist", async () => {
+    const { service } = makeService({
+      repo: { findOne: async () => fresh() },
+    });
+    await expect(
+      service.edit("comment-1", "user-1", "you are a piece of shit"),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it("still refuses an empty body", async () => {
+    const { service } = makeService({
+      repo: { findOne: async () => fresh() },
+    });
+    await expect(service.edit("comment-1", "user-1", "   ")).rejects.toThrow(
+      BadRequestException,
+    );
+  });
+
+  it("refuses on a settled market, like posting", async () => {
+    const { service } = makeService({
+      repo: { findOne: async () => fresh() },
+      marketRepo: {
+        findOne: async () => ({ id: "market-1", status: MarketStatus.SETTLED }),
+      },
+    });
+    await expect(
+      service.edit("comment-1", "user-1", "After the whistle."),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it("refuses while the author is muted", async () => {
+    const { service } = makeService({
+      repo: { findOne: async () => fresh() },
+      userRepo: {
+        findOne: async () => ({
+          id: "user-1",
+          commentsBlockedUntil: new Date(Date.now() + 3_600_000),
+          reputationTier: "scout",
+        }),
+      },
+    });
+    await expect(
+      service.edit("comment-1", "user-1", "Still talking."),
+    ).rejects.toThrow(ForbiddenException);
   });
 });
 

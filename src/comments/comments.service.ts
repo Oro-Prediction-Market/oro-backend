@@ -29,6 +29,16 @@ const MAX_PAGE_SIZE = 100;
 /** A reply thread is shown whole rather than paged; this is the safety stop. */
 const MAX_REPLIES = 200;
 
+/**
+ * How long an author may rewrite their own comment.
+ *
+ * Long enough to fix a typo or a mangled sentence, short enough that nobody
+ * can rewrite a call after the result is known — the whole point of a
+ * prediction thread is that what you said is still there afterwards. Measured
+ * from `createdAt`, never from the last edit, so editing cannot extend it.
+ */
+export const EDIT_WINDOW_MS = 15 * 60 * 1000;
+
 /** One comment as the apps render it. */
 export interface CommentView {
   id: string;
@@ -55,6 +65,17 @@ export interface CommentView {
   parentId: string | null;
   /** Live replies under this comment. Always 0 on a reply — depth is capped at 1. */
   replyCount: number;
+  /** True once the author has rewritten it, so the apps can mark it. */
+  edited: boolean;
+  /**
+   * When the caller's own edit window shuts. Null on anyone else's comment, on
+   * a removed one, and once the window has passed.
+   *
+   * An absolute deadline rather than a boolean so a page left open does not go
+   * on offering Edit after the window closes — the client compares it against
+   * the clock, and the server re-checks on the write regardless.
+   */
+  editableUntil: Date | null;
 }
 
 @Injectable()
@@ -301,7 +322,17 @@ export class CommentsService {
       deletedBy: row.deletedBy ?? null,
       parentId: row.parentId ?? null,
       replyCount: row.replyCount ?? 0,
+      edited: !removed && row.editedAt != null,
+      editableUntil: this.editableUntil(row, viewerId),
     };
+  }
+
+  /** The caller's remaining edit window on this row, or null if they have none. */
+  private editableUntil(row: MarketComment, viewerId: string | null): Date | null {
+    if (row.deletedAt != null) return null;
+    if (viewerId == null || row.userId !== viewerId) return null;
+    const until = new Date(row.createdAt.getTime() + EDIT_WINDOW_MS);
+    return until.getTime() > Date.now() ? until : null;
   }
 
   // ── Writing ────────────────────────────────────────────────────────────────
@@ -411,6 +442,97 @@ export class CommentsService {
     saved.user = user as User;
 
     return this.toView(saved, userId, sides, new Set());
+  }
+
+  /**
+   * Rewrite your own comment, inside the edit window.
+   *
+   * Every rule create() applies is re-applied: the blocklist, the length cap,
+   * the trim, the settled-market lock and the moderator mute. An edit is a new
+   * piece of public text and must not be a way around any of them.
+   */
+  async edit(
+    commentId: string,
+    userId: string,
+    rawBody: string,
+  ): Promise<CommentView> {
+    const comment = await this.repo.findOne({ where: { id: commentId } });
+    if (!comment) throw new NotFoundException("Comment not found");
+    if (comment.userId !== userId) {
+      throw new ForbiddenException("You can only edit your own comments.");
+    }
+    if (comment.deletedAt) {
+      throw new BadRequestException("That comment has been removed.");
+    }
+    // From createdAt, not editedAt: editing must not buy another window.
+    if (comment.createdAt.getTime() + EDIT_WINDOW_MS <= Date.now()) {
+      throw new BadRequestException(
+        "Comments can only be edited shortly after posting.",
+      );
+    }
+
+    const market = await this.marketRepo.findOne({
+      where: { id: comment.marketId },
+      select: { id: true, status: true },
+    });
+    if (market?.status === MarketStatus.SETTLED) {
+      throw new BadRequestException(
+        "This market has settled — its comments are closed.",
+      );
+    }
+
+    const author = await this.userRepo.findOne({
+      where: { id: userId },
+      select: { id: true, commentsBlockedUntil: true },
+    });
+    if (
+      author?.commentsBlockedUntil &&
+      author.commentsBlockedUntil.getTime() > Date.now()
+    ) {
+      throw new ForbiddenException(
+        "Your commenting is paused by a moderator. Try again later.",
+      );
+    }
+
+    const body = rawBody.trim();
+    if (body.length === 0) {
+      throw new BadRequestException("A comment cannot be empty.");
+    }
+    if (body.length > COMMENT_MAX_LENGTH) {
+      throw new BadRequestException(
+        `A comment cannot be longer than ${COMMENT_MAX_LENGTH} characters.`,
+      );
+    }
+
+    const blocked = findBlockedTerm(body);
+    if (blocked) {
+      this.logger.log(`Blocked edit from ${userId} (term: ${blocked})`);
+      throw new BadRequestException(
+        "That comment contains language we don't allow. Please rephrase it.",
+      );
+    }
+
+    // Unchanged text is a no-op rather than a spurious "edited" marker.
+    if (body === comment.body) {
+      const [sides] = await Promise.all([
+        this.resolveSides(comment.marketId, [userId]),
+      ]);
+      comment.user = (await this.userRepo.findOne({
+        where: { id: userId },
+      })) as User;
+      return this.toView(comment, userId, sides, new Set());
+    }
+
+    const editedAt = new Date();
+    await this.repo.update(commentId, { body, editedAt });
+    comment.body = body;
+    comment.editedAt = editedAt;
+    comment.user = (await this.userRepo.findOne({
+      where: { id: userId },
+    })) as User;
+
+    const sides = await this.resolveSides(comment.marketId, [userId]);
+    return this.toView(comment, userId, sides, new Set());
   }
 
   /** Author-initiated removal. The row survives; the text stops being served. */
