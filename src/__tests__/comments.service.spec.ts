@@ -576,14 +576,12 @@ describe("CommentsService.list query shape", () => {
     expect(calls.where.some((w: string) => w.includes("createdAt"))).toBe(false);
   });
 
-  it("only adds the positions semi-join when holders is asked for", async () => {
-    const off = spyHarness();
-    await off.service.list("market-1", null, {});
-    expect(off.calls.where.some((w: string) => w.includes("positions"))).toBe(false);
-
-    const on = spyHarness();
-    await on.service.list("market-1", null, { holdersOnly: true });
-    expect(on.calls.where.some((w: string) => w.includes("EXISTS"))).toBe(true);
+  it("returns top-level comments only", async () => {
+    const { service, calls } = spyHarness();
+    await service.list("market-1", null, {});
+    expect(calls.where.some((w: string) => w.includes("parentId IS NULL"))).toBe(
+      true,
+    );
   });
 });
 

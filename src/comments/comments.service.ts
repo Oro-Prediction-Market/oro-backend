@@ -94,7 +94,6 @@ export class CommentsService {
       limit?: number;
       cursor?: string;
       order?: "newest" | "oldest";
-      holdersOnly?: boolean;
     } = {},
   ): Promise<CommentView[]> {
     const take = Math.min(
@@ -125,16 +124,6 @@ export class CommentsService {
       .orderBy("c.createdAt", newestFirst ? "DESC" : "ASC")
       .addOrderBy("c.id", newestFirst ? "DESC" : "ASC")
       .take(take);
-
-    // "Holders only": just the people with money on this market. Correlated on
-    // the comment's own columns so it stays a semi-join — positions is indexed
-    // on (userId, marketId), which is exactly this lookup.
-    if (opts.holdersOnly) {
-      qb.andWhere(
-        `EXISTS (SELECT 1 FROM positions p
-                  WHERE p."marketId" = c."marketId" AND p."userId" = c."userId")`,
-      );
-    }
 
     // Cursor is "<createdAt ISO>|<id>" — the row you last saw. Compared as a
     // tuple against the same two columns the ordering uses, so it is exact

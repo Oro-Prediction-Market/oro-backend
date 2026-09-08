@@ -39,13 +39,11 @@ export class CommentsController {
     @Query("limit") limit?: string,
     @Query("cursor") cursor?: string,
     @Query("order") order?: string,
-    @Query("holders") holders?: string,
   ) {
     return this.comments.list(marketId, req.user?.userId ?? null, {
       limit: limit ? parseInt(limit, 10) : undefined,
       cursor,
       order: order === "oldest" ? "oldest" : "newest",
-      holdersOnly: holders === "true",
     });
   }
 
