@@ -42,6 +42,7 @@ import { OnboardService } from "./onboard.service";
 import { ParimutuelEngine } from "../markets/parimutuel.engine";
 import { DKGatewayService } from "../payment/services/dk-gateway/dk-gateway.service";
 import { UserNotificationService } from "./user-notification.service";
+import { CalibrationService } from "./calibration.service";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import {
   ledgerBalance,
@@ -219,6 +220,7 @@ export class UsersController {
     private readonly onboardService: OnboardService,
     private readonly dkGateway: DKGatewayService,
     private readonly userNotifications: UserNotificationService,
+    private readonly calibration: CalibrationService,
     private readonly telegramSimple: TelegramSimpleService,
   ) {}
 
@@ -283,6 +285,19 @@ export class UsersController {
       };
     }
     return out;
+  }
+
+  /**
+   * The caller's accuracy record — Brier score, calibration curve, and a
+   * plain-language read of whether they back their calls harder than the
+   * results justify.
+   */
+  @Get("me/calibration")
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "The current user's calibration / accuracy profile" })
+  async myCalibration(@Request() req: any) {
+    return this.calibration.getProfile(req.user.userId);
   }
 
   /** Unseen in-app notifications for the current user (popped on app open). */

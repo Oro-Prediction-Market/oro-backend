@@ -97,6 +97,7 @@ function makeEngine(ds: any): ParimutuelEngine {
     noop,  // revenueDistributionService
     ({ create: async () => {} }) as any, // userNotifications
     ({ addBulk: async () => [] }) as any, // notificationQueue
+    ({ resolveForMarket: async () => 0 }) as any, // freeCallsService
   );
   return engine;
 }

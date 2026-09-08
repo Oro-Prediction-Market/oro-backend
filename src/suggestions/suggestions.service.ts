@@ -20,6 +20,18 @@ import { SuggestionsGateway } from "./suggestions.gateway";
 /** How many suggestions a user may submit per calendar month. */
 export const SUGGESTIONS_PER_MONTH = 1;
 
+/**
+ * Votes at which a question promotes itself out of the review queue.
+ *
+ * This removes the *discovery* bottleneck, not the judgement one. The admin no
+ * longer has to spot which question the crowd wants — the crowd says so, and the
+ * question surfaces publicly as awaiting launch. A human still writes the
+ * outcomes, the close time and the resolution criteria, because a market whose
+ * resolution nobody defined is a dispute waiting to happen, and Oro settles real
+ * money on these.
+ */
+export const DEFAULT_PROMOTE_VOTE_THRESHOLD = 10;
+
 /** Postgres unique-violation. A duplicate vote is expected traffic, not an error. */
 const PG_UNIQUE_VIOLATION = "23505";
 
@@ -197,7 +209,12 @@ export class SuggestionsService {
       where: { id: suggestionId },
     });
     if (!suggestion) throw new NotFoundException("Suggestion not found");
-    if (suggestion.status !== SuggestionStatus.APPROVED) {
+    // A queued question keeps taking votes — the count is the crowd's answer to
+    // "how badly do we want this", and it should not freeze at the threshold.
+    if (
+      suggestion.status !== SuggestionStatus.APPROVED &&
+      suggestion.status !== SuggestionStatus.QUEUED
+    ) {
       throw new BadRequestException("This suggestion is not open for votes");
     }
 
@@ -227,6 +244,12 @@ export class SuggestionsService {
     // double-tap must not make every other orbit re-render for nothing.
     if (counted) {
       this.gateway.emitVoted({ id: suggestionId, votes });
+      // Never allowed to fail the vote — the user's action succeeded either way.
+      this.maybePromote(suggestionId, votes).catch((err: Error) =>
+        this.logger.error(
+          `Auto-promote check failed for ${suggestionId}: ${err.message}`,
+        ),
+      );
     }
 
     return { votes, votedByMe: true };
@@ -444,6 +467,104 @@ export class SuggestionsService {
         { text: "❌ Reject", callbackData: `sg:r:${suggestion.id}` },
       ],
     ]);
+  }
+
+  /** The configured promotion threshold, or the default. */
+  promoteThreshold(): number {
+    const raw = Number(
+      this.config.get<string>("SUGGESTION_PROMOTE_VOTES") ?? "",
+    );
+    return Number.isFinite(raw) && raw > 0
+      ? Math.floor(raw)
+      : DEFAULT_PROMOTE_VOTE_THRESHOLD;
+  }
+
+  /**
+   * Promote an approved question once the crowd has backed it hard enough.
+   *
+   * The conditional UPDATE is the idempotency guard: `promotedAt IS NULL` means
+   * only the vote that actually crosses the line promotes, so the admin is
+   * pinged once however many votes arrive at the same moment.
+   */
+  private async maybePromote(
+    suggestionId: string,
+    votes: number,
+  ): Promise<void> {
+    const threshold = this.promoteThreshold();
+    if (votes < threshold) return;
+
+    const result = await this.suggestionRepo
+      .createQueryBuilder()
+      .update(MarketSuggestion)
+      .set({ status: SuggestionStatus.QUEUED, promotedAt: new Date() })
+      .where("id = :id", { id: suggestionId })
+      .andWhere("status = :approved", {
+        approved: SuggestionStatus.APPROVED,
+      })
+      .andWhere("\"promotedAt\" IS NULL")
+      .execute();
+
+    if (!result.affected) return;
+
+    const suggestion = await this.findById(suggestionId);
+    if (!suggestion) return;
+
+    this.logger.log(
+      `Suggestion ${suggestionId} auto-promoted at ${votes} vote(s)`,
+    );
+
+    this.gateway.emitVoted({ id: suggestionId, votes });
+
+    const adminId = this.approverId();
+    if (!adminId) return;
+
+    await this.telegram
+      .sendMessageWithButtons(
+        Number(adminId),
+        `🔥 <b>The crowd wants this answered</b>\n\n` +
+          `<b>${this.escape(suggestion.title)}</b>\n` +
+          (suggestion.description
+            ? `<i>${this.escape(suggestion.description)}</i>\n`
+            : "") +
+          `\nCategory: ${suggestion.category}\n` +
+          `Votes: <b>${votes}</b> (threshold ${threshold})\n\n` +
+          `Give it outcomes, a close time and resolution criteria to launch it.`,
+        [[{ text: "📋 Open admin", callbackData: `sg:q:${suggestion.id}` }]],
+      )
+      .catch((err: Error) =>
+        this.logger.warn(`Promotion DM failed: ${err.message}`),
+      );
+  }
+
+  /**
+   * Questions the crowd has asked for, most-wanted first. Public: an unanswered
+   * question with 40 votes behind it is itself worth seeing, and it is the
+   * honest answer to "does Oro cover the thing I care about?" — not yet, but
+   * you can push it up the queue.
+   */
+  async listQueued(limit = 20): Promise<
+    Array<{
+      id: string;
+      title: string;
+      description: string | null;
+      category: MarketCategory;
+      votes: number;
+      promotedAt: Date | null;
+    }>
+  > {
+    const rows = await this.suggestionRepo.find({
+      where: { status: SuggestionStatus.QUEUED },
+      order: { voteCount: "DESC", promotedAt: "ASC" },
+      take: Math.min(Math.max(limit, 1), 100),
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      title: r.title,
+      description: r.description,
+      category: r.category,
+      votes: r.voteCount,
+      promotedAt: r.promotedAt,
+    }));
   }
 
   private async notifyProposer(suggestion: MarketSuggestion): Promise<void> {

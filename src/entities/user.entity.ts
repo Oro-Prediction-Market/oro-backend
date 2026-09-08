@@ -226,6 +226,31 @@ export class User {
   @Column({ type: "int", nullable: true })
   reengagementStage: number | null;
 
+  // ── Free calls (no-stake predictions) ──────────────────────────────────────
+
+  /**
+   * Scored free calls (correct + incorrect). Voided calls are excluded, so this
+   * is the denominator of the free-call accuracy record.
+   */
+  @Column({ default: 0 })
+  freeCallCount: number;
+
+  @Column({ default: 0 })
+  freeCallCorrect: number;
+
+  /**
+   * Brier score across scored free calls — lower is better, 0 is perfect.
+   *
+   * Kept separate from `brierScore` rather than merged into it. A staked
+   * prediction and a free one are not the same decision: money changes how
+   * carefully someone picks, so blending them would corrupt both records.
+   */
+  @Column({ type: "decimal", precision: 5, scale: 4, nullable: true })
+  freeCallBrierScore: number | null;
+
+  @Column({ default: 0 })
+  freeCallBrierCount: number;
+
   /**
    * Number of times the user bet AGAINST the Expert-weighted signal
    * and won. Incremented at settlement. Used for the Contrarian badge.

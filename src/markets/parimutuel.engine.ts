@@ -31,6 +31,7 @@ import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import { DKGatewayService } from "../payment/services/dk-gateway/dk-gateway.service";
 import { StreakService, STREAK_BONUS_MULT } from "../users/streak.service";
 import { UserNotificationService } from "../users/user-notification.service";
+import { FreeCallsService } from "../free-calls/free-calls.service";
 import {
   ledgerBalance,
   ledgerBalanceForAccount,
@@ -104,6 +105,7 @@ export class ParimutuelEngine implements OnModuleInit {
     private revenueDistributionService: RevenueDistributionService,
     private userNotifications: UserNotificationService,
     @InjectQueue(NOTIFICATION_QUEUE) private notificationQueue: Queue,
+    private freeCallsService: FreeCallsService,
   ) {}
 
   private async getCreditsBalance(
@@ -1996,6 +1998,18 @@ Good luck! 🍀
     // 2. Recalculate reputation for all bettors (deferred off the hot path,
     //    but still awaited here since this whole method is already fire-and-forget)
     await this.reputationService.recalculateForMarket(market.id);
+
+    // 2a. Score no-stake calls against the same resolution. Free callers are
+    //     participants in the forecast, so their record updates when the
+    //     question is answered — same as everyone else's. Never allowed to break
+    //     settlement notifications; FreeCallsService also reconciles on a cron.
+    await this.freeCallsService
+      .resolveForMarket(market.id, winner.id)
+      .catch((err: Error) =>
+        this.logger.error(
+          `[FreeCalls] scoring failed for market ${market.id}: ${err.message}`,
+        ),
+      );
 
     // 2b. Contrarian badge tracking
     for (const bet of bets) {

@@ -113,7 +113,10 @@ export class TelegramSimpleService {
    * e.g. a "Open market" URL button that deep-links back into the Mini App.
    */
   async sendMessage(
-    chatId: number,
+    // A string is accepted so a channel can be addressed by "@name" as well as
+    // by its numeric id — Telegram's chat_id takes either. Widening only; every
+    // existing numeric caller is unaffected.
+    chatId: number | string,
     text: string,
     buttons?: InlineButton[][],
   ): Promise<void> {

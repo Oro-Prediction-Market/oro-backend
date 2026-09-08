@@ -6,11 +6,17 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   Request,
   UseGuards,
 } from "@nestjs/common";
-import { ApiOperation, ApiTags, ApiBearerAuth } from "@nestjs/swagger";
-import { JwtAuthGuard } from "../auth/guards";
+import {
+  ApiOperation,
+  ApiQuery,
+  ApiTags,
+  ApiBearerAuth,
+} from "@nestjs/swagger";
+import { JwtAuthGuard, Public } from "../auth/guards";
 import { SuggestionsService } from "./suggestions.service";
 import { CreateSuggestionDto } from "./dto/create-suggestion.dto";
 import { MarketCategory } from "../entities/market.entity";
@@ -44,6 +50,21 @@ export class SuggestionsController {
       dto.title,
       dto.description ?? null,
       dto.category ?? MarketCategory.OTHER,
+    );
+  }
+
+  @Get("queued")
+  @Public()
+  @ApiOperation({
+    summary:
+      "Questions the crowd has voted past the threshold, awaiting launch. " +
+      "Public — an unanswered question with votes behind it is worth seeing.",
+  })
+  @ApiQuery({ name: "limit", required: false, description: "Default 20, max 100" })
+  async queued(@Query("limit") limit?: string) {
+    const parsed = limit ? Number(limit) : undefined;
+    return this.suggestions.listQueued(
+      Number.isFinite(parsed) ? (parsed as number) : undefined,
     );
   }
 
