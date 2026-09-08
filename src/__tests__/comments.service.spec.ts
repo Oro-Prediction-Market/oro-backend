@@ -58,7 +58,10 @@ function makeService(overrides: any = {}) {
     update: jest.fn(async () => ({})),
     ...overrides.userRepo,
   };
-  const notifications = { create: jest.fn(async () => {}) };
+  const notifications = {
+    create: jest.fn(async () => {}),
+    createOrRefresh: jest.fn(async () => {}),
+  };
   // resolveSides goes through the raw DataSource; default to "no positions".
   const dataSource = { query: jest.fn(async () => []), ...overrides.dataSource };
 
@@ -629,6 +632,128 @@ describe("CommentsService.toggleLike", () => {
       liked: true,
       likeCount: 1,
     });
+  });
+});
+
+// ── Notifications ────────────────────────────────────────────────────────────
+
+describe("comment notifications", () => {
+  const parentBy = (userId: string) => ({
+    id: "parent-1",
+    userId,
+    marketId: "market-1",
+    parentId: null,
+    deletedAt: null,
+    replyCount: 0,
+  });
+
+  it("tells the parent's author about a reply", async () => {
+    const { service, notifications } = makeService({
+      repo: { findOne: async () => parentBy("author-1") },
+    });
+    await service.create("market-1", "user-1", "Disagree.", "parent-1");
+    expect(notifications.create).toHaveBeenCalledWith(
+      "author-1",
+      expect.objectContaining({
+        type: "comment_reply",
+        metadata: expect.objectContaining({
+          marketId: "market-1",
+          commentId: "parent-1",
+        }),
+      }),
+    );
+  });
+
+  it("does not notify you for replying to yourself", async () => {
+    const { service, notifications } = makeService({
+      repo: { findOne: async () => parentBy("user-1") },
+    });
+    await service.create("market-1", "user-1", "Adding to this.", "parent-1");
+    expect(notifications.create).not.toHaveBeenCalled();
+  });
+
+  it("does not notify on a top-level comment", async () => {
+    const { service, notifications } = makeService();
+    await service.create("market-1", "user-1", "Opening take.", null);
+    expect(notifications.create).not.toHaveBeenCalled();
+  });
+
+  it("folds like notifications on one comment", async () => {
+    const { service, notifications } = makeService({
+      repo: {
+        findOne: jest
+          .fn()
+          .mockResolvedValueOnce({
+            id: "comment-1",
+            userId: "author-1",
+            marketId: "market-1",
+            deletedAt: null,
+          })
+          .mockResolvedValueOnce({ likeCount: 4 }),
+      },
+      likeRepo: { findOne: async () => null },
+    });
+    await service.toggleLike("comment-1", "user-1");
+    expect(notifications.createOrRefresh).toHaveBeenCalledWith(
+      "author-1",
+      "comment-like:comment-1",
+      expect.objectContaining({ type: "comment_like" }),
+    );
+    // The running total, not "someone liked it" four times over.
+    const body = (notifications.createOrRefresh as jest.Mock).mock
+      .calls[0][2].body as string;
+    expect(body).toMatch(/3 others/);
+  });
+
+  it("says nothing when you like your own comment", async () => {
+    const { service, notifications } = makeService({
+      repo: {
+        findOne: jest
+          .fn()
+          .mockResolvedValueOnce({
+            id: "comment-1",
+            userId: "user-1",
+            marketId: "market-1",
+            deletedAt: null,
+          })
+          .mockResolvedValueOnce({ likeCount: 1 }),
+      },
+      likeRepo: { findOne: async () => null },
+    });
+    await service.toggleLike("comment-1", "user-1");
+    expect(notifications.createOrRefresh).not.toHaveBeenCalled();
+  });
+
+  it("says nothing on an unlike", async () => {
+    const { service, notifications } = makeService({
+      repo: {
+        findOne: jest
+          .fn()
+          .mockResolvedValueOnce({
+            id: "comment-1",
+            userId: "author-1",
+            marketId: "market-1",
+            deletedAt: null,
+          })
+          .mockResolvedValueOnce({ likeCount: 0 }),
+      },
+      likeRepo: { findOne: async () => ({ id: "like-1" }) },
+    });
+    await service.toggleLike("comment-1", "user-1");
+    expect(notifications.createOrRefresh).not.toHaveBeenCalled();
+  });
+
+  it("does not let a failed notification fail the reply", async () => {
+    const { service } = makeService({
+      repo: { findOne: async () => parentBy("author-1") },
+    });
+    const svc = service as any;
+    svc.notifications.create = jest.fn(async () => {
+      throw new Error("notification store down");
+    });
+    await expect(
+      service.create("market-1", "user-1", "Still saved.", "parent-1"),
+    ).resolves.toBeDefined();
   });
 });
 

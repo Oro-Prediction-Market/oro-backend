@@ -22,6 +22,18 @@ import { UserNotificationService } from "../users/user-notification.service";
 import { findBlockedTerm } from "./blocklist";
 import { COMMENT_MAX_LENGTH } from "./dto/create-comment.dto";
 
+/**
+ * A comment trimmed to fit a notification line. Cut on a word boundary where
+ * one is close enough, so it does not end mid-syllable.
+ */
+function excerpt(body: string, max = 90): string {
+  const flat = body.replace(/\s+/g, " ").trim();
+  if (flat.length <= max) return flat;
+  const cut = flat.slice(0, max);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${lastSpace > max - 20 ? cut.slice(0, lastSpace) : cut}…`;
+}
+
 /** Postgres unique-violation. Relied on instead of a racy read-then-write. */
 const PG_UNIQUE_VIOLATION = "23505";
 
@@ -471,7 +483,10 @@ export class CommentsService {
       this.repo.create({ marketId, userId, body, parentId }),
     );
 
-    if (parentId) await this.repo.increment({ id: parentId }, "replyCount", 1);
+    if (parentId) {
+      await this.repo.increment({ id: parentId }, "replyCount", 1);
+      await this.notifyReply(saved, parentId, userId);
+    }
 
     const [user, sides] = await Promise.all([
       this.userRepo.findOne({ where: { id: userId } }),
@@ -573,6 +588,100 @@ export class CommentsService {
     return this.toView(comment, userId, sides, new Set());
   }
 
+  /**
+   * Tell the parent's author that someone replied.
+   *
+   * Every reply, not a digest: a thread here is small, and a reply is a
+   * question aimed at one person rather than a background hum. Skipped when
+   * you reply to yourself, and when the parent has been removed — there is
+   * nothing left to go back and read.
+   *
+   * Best-effort. A failed notification must never fail the reply that is
+   * already saved, which is why nothing here is awaited into the write path's
+   * error handling.
+   */
+  private async notifyReply(
+    reply: MarketComment,
+    parentId: string,
+    replierId: string,
+  ): Promise<void> {
+    try {
+      const parent = await this.repo.findOne({
+        where: { id: parentId },
+        select: { id: true, userId: true, deletedAt: true },
+      });
+      if (!parent || parent.deletedAt) return;
+      if (parent.userId === replierId) return;
+
+      const replier = await this.userRepo.findOne({
+        where: { id: replierId },
+        select: { id: true, username: true, firstName: true },
+      });
+      const who =
+        replier?.username ?? replier?.firstName ?? "Someone";
+
+      await this.notifications.create(parent.userId, {
+        type: "comment_reply",
+        title: "New reply",
+        // The reply itself, trimmed — enough to know whether it needs an
+        // answer without opening the market.
+        body: `${who} replied: "${excerpt(reply.body)}"`,
+        metadata: {
+          marketId: reply.marketId,
+          commentId: parentId,
+          replyId: reply.id,
+        },
+      });
+    } catch (err: any) {
+      this.logger.warn(`Reply notification failed: ${err.message}`);
+    }
+  }
+
+  /**
+   * Tell an author that their comment was liked.
+   *
+   * Folded on the comment, unlike replies: twenty likes on one comment is one
+   * piece of news, not twenty. While the notification sits unread it is
+   * rewritten in place with the running total; once it has been seen, the next
+   * like starts a fresh one.
+   *
+   * Only on the way up. Unliking is not news, and a count that ticks back down
+   * in someone's notification list is a worse experience than silence.
+   */
+  private async notifyLike(
+    comment: Pick<MarketComment, "id" | "userId" | "marketId">,
+    likerId: string,
+    likeCount: number,
+  ): Promise<void> {
+    try {
+      if (comment.userId === likerId) return;
+
+      const liker = await this.userRepo.findOne({
+        where: { id: likerId },
+        select: { id: true, username: true, firstName: true },
+      });
+      const who = liker?.username ?? liker?.firstName ?? "Someone";
+
+      const body =
+        likeCount > 1
+          ? `${who} and ${likeCount - 1} other${likeCount - 1 === 1 ? "" : "s"} liked your comment.`
+          : `${who} liked your comment.`;
+
+      await this.notifications.createOrRefresh(
+        comment.userId,
+        `comment-like:${comment.id}`,
+        {
+          type: "comment_like",
+          title: "Someone liked your comment",
+          body,
+          metadata: { marketId: comment.marketId, commentId: comment.id },
+        },
+      );
+    } catch (err: any) {
+      this.logger.warn(`Like notification failed: ${err.message}`);
+    }
+  }
+
   /** Author-initiated removal. The row survives; the text stops being served. */
   async remove(commentId: string, userId: string): Promise<{ ok: true }> {
     const comment = await this.repo.findOne({ where: { id: commentId } });
@@ -670,7 +779,8 @@ export class CommentsService {
   ): Promise<{ liked: boolean; likeCount: number }> {
     const comment = await this.repo.findOne({
       where: { id: commentId },
-      select: { id: true, deletedAt: true },
+      // userId and marketId are for the notification, not the toggle.
+      select: { id: true, userId: true, marketId: true, deletedAt: true },
     });
     if (!comment) throw new NotFoundException("Comment not found");
     if (comment.deletedAt) {
@@ -712,7 +822,19 @@ export class CommentsService {
       select: { likeCount: true },
     });
     const liked = !existing;
-    return { liked, likeCount: fresh?.likeCount ?? 0 };
+    const likeCount = fresh?.likeCount ?? 0;
+
+    // Only on the way up, and only once the count is settled — the author
+    // should be told the running total, not the one from before this tap.
+    if (liked && comment.userId !== userId) {
+      await this.notifyLike(
+        { id: commentId, userId: comment.userId, marketId: comment.marketId },
+        userId,
+        likeCount,
+      );
+    }
+
+    return { liked, likeCount };
   }
 
   // ── Moderation ─────────────────────────────────────────────────────────────

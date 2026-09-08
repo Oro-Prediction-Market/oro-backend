@@ -50,6 +50,65 @@ export class UserNotificationService {
     }
   }
 
+  /**
+   * Like {@link create}, but folds into an existing UNSEEN notification that
+   * carries the same `dedupeKey` instead of adding another row.
+   *
+   * For things that happen repeatedly to the same object — twenty people
+   * liking one comment — where twenty rows is not twenty pieces of news, it is
+   * one piece of news twenty times. Once the user has seen the notification
+   * the key stops matching and the next event starts a fresh one, so activity
+   * after they looked is not silently swallowed.
+   *
+   * `createdAt` is bumped on a fold so the notification returns to the top of
+   * the list, which is where a thing that just happened again belongs.
+   *
+   * Never throws, for the same reason create() does not: a notification is not
+   * worth failing the write that triggered it.
+   */
+  async createOrRefresh(
+    userId: string,
+    dedupeKey: string,
+    input: CreateNotificationInput,
+  ): Promise<void> {
+    try {
+      const existing = await this.repo
+        .createQueryBuilder("n")
+        .where("n.userId = :userId", { userId })
+        .andWhere("n.seenAt IS NULL")
+        .andWhere("n.metadata->>'dedupeKey' = :key", { key: dedupeKey })
+        .orderBy("n.createdAt", "DESC")
+        .getOne();
+
+      const metadata = { ...(input.metadata ?? {}), dedupeKey };
+
+      if (existing) {
+        // save() rather than update(): TypeORM's partial-update typing rejects
+        // a plain object for a jsonb column, and this row is already loaded.
+        existing.title = input.title;
+        existing.body = input.body;
+        existing.metadata = metadata;
+        existing.createdAt = new Date();
+        await this.repo.save(existing);
+        return;
+      }
+
+      await this.repo.save(
+        this.repo.create({
+          userId,
+          type: input.type ?? "system",
+          title: input.title,
+          body: input.body,
+          metadata,
+        }),
+      );
+    } catch (err: any) {
+      this.logger.warn(
+        `Failed to upsert notification for ${userId}: ${err.message}`,
+      );
+    }
+  }
+
   /** Unseen notifications, newest first (the client pops these on next open). */
   async listUnseen(userId: string): Promise<UserNotification[]> {
     return this.repo
