@@ -1,5 +1,11 @@
-import { ApiProperty } from "@nestjs/swagger";
-import { IsString, MaxLength, MinLength } from "class-validator";
+import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+import {
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+  MinLength,
+} from "class-validator";
 
 export const COMMENT_MAX_LENGTH = 500;
 
@@ -14,4 +20,13 @@ export class CreateCommentDto {
     message: `A comment cannot be longer than ${COMMENT_MAX_LENGTH} characters.`,
   })
   body: string;
+
+  /**
+   * Reply to this comment. Omit for a top-level comment. Must be a live
+   * top-level comment on the same market — threading is one level deep.
+   */
+  @ApiPropertyOptional({ format: "uuid" })
+  @IsOptional()
+  @IsUUID()
+  parentId?: string;
 }

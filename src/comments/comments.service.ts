@@ -26,6 +26,8 @@ const PG_UNIQUE_VIOLATION = "23505";
 
 const DEFAULT_PAGE_SIZE = 30;
 const MAX_PAGE_SIZE = 100;
+/** A reply thread is shown whole rather than paged; this is the safety stop. */
+const MAX_REPLIES = 200;
 
 /** One comment as the apps render it. */
 export interface CommentView {
@@ -49,6 +51,10 @@ export interface CommentView {
   hasFlagged: boolean;
   deleted: boolean;
   deletedBy: CommentDeletedBy | null;
+  /** Null for a top-level comment; the parent's id for a reply. */
+  parentId: string | null;
+  /** Live replies under this comment. Always 0 on a reply — depth is capped at 1. */
+  replyCount: number;
 }
 
 @Injectable()
@@ -101,12 +107,18 @@ export class CommentsService {
       .createQueryBuilder("c")
       .leftJoinAndSelect("c.user", "u")
       .where("c.marketId = :marketId", { marketId })
-      // A comment the author removed disappears entirely. One a moderator
-      // removed stays as a tombstone, so a thread that was moderated does not
-      // silently reshape itself and look like nothing happened.
-      .andWhere("(c.deletedAt IS NULL OR c.deletedBy = :admin)", {
-        admin: CommentDeletedBy.ADMIN,
-      })
+      // A comment the author removed normally disappears entirely. Two
+      // exceptions stay as tombstones: one a moderator removed (so a moderated
+      // thread does not silently reshape itself), and one that has replies
+      // hanging off it (removing it outright would orphan a conversation the
+      // author does not own).
+      .andWhere(
+        "(c.deletedAt IS NULL OR c.deletedBy = :admin OR c.replyCount > 0)",
+        { admin: CommentDeletedBy.ADMIN },
+      )
+      // Top level only. Replies hang off their parent and are fetched by
+      // listReplies when the reader opens them.
+      .andWhere("c.parentId IS NULL")
       // id is a tiebreaker, not decoration: two comments can land in the same
       // millisecond, and without a total order the cursor below would either
       // skip one or serve it twice.
@@ -154,6 +166,53 @@ export class CommentsService {
     const authorIds = [...new Set(rows.map((r) => r.userId))];
     const [sides, flagged] = await Promise.all([
       this.resolveSides(marketId, authorIds),
+      this.flaggedByViewer(
+        rows.map((r) => r.id),
+        viewerId,
+      ),
+    ]);
+
+    return rows.map((row) => this.toView(row, viewerId, sides, flagged));
+  }
+
+  /**
+   * Every reply under one comment, oldest first.
+   *
+   * Not paginated and not sortable, unlike the top-level list. A reply thread
+   * is a conversation: it reads in the order it happened, and it is bounded by
+   * MAX_REPLIES rather than by a cursor, because a UI that pages inside an
+   * expanded sub-thread is worse than one that simply shows all of them.
+   */
+  async listReplies(
+    commentId: string,
+    viewerId: string | null,
+  ): Promise<CommentView[]> {
+    const parent = await this.repo.findOne({
+      where: { id: commentId },
+      select: { id: true, marketId: true },
+    });
+    if (!parent) throw new NotFoundException("Comment not found");
+
+    const rows = await this.repo
+      .createQueryBuilder("c")
+      .leftJoinAndSelect("c.user", "u")
+      .where("c.parentId = :commentId", { commentId })
+      // No replyCount clause here, unlike the top-level list: nothing hangs off
+      // a reply, so an author-removed one has nothing to orphan and simply goes.
+      .andWhere("(c.deletedAt IS NULL OR c.deletedBy = :admin)", {
+        admin: CommentDeletedBy.ADMIN,
+      })
+      .orderBy("c.createdAt", "ASC")
+      .addOrderBy("c.id", "ASC")
+      .take(MAX_REPLIES)
+      .getMany();
+
+    if (rows.length === 0) return [];
+
+    const [sides, flagged] = await Promise.all([
+      this.resolveSides(parent.marketId, [
+        ...new Set(rows.map((r) => r.userId)),
+      ]),
       this.flaggedByViewer(
         rows.map((r) => r.id),
         viewerId,
@@ -251,6 +310,8 @@ export class CommentsService {
       hasFlagged: flagged.has(row.id),
       deleted: removed,
       deletedBy: row.deletedBy ?? null,
+      parentId: row.parentId ?? null,
+      replyCount: row.replyCount ?? 0,
     };
   }
 
@@ -260,6 +321,7 @@ export class CommentsService {
     marketId: string,
     userId: string,
     rawBody: string,
+    parentId: string | null = null,
   ): Promise<CommentView> {
     const market = await this.marketRepo.findOne({
       where: { id: marketId },
@@ -307,6 +369,36 @@ export class CommentsService {
       );
     }
 
+    // Replying: the parent must be a live top-level comment on THIS market.
+    // Checked before the write so a reply can never end up orphaned, on the
+    // wrong thread, or nested two deep.
+    if (parentId) {
+      const parent = await this.repo.findOne({
+        where: { id: parentId },
+        select: {
+          id: true,
+          marketId: true,
+          parentId: true,
+          deletedAt: true,
+        },
+      });
+      if (!parent) throw new NotFoundException("Comment not found");
+      if (parent.marketId !== marketId) {
+        throw new BadRequestException(
+          "That comment belongs to a different market.",
+        );
+      }
+      if (parent.deletedAt) {
+        throw new BadRequestException("That comment has been removed.");
+      }
+      // Depth is capped at one: reply to the top-level comment, not to a reply.
+      if (parent.parentId) {
+        throw new BadRequestException(
+          "You can only reply to a top-level comment.",
+        );
+      }
+    }
+
     const blocked = findBlockedTerm(body);
     if (blocked) {
       // Log the term, never the comment — the body is the user's, and it does
@@ -318,8 +410,10 @@ export class CommentsService {
     }
 
     const saved = await this.repo.save(
-      this.repo.create({ marketId, userId, body }),
+      this.repo.create({ marketId, userId, body, parentId }),
     );
+
+    if (parentId) await this.repo.increment({ id: parentId }, "replyCount", 1);
 
     const [user, sides] = await Promise.all([
       this.userRepo.findOne({ where: { id: userId } }),
@@ -343,7 +437,25 @@ export class CommentsService {
       deletedAt: new Date(),
       deletedBy: CommentDeletedBy.AUTHOR,
     });
+    await this.releaseReplySlot(comment.parentId);
     return { ok: true };
+  }
+
+  /**
+   * Drop the parent's replyCount by one when a reply goes away.
+   *
+   * Clamped at zero in SQL rather than with decrement(): the count is
+   * cosmetic, but "-1 Replies" on a live page is the kind of thing nobody
+   * ever goes back to fix.
+   */
+  private async releaseReplySlot(parentId: string | null): Promise<void> {
+    if (!parentId) return;
+    await this.repo.query(
+      `UPDATE market_comments
+          SET "replyCount" = GREATEST(0, "replyCount" - 1)
+        WHERE id = $1`,
+      [parentId],
+    );
   }
 
   /**
@@ -475,6 +587,7 @@ export class CommentsService {
         deletedBy: CommentDeletedBy.ADMIN,
         deletedReason: reason.trim(),
       });
+      await this.releaseReplySlot(comment.parentId);
 
       await this.notifications.create(comment.userId, {
         type: "comment_removed",

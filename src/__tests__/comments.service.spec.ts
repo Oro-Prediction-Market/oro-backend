@@ -26,6 +26,7 @@ function makeService(overrides: any = {}) {
     update: jest.fn(async () => ({})),
     increment: jest.fn(async () => ({})),
     count: jest.fn(async () => 0),
+    query: jest.fn(async () => []),
     createQueryBuilder: jest.fn(),
     ...overrides.repo,
   };
@@ -209,6 +210,122 @@ describe("CommentsService.create", () => {
     expect(repo.create).toHaveBeenCalledWith(
       expect.objectContaining({ body: "spurs to win" }),
     );
+  });
+});
+
+// ── Replies ──────────────────────────────────────────────────────────────────
+
+describe("CommentsService replies", () => {
+  const parent = {
+    id: "parent-1",
+    marketId: "market-1",
+    parentId: null,
+    deletedAt: null,
+  };
+
+  it("stores parentId and bumps the parent's counter", async () => {
+    const { service, repo } = makeService({
+      repo: { findOne: async () => parent },
+    });
+    await service.create("market-1", "user-1", "agreed", "parent-1");
+    expect(repo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ parentId: "parent-1" }),
+    );
+    expect(repo.increment).toHaveBeenCalledWith(
+      { id: "parent-1" },
+      "replyCount",
+      1,
+    );
+  });
+
+  it("leaves replyCount alone for a top-level comment", async () => {
+    const { service, repo } = makeService();
+    await service.create("market-1", "user-1", "top level");
+    expect(repo.increment).not.toHaveBeenCalled();
+  });
+
+  // Depth is capped at one. Arbitrary nesting turns a thread into a tree that
+  // has to be paginated and indented at every level.
+  it("refuses to reply to a reply", async () => {
+    const { service } = makeService({
+      repo: { findOne: async () => ({ ...parent, parentId: "grandparent" }) },
+    });
+    await expect(
+      service.create("market-1", "user-1", "nested", "parent-1"),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it("refuses a parent from a different market", async () => {
+    const { service } = makeService({
+      repo: { findOne: async () => ({ ...parent, marketId: "other-market" }) },
+    });
+    await expect(
+      service.create("market-1", "user-1", "wrong thread", "parent-1"),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it("refuses a removed parent", async () => {
+    const { service } = makeService({
+      repo: { findOne: async () => ({ ...parent, deletedAt: new Date() }) },
+    });
+    await expect(
+      service.create("market-1", "user-1", "too late", "parent-1"),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it("refuses an unknown parent", async () => {
+    const { service } = makeService({ repo: { findOne: async () => null } });
+    await expect(
+      service.create("market-1", "user-1", "ghost", "missing"),
+    ).rejects.toThrow(NotFoundException);
+  });
+
+  // The settled lock covers replies too — it is the same write path.
+  it("refuses a reply on a settled market", async () => {
+    const { service } = makeService({
+      marketRepo: {
+        findOne: async () => ({ id: "market-1", status: MarketStatus.SETTLED }),
+      },
+      repo: { findOne: async () => parent },
+    });
+    await expect(
+      service.create("market-1", "user-1", "late take", "parent-1"),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it("releases the parent's slot when a reply is deleted", async () => {
+    const { service, repo } = makeService({
+      repo: {
+        findOne: async () => ({
+          id: "reply-1",
+          userId: "user-1",
+          parentId: "parent-1",
+          deletedAt: null,
+        }),
+        query: jest.fn(async () => []),
+      },
+    });
+    await service.remove("reply-1", "user-1");
+    expect(repo.query).toHaveBeenCalledWith(
+      expect.stringContaining("GREATEST(0"),
+      ["parent-1"],
+    );
+  });
+
+  it("does not touch any counter when a top-level comment is deleted", async () => {
+    const { service, repo } = makeService({
+      repo: {
+        findOne: async () => ({
+          id: "c-1",
+          userId: "user-1",
+          parentId: null,
+          deletedAt: null,
+        }),
+        query: jest.fn(async () => []),
+      },
+    });
+    await service.remove("c-1", "user-1");
+    expect(repo.query).not.toHaveBeenCalled();
   });
 });
 

@@ -20,6 +20,7 @@ export class CreateMarketComments1775990000490 implements MigrationInterface {
         "deletedBy"     VARCHAR(16),
         "deletedReason" TEXT,
         "flagCount"     INTEGER     NOT NULL DEFAULT 0,
+        "replyCount"    INTEGER     NOT NULL DEFAULT 0,
         -- Millisecond precision: this column is the pagination cursor, and a
         -- JS ISO string cannot carry the microseconds now() would otherwise
         -- store. See the note on the entity.
@@ -39,6 +40,11 @@ export class CreateMarketComments1775990000490 implements MigrationInterface {
     );
     await queryRunner.query(
       `CREATE INDEX "IDX_market_comments_userId" ON "market_comments" ("userId")`,
+    );
+    // Replies are fetched by parent, and the top-level list filters on
+    // parentId IS NULL — both go through this index.
+    await queryRunner.query(
+      `CREATE INDEX "IDX_market_comments_parentId" ON "market_comments" ("parentId")`,
     );
 
     await queryRunner.query(`

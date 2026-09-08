@@ -53,10 +53,15 @@ export class MarketComment {
   user: User;
 
   /**
-   * Reserved for threading and deliberately inert in v1 — nothing reads or
-   * writes it. It exists so replies become a UI change later rather than a
-   * migration against a table that by then holds real conversations.
+   * The comment this one replies to, or null for a top-level comment.
+   *
+   * Threading is ONE level deep by design: a reply cannot itself be replied
+   * to, enforced in the service. Arbitrary nesting turns a thread into a tree
+   * that has to be paginated, indented and collapsed at every depth, and it
+   * gives an argument somewhere to hide. Everything stays a flat conversation
+   * under a top-level comment.
    */
+  @Index()
   @Column({ type: "uuid", nullable: true })
   parentId: string | null;
 
@@ -79,6 +84,15 @@ export class MarketComment {
    */
   @Column({ type: "int", default: 0 })
   flagCount: number;
+
+  /**
+   * Denormalised number of live replies, so a page of comments can render
+   * "2 Replies" without a grouped join per page. Maintained by the service on
+   * reply create and delete; always read through GREATEST(0, ...) on the way
+   * down so a double-delete cannot drive it negative.
+   */
+  @Column({ type: "int", default: 0 })
+  replyCount: number;
 
   /**
    * Millisecond precision, deliberately, because this column is the pagination

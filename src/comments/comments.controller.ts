@@ -60,7 +60,26 @@ export class CommentsController {
     @Param("id", ParseUUIDPipe) marketId: string,
     @Body() dto: CreateCommentDto,
   ) {
-    return this.comments.create(marketId, req.user.userId, dto.body);
+    return this.comments.create(
+      marketId,
+      req.user.userId,
+      dto.body,
+      dto.parentId ?? null,
+    );
+  }
+
+  /**
+   * Every reply under one comment, oldest first. Public for the same reason
+   * the thread is: a reader should not have to sign in to follow it.
+   */
+  @Public()
+  @Get("comments/:id/replies")
+  @ApiOperation({ summary: "Replies to a comment, oldest first" })
+  async replies(
+    @Request() req: any,
+    @Param("id", ParseUUIDPipe) commentId: string,
+  ) {
+    return this.comments.listReplies(commentId, req.user?.userId ?? null);
   }
 
   @Delete("comments/:id")
