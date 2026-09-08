@@ -29,6 +29,12 @@ export interface MarketAnswer {
   /** Short share/OG description. */
   summary: string;
   settled: boolean;
+  /**
+   * False when the market carries no crowd view at all (unfunded, all
+   * probabilities zero). The client should render "no answer yet" rather than a
+   * row of 0% bars.
+   */
+  hasAnswer: boolean;
   outcomes: AnswerOutcome[];
   /** Movement over the last 24h for the leading outcome, in probability points. */
   change24h: number | null;
@@ -86,10 +92,21 @@ export class AnswerService {
       market.status === MarketStatus.RESOLVED ||
       market.status === MarketStatus.SETTLED;
 
-    const leader = outcomes.reduce<AnswerOutcome | null>(
-      (best, o) => (!best || o.probability > best.probability ? o : best),
-      null,
-    );
+    // An unfunded market carries zeroes, not a distribution: the auto-created
+    // TER/BTC markets sit at 0 for every outcome until the first stake lands.
+    // Reporting "Oro says 0% UP" there states a crowd view that does not exist
+    // — worse than saying nothing, because a reader cannot tell it apart from a
+    // genuine 0% call. Anything that does not sum to roughly 1 is treated as no
+    // answer at all.
+    const probabilityMass = outcomes.reduce((a, o) => a + o.probability, 0);
+    const hasAnswer = outcomes.length > 0 && probabilityMass > 0.5;
+
+    const leader = hasAnswer
+      ? outcomes.reduce<AnswerOutcome | null>(
+          (best, o) => (!best || o.probability > best.probability ? o : best),
+          null,
+        )
+      : null;
     const winner = outcomes.find((o) => o.isWinner) ?? null;
 
     const [history, predictorCount] = await Promise.all([
@@ -118,7 +135,7 @@ export class AnswerService {
       : leader
         ? `${predictorCount} predictor${predictorCount === 1 ? "" : "s"} put ` +
           `${leader.label} at ${leader.percent}%.`
-        : `${market.title} — open, no answer yet.`;
+        : `${market.title} — open, nobody has taken a side yet.`;
 
     return {
       marketId: market.id,
@@ -128,6 +145,7 @@ export class AnswerService {
       headline,
       summary,
       settled,
+      hasAnswer,
       outcomes,
       change24h,
       resolutionCriteria: market.resolutionCriteria ?? null,

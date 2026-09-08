@@ -170,7 +170,105 @@ describe("AnswerService", () => {
     const a = await svc.getAnswer("m1");
 
     expect(a.headline).toBe("No answer yet");
+    expect(a.hasAnswer).toBe(false);
     expect(a.outcomes).toEqual([]);
+  });
+
+  it("refuses to report 0% on an unfunded market", async () => {
+    // Regression guard: auto-created TER/BTC markets sit at 0 for every outcome
+    // until the first stake, and this used to render as "Oro says 0% UP" — a
+    // crowd view that does not exist, indistinguishable from a real 0% call.
+    const { svc } = build({
+      market: {
+        id: "m1",
+        title: "TER — UP or DOWN in 3 hours?",
+        category: "economy",
+        status: MarketStatus.OPEN,
+        totalPool: 0,
+        resolutionCriteria: null,
+        evidenceUrl: null,
+        evidenceNote: null,
+        closesAt: null,
+        resolvedAt: null,
+        outcomes: [
+          { id: "o1", label: "UP", lmsrProbability: 0, sortOrder: 0, isWinner: false },
+          { id: "o2", label: "DOWN", lmsrProbability: 0, sortOrder: 1, isWinner: false },
+        ],
+      },
+      staked: 0,
+      free: 0,
+    });
+
+    const a = await svc.getAnswer("m1");
+
+    expect(a.hasAnswer).toBe(false);
+    expect(a.headline).toBe("No answer yet");
+    expect(a.headline).not.toContain("0%");
+    expect(a.summary).toContain("nobody has taken a side yet");
+    expect(a.change24h).toBeNull();
+    // The outcomes still come back so the client can list them.
+    expect(a.outcomes.map((o) => o.label)).toEqual(["UP", "DOWN"]);
+  });
+
+  it("still answers a settled market whose probabilities never moved off zero", async () => {
+    const { svc } = build({
+      market: {
+        id: "m1",
+        title: "TER — UP or DOWN in 3 hours?",
+        category: "economy",
+        status: MarketStatus.SETTLED,
+        totalPool: 0,
+        resolutionCriteria: "TER buy price at close.",
+        evidenceUrl: null,
+        evidenceNote: "TER buy price at close: Nu 135.07",
+        closesAt: null,
+        resolvedAt: new Date("2026-09-08T07:53:52Z"),
+        outcomes: [
+          { id: "o1", label: "UP", lmsrProbability: 0, sortOrder: 0, isWinner: false },
+          { id: "o2", label: "DOWN", lmsrProbability: 0, sortOrder: 1, isWinner: true },
+        ],
+      },
+    });
+
+    const a = await svc.getAnswer("m1");
+
+    // The result is a fact, not a crowd estimate — it survives zero volume.
+    expect(a.headline).toBe("Resolved: DOWN");
+    expect(a.settled).toBe(true);
+  });
+
+  it("treats a distribution that does not sum to 1 as no answer", async () => {
+    const { svc } = build({
+      market: {
+        id: "m1",
+        title: "Half-initialised",
+        category: "other",
+        status: MarketStatus.OPEN,
+        totalPool: 0,
+        resolutionCriteria: null,
+        evidenceUrl: null,
+        evidenceNote: null,
+        closesAt: null,
+        resolvedAt: null,
+        outcomes: [
+          { id: "o1", label: "A", lmsrProbability: 0.02, sortOrder: 0, isWinner: false },
+          { id: "o2", label: "B", lmsrProbability: 0, sortOrder: 1, isWinner: false },
+        ],
+      },
+    });
+
+    const a = await svc.getAnswer("m1");
+
+    expect(a.hasAnswer).toBe(false);
+  });
+
+  it("reports an answer as soon as the distribution is real", async () => {
+    const { svc } = build();
+
+    const a = await svc.getAnswer("m1");
+
+    expect(a.hasAnswer).toBe(true);
+    expect(a.headline).toBe("Oro says 73% Yes");
   });
 
   it("404s on an unknown market", async () => {
