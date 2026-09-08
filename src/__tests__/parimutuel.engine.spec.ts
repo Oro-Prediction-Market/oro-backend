@@ -104,6 +104,7 @@ describe("ParimutuelEngine.calcOdds", () => {
       null as any, // revenueDistributionService
       ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
+      ({ resolveForMarket: async () => 0 }) as any, // freeCallsService
     );
   });
 
@@ -213,6 +214,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any, // revenueDistributionService
       ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
+      ({ resolveForMarket: async () => 0 }) as any, // freeCallsService
     );
     await expect(engine.placePosition("u1", "m1", "o1", 0)).rejects.toThrow(
       BadRequestException,
@@ -284,6 +286,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any, // revenueDistributionService
       ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
+      ({ resolveForMarket: async () => 0 }) as any, // freeCallsService
     );
 
     await expect(engine.placePosition("u1", "m1", "o1", 100)).rejects.toThrow(
@@ -353,6 +356,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any, // revenueDistributionService
       ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
+      ({ resolveForMarket: async () => 0 }) as any, // freeCallsService
     );
 
     await expect(engine.placePosition("u1", "m1", "o1", 100)).rejects.toThrow(
@@ -434,6 +438,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any, // revenueDistributionService
       ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
+      ({ resolveForMarket: async () => 0 }) as any, // freeCallsService
     );
 
     await expect(engine.placePosition("u1", "m1", "o1", 100)).rejects.toThrow(
@@ -514,6 +519,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any, // revenueDistributionService
       ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
+      ({ resolveForMarket: async () => 0 }) as any, // freeCallsService
     );
 
     await expect(engine.placePosition("u2", "m1", "o2", 100)).rejects.toThrow(
@@ -598,6 +604,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any, // revenueDistributionService
       ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
+      ({ resolveForMarket: async () => 0 }) as any, // freeCallsService
     );
 
     // Should NOT throw — duel is OPEN, not ACTIVE
@@ -647,6 +654,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any, null as any,
       ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any,
+      ({ resolveForMarket: async () => 0 }) as any, // freeCallsService
     );
     return { engine, mockEm };
   }
@@ -821,6 +829,7 @@ describe("settleMarket — each book settles out of its own pool", () => {
       null as any, null as any, null as any, null as any, null as any,
       ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any,
+      ({ resolveForMarket: async () => 0 }) as any, // freeCallsService
     );
     return { engine, market, written, settlements, books };
   }
@@ -1062,6 +1071,7 @@ describe("placePosition — a stake enters its own book and no other", () => {
       null as any, // 19 revenueDistribution
       ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // 20 notificationQueue
+      ({ resolveForMarket: async () => 0 }) as any, // freeCallsService
     );
     return { engine, saved, mockEm, btnBook, usdtBook, market };
   }
@@ -1312,6 +1322,7 @@ describe("Settlement wallet credit — no DK transfer on market settle", () => {
       null as any, // revenueDistributionService
       ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
+      ({ resolveForMarket: async () => 0 }) as any, // freeCallsService
     );
 
     return { engine, mockDkGateway, positions, bookRef };
@@ -1547,6 +1558,7 @@ describe("Batch payment — NOT triggered on market settlement", () => {
       null as any, // revenueDistributionService
       ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
+      ({ resolveForMarket: async () => 0 }) as any, // freeCallsService
     );
 
     return engine;
@@ -1740,6 +1752,7 @@ describe("Batch payment — NOT triggered on market settlement", () => {
       null as any, // revenueDistributionService
       ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
+      ({ resolveForMarket: async () => 0 }) as any, // freeCallsService
     );
 
     // totalPool=600, houseEdgePct=8 → payoutPool=552
@@ -1864,6 +1877,7 @@ describe("ParimutuelEngine.resolveMarket — atomic concurrency claim", () => {
       null as any, // revenueDistributionService
       ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
+      ({ resolveForMarket: async () => 0 }) as any, // freeCallsService
     );
 
     return { engine, marketRepo, outcomeRepo, claimExecute };
@@ -2101,6 +2115,7 @@ describe("ParimutuelEngine.cancelMarket — dispute bond release", () => {
       null as any, // revenueDistributionService
       ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
+      ({ resolveForMarket: async () => 0 }) as any, // freeCallsService
     );
 
     return {
@@ -2321,6 +2336,7 @@ describe("ParimutuelEngine.resolveMarket — contests settle per book", () => {
       null as any, // revenueDistributionService
       ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any, // notificationQueue
+      ({ resolveForMarket: async () => 0 }) as any, // freeCallsService
     );
 
     return { engine, savedTransactions, bookUpdates, disputes };
@@ -2578,6 +2594,7 @@ describe("ParimutuelEngine.settleMarket — challenger reward routing by book", 
       null as any, null as any, null as any, null as any, null as any,
       ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any,
+      ({ resolveForMarket: async () => 0 }) as any, // freeCallsService
     );
 
     return { engine, market, winner: market.outcomes[0] };
@@ -2703,6 +2720,7 @@ describe("ParimutuelEngine.cancelMarket — mixed-currency bond release", () => 
       null as any, null as any, null as any, null as any, null as any,
       ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any,
+      ({ resolveForMarket: async () => 0 }) as any, // freeCallsService
     );
 
     await engine.cancelMarket("m1");

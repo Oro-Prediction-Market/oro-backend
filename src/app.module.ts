@@ -54,6 +54,8 @@ import { TerModule } from "./ter/ter.module";
 import { BtcModule } from "./btc/btc.module";
 import { AmlModule } from "./aml/aml.module";
 import { SuggestionsModule } from "./suggestions/suggestions.module";
+import { MarketProbabilitySnapshot } from "./entities/market-probability-snapshot.entity";
+import { FreeCall } from "./entities/free-call.entity";
 import { MarketSuggestion } from "./entities/market-suggestion.entity";
 import { MarketSuggestionVote } from "./entities/market-suggestion-vote.entity";
 import { CommentsModule } from "./comments/comments.module";
@@ -62,6 +64,8 @@ import { MarketCommentFlag } from "./entities/market-comment-flag.entity";
 import { MarketCommentLike } from "./entities/market-comment-like.entity";
 import { EplModule } from "./epl/epl.module";
 import { UclModule } from "./ucl/ucl.module";
+import { InsightsModule } from "./insights/insights.module";
+import { FreeCallsModule } from "./free-calls/free-calls.module";
 import { FeedbackModule } from "./feedback/feedback.module";
 import { AmlAlert } from "./aml/entities/aml-alert.entity";
 import { AmlReport } from "./aml/entities/aml-report.entity";
@@ -146,6 +150,8 @@ import { UserNotification } from "./entities/user-notification.entity";
           MarketComment,
           MarketCommentFlag,
           MarketCommentLike,
+          MarketProbabilitySnapshot,
+          FreeCall,
         ],
         // Schema changes ship as migrations ONLY. synchronize silently DROPs a
         // column when an entity property is renamed — irrecoverable financial
@@ -189,6 +195,8 @@ import { UserNotification } from "./entities/user-notification.entity";
     EplModule,
     UclModule,
     FeedbackModule,
+    InsightsModule,
+    FreeCallsModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

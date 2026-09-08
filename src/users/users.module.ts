@@ -10,11 +10,13 @@ import { Position } from "../entities/position.entity";
 import { CryptoWithdrawal } from "../entities/crypto-withdrawal.entity";
 import { Season } from "../entities/season.entity";
 import { UserNotification } from "../entities/user-notification.entity";
+import { FreeCall } from "../entities/free-call.entity";
 import { UsersController } from "./users.controller";
 import { StreakService } from "./streak.service";
 import { SeasonService } from "./season.service";
 import { OnboardService } from "./onboard.service";
 import { UserNotificationService } from "./user-notification.service";
+import { CalibrationService } from "./calibration.service";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import { SmsService } from "../shared/services/sms.service";
 import { EmailService } from "../shared/services/email.service";
@@ -34,6 +36,7 @@ import { TelegramModule } from "../telegram/telegram.module";
       CryptoWithdrawal,
       Season,
       UserNotification,
+      FreeCall,
       DKGatewayAuthToken,
     ]),
     TelegramModule,
@@ -52,12 +55,18 @@ import { TelegramModule } from "../telegram/telegram.module";
     SeasonService,
     OnboardService,
     UserNotificationService,
+    CalibrationService,
     TelegramSimpleService,
     SmsService,
     EmailService,
     BhutanAppNotificationService,
     DKGatewayService,
   ],
-  exports: [StreakService, SeasonService, UserNotificationService],
+  exports: [
+    StreakService,
+    SeasonService,
+    UserNotificationService,
+    CalibrationService,
+  ],
 })
 export class UsersModule {}

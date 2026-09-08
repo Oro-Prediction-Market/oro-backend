@@ -18,6 +18,12 @@ export enum SuggestionStatus {
   APPROVED = "approved",
   /** Rejected by the admin. Hidden, and does not free up the monthly quota. */
   REJECTED = "rejected",
+  /**
+   * Crossed the vote threshold — the crowd has asked for this one loudly
+   * enough that it no longer needs an admin to notice it. Still votable, and
+   * shown publicly as awaiting launch.
+   */
+  QUEUED = "queued",
   /** An admin turned this into a real market. `marketId` points at it. */
   CREATED = "created",
 }
@@ -83,6 +89,13 @@ export class MarketSuggestion {
 
   @Column({ type: "timestamptz", nullable: true })
   reviewedAt: Date | null;
+
+  /**
+   * When the vote threshold was crossed. The dedupe key for promotion — set
+   * once, so the admin is pinged once no matter how many further votes land.
+   */
+  @Column({ type: "timestamptz", nullable: true })
+  promotedAt: Date | null;
 
   @CreateDateColumn({ type: "timestamptz" })
   createdAt: Date;

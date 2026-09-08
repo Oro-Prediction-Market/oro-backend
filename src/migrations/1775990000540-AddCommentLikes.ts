@@ -7,8 +7,8 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * one creates the table, so re-running it means dropping every comment in the
  * database. Adding to it was fine while the feature had no data worth keeping.
  */
-export class AddCommentLikes1775990000500 implements MigrationInterface {
-  name = "AddCommentLikes1775990000500";
+export class AddCommentLikes1775990000540 implements MigrationInterface {
+  name = "AddCommentLikes1775990000540";
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
