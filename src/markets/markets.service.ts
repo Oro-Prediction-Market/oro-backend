@@ -186,6 +186,7 @@ export class MarketsService implements OnModuleInit {
       if (dto.bracketSlot) metadata.bracketSlot = dto.bracketSlot;
       if (dto.candidate) metadata.candidate = dto.candidate;
       if (dto.matchLabel) metadata.matchLabel = dto.matchLabel;
+      if (dto.matchday) metadata.matchday = dto.matchday;
 
       // 3. Create market and link outcomes (cascade will handle saving them)
       const market = this.marketRepo.create({

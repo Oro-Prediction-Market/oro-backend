@@ -623,6 +623,7 @@ export class KeeperService {
         const dto: CreateMarketDto = {
           title: `${f.homeTeam} vs ${f.awayTeam}`,
           description: "Premier League — who wins the match?",
+          matchday: f.matchday ?? undefined,
           category: "sports",
           subcategory: "epl-match",
           externalMatchId: f.id,
@@ -765,6 +766,7 @@ export class KeeperService {
         const dto: CreateMarketDto = {
           title: `${f.homeTeam} vs ${f.awayTeam}`,
           description: "Champions League — who wins the match?",
+          matchday: f.matchday ?? undefined,
           category: "sports",
           subcategory: "ucl-match",
           externalMatchId: f.id,

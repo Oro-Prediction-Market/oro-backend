@@ -237,6 +237,8 @@ export class EplService {
       homeCrest: string;
       awayCrest: string;
       utcDate: string;
+      /** Premier League gameweek, straight from football-data. */
+      matchday: number | null;
     }>
   > {
     const day = (d: Date) => d.toISOString().slice(0, 10);
@@ -253,6 +255,9 @@ export class EplService {
         homeCrest: m.homeTeam?.crest ?? "",
         awayCrest: m.awayTeam?.crest ?? "",
         utcDate: m.utcDate ?? "",
+        matchday: Number.isFinite(Number(m.matchday))
+          ? Number(m.matchday)
+          : null,
       }))
       .filter((f: any) => f.id && f.homeTeam && f.awayTeam && f.utcDate);
   }

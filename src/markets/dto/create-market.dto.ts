@@ -5,11 +5,12 @@ import {
   IsNumber,
   IsDateString,
   IsArray,
+  IsInt,
   IsUUID,
   Min,
   Max,
 } from "class-validator";
-import { Transform } from "class-transformer";
+import { Transform, Type } from "class-transformer";
 
 export class OutcomeInputDto {
   label: string;
@@ -110,6 +111,19 @@ export class CreateMarketDto {
   @IsOptional()
   @IsString()
   groupTitle?: string;
+
+  /**
+   * Competition round this fixture belongs to — the EPL gameweek or the UCL
+   * league-phase matchday (stored in metadata.matchday). It is what the hub
+   * pages group their fixture lists by; deriving it from the kickoff date
+   * instead would split a midweek round across two headings.
+   */
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  matchday?: number;
 
   /** Candidate this child market represents (stored in metadata.candidate) */
   @ApiPropertyOptional()

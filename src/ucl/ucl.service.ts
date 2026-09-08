@@ -240,6 +240,8 @@ export class UclService {
       awayCrest: string;
       utcDate: string;
       stage: string;
+      /** League-phase matchday. Null in the knockouts, where `stage` names it. */
+      matchday: number | null;
     }>
   > {
     const day = (d: Date) => d.toISOString().slice(0, 10);
@@ -257,6 +259,9 @@ export class UclService {
         awayCrest: m.awayTeam?.crest ?? "",
         utcDate: m.utcDate ?? "",
         stage: m.stage ?? "",
+        matchday: Number.isFinite(Number(m.matchday))
+          ? Number(m.matchday)
+          : null,
       }))
       .filter((f: any) => f.id && f.homeTeam && f.awayTeam && f.utcDate);
   }
