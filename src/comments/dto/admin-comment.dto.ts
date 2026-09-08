@@ -19,6 +19,17 @@ export class AdminlistCommentsDto {
   @IsBooleanString()
   flagged?: string;
 
+  /**
+   * Free text across the comment body, the author's name/username and the
+   * market title. Capped because it becomes an ILIKE against a `text` column
+   * with no trigram index — a long needle is slow and buys nothing.
+   */
+  @ApiPropertyOptional({ description: "Search body, author or market title" })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  q?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsUUID()

@@ -35,6 +35,7 @@ export class AdminCommentsController {
   async list(@Query() query: AdminlistCommentsDto) {
     return this.comments.adminList({
       flagged: query.flagged === "true",
+      q: query.q,
       marketId: query.marketId,
       userId: query.userId,
       page: query.page,

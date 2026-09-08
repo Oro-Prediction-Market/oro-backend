@@ -493,6 +493,7 @@ export class CommentsService {
   /** The moderation queue: most-reported first, then newest. */
   async adminList(opts: {
     flagged?: boolean;
+    q?: string;
     marketId?: string;
     userId?: string;
     page?: number;
@@ -508,6 +509,23 @@ export class CommentsService {
       .addSelect(["m.id", "m.title"]);
 
     if (opts.flagged) qb.andWhere("c.flagCount > 0");
+
+    // Free-text search. `%` and `_` are escaped so a body containing them is
+    // matched literally rather than turning into a wildcard — the needle is
+    // moderator input, and "100%" should find "100%".
+    const needle = (opts.q ?? "").trim();
+    if (needle) {
+      const like = `%${needle.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+      qb.andWhere(
+        `(c."body" ILIKE :like ESCAPE '\\'
+          OR u."username" ILIKE :like ESCAPE '\\'
+          OR u."firstName" ILIKE :like ESCAPE '\\'
+          OR u."lastName" ILIKE :like ESCAPE '\\'
+          OR m."title" ILIKE :like ESCAPE '\\')`,
+        { like },
+      );
+    }
+
     if (opts.marketId) qb.andWhere("c.marketId = :mid", { mid: opts.marketId });
     if (opts.userId) qb.andWhere("c.userId = :uid", { uid: opts.userId });
 
