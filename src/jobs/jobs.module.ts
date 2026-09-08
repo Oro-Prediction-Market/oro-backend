@@ -16,8 +16,10 @@ import { Transaction } from "../entities/transaction.entity";
 import { Challenge } from "../entities/challenge.entity";
 import { Settlement } from "../entities/settlement.entity";
 import { Position } from "../entities/position.entity";
+import { AuthMethod } from "../entities/auth-method.entity";
 import { MarketsModule } from "../markets/markets.module";
 import { RedisModule } from "../redis/redis.module";
+import { UsersModule } from "../users/users.module";
 
 @Module({
   imports: [
@@ -31,9 +33,13 @@ import { RedisModule } from "../redis/redis.module";
       Challenge,
       Settlement,
       Position,
+      AuthMethod,
     ]),
     forwardRef(() => MarketsModule),
     RedisModule,
+    // For UserNotificationService — the in-app bell channel, which is the only
+    // one that reaches a PWA user with no Telegram chat and no BhutanApp link.
+    UsersModule,
   ],
   providers: [
     NotificationProcessor,

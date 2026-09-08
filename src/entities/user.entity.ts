@@ -210,6 +210,23 @@ export class User {
   lastActiveAt: Date | null;
 
   /**
+   * Highest re-engagement milestone (in days quiet) already DM'd to this user,
+   * or null if none has been sent since their last activity.
+   *
+   * This is the dedupe key for the win-back ladder. It replaced a one-calendar-day
+   * `lastActiveAt BETWEEN` window, which was fire-and-forget: if the cron missed a
+   * day (deploy, restart, lock contention) that day's cohort was skipped forever,
+   * because the window had moved on by the next run. Storing the stage instead
+   * makes the ladder catch up — a user stays eligible until they are actually
+   * messaged.
+   *
+   * Reset to null when the user places a prediction (alongside `lastActiveAt`),
+   * so someone who returns and lapses again walks the ladder from the start.
+   */
+  @Column({ type: "int", nullable: true })
+  reengagementStage: number | null;
+
+  /**
    * Number of times the user bet AGAINST the Expert-weighted signal
    * and won. Incremented at settlement. Used for the Contrarian badge.
    */

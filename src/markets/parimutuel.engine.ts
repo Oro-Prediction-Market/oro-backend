@@ -390,8 +390,11 @@ export class ParimutuelEngine implements OnModuleInit {
         }
 
         // Update lastActiveAt for decay tracking (outside the transaction is fine —
-        // worst case it's slightly stale, never wrong)
-        await em.update(User, { id: userId }, { lastActiveAt: new Date() });
+        await em.update(
+          User,
+          { id: userId },
+          { lastActiveAt: new Date(), reengagementStage: null },
+        );
 
         // Create bet record
         const userBonusBalanceAtBet = Number(user.bonusBalance ?? 0);
