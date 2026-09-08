@@ -20,7 +20,10 @@ export class CreateMarketComments1775990000490 implements MigrationInterface {
         "deletedBy"     VARCHAR(16),
         "deletedReason" TEXT,
         "flagCount"     INTEGER     NOT NULL DEFAULT 0,
-        "createdAt"     TIMESTAMPTZ NOT NULL DEFAULT now(),
+        -- Millisecond precision: this column is the pagination cursor, and a
+        -- JS ISO string cannot carry the microseconds now() would otherwise
+        -- store. See the note on the entity.
+        "createdAt"     TIMESTAMPTZ(3) NOT NULL DEFAULT now(),
         CONSTRAINT "PK_market_comments" PRIMARY KEY ("id"),
         CONSTRAINT "FK_market_comments_market"
           FOREIGN KEY ("marketId") REFERENCES "markets"("id") ON DELETE CASCADE,

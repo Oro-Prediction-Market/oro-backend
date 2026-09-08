@@ -376,6 +376,100 @@ describe("CommentsService moderation", () => {
 
 // ── Side resolution ──────────────────────────────────────────────────────────
 
+describe("CommentsService.list query shape", () => {
+  /** Records what the service asked the query builder for. */
+  function spyHarness() {
+    const calls: any = { where: [], order: [], params: [] };
+    const qb: any = {
+      leftJoinAndSelect: () => qb,
+      where: () => qb,
+      andWhere: (sql: string, p?: any) => {
+        calls.where.push(sql);
+        if (p) calls.params.push(p);
+        return qb;
+      },
+      orderBy: (col: string, dir: string) => {
+        calls.order.push(`${col} ${dir}`);
+        return qb;
+      },
+      addOrderBy: (col: string, dir: string) => {
+        calls.order.push(`${col} ${dir}`);
+        return qb;
+      },
+      take: () => qb,
+      getMany: async () => [],
+    };
+    const { service } = makeService({ repo: { createQueryBuilder: () => qb } });
+    return { service, calls };
+  }
+
+  it("defaults to newest first", async () => {
+    const { service, calls } = spyHarness();
+    await service.list("market-1", null, {});
+    expect(calls.order).toEqual(["c.createdAt DESC", "c.id DESC"]);
+  });
+
+  it("flips both order keys together for oldest", async () => {
+    const { service, calls } = spyHarness();
+    await service.list("market-1", null, { order: "oldest" });
+    expect(calls.order).toEqual(["c.createdAt ASC", "c.id ASC"]);
+  });
+
+  // Ordering by createdAt alone is not a total order — two comments can share a
+  // millisecond, and the cursor would then skip one or serve it twice.
+  it("always adds id as a tiebreaker", async () => {
+    const { service, calls } = spyHarness();
+    await service.list("market-1", null, {});
+    expect(calls.order).toHaveLength(2);
+    expect(calls.order[1]).toContain("c.id");
+  });
+
+  // The comparison must flip with the order, or paging runs off the wrong end.
+  it("compares the cursor as a tuple, in the direction of travel", async () => {
+    const cur = "2026-09-08T10:00:00.500Z|abc-123";
+    const desc = spyHarness();
+    await desc.service.list("market-1", null, { cursor: cur });
+    expect(desc.calls.where.some((w: string) => w.includes(`) < (`))).toBe(true);
+
+    const asc = spyHarness();
+    await asc.service.list("market-1", null, { cursor: cur, order: "oldest" });
+    expect(asc.calls.where.some((w: string) => w.includes(`) > (`))).toBe(true);
+  });
+
+  it("splits the cursor into timestamp and id", async () => {
+    const { service, calls } = spyHarness();
+    await service.list("market-1", null, {
+      cursor: "2026-09-08T10:00:00.500Z|abc-123",
+    });
+    const p = calls.params.find((x: any) => x.cursorId);
+    expect(p.cursorId).toBe("abc-123");
+    expect(p.cursorTs.toISOString()).toBe("2026-09-08T10:00:00.500Z");
+  });
+
+  it("still accepts a bare timestamp cursor with no id", async () => {
+    const { service, calls } = spyHarness();
+    await service.list("market-1", null, { cursor: "2026-09-08T10:00:00.500Z" });
+    expect(calls.where.some((w: string) => w.includes("c.createdAt <"))).toBe(true);
+    expect(calls.params.some((p: any) => p.cursorId)).toBe(false);
+  });
+
+  it("ignores an unparseable cursor rather than returning nothing", async () => {
+    const { service, calls } = spyHarness();
+    await service.list("market-1", null, { cursor: "not-a-date|x" });
+    expect(calls.where.some((w: string) => w.includes("createdAt"))).toBe(false);
+  });
+
+  it("only adds the positions semi-join when holders is asked for", async () => {
+    const off = spyHarness();
+    await off.service.list("market-1", null, {});
+    expect(off.calls.where.some((w: string) => w.includes("positions"))).toBe(false);
+
+    const on = spyHarness();
+    await on.service.list("market-1", null, { holdersOnly: true });
+    expect(on.calls.where.some((w: string) => w.includes("EXISTS"))).toBe(true);
+  });
+});
+
 describe("CommentsService side badge", () => {
   function listHarness(sideRows: any[], commentRows: any[]) {
     const qb: any = {
@@ -383,6 +477,7 @@ describe("CommentsService side badge", () => {
       where: () => qb,
       andWhere: () => qb,
       orderBy: () => qb,
+      addOrderBy: () => qb,
       take: () => qb,
       getMany: async () => commentRows,
     };
@@ -424,6 +519,7 @@ describe("CommentsService side badge", () => {
       where: () => qb,
       andWhere: () => qb,
       orderBy: () => qb,
+      addOrderBy: () => qb,
       take: () => qb,
       getMany: async () => [comment],
     };

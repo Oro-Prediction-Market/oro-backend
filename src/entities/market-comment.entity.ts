@@ -80,6 +80,15 @@ export class MarketComment {
   @Column({ type: "int", default: 0 })
   flagCount: number;
 
-  @CreateDateColumn({ type: "timestamptz" })
+  /**
+   * Millisecond precision, deliberately, because this column is the pagination
+   * cursor. Postgres `now()` stores microseconds while a JS ISO string carries
+   * only milliseconds, so a cursor round-tripped through the client lands
+   * slightly BEFORE the row it came from — which an ascending `>` comparison
+   * then re-includes, returning the boundary row on every page. Matching the
+   * column to the precision the wire format can express removes the whole
+   * class of problem.
+   */
+  @CreateDateColumn({ type: "timestamptz", precision: 3 })
   createdAt: Date;
 }

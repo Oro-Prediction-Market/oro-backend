@@ -71,11 +71,11 @@ export class CommentsService {
   // ── Reading ────────────────────────────────────────────────────────────────
 
   /**
-   * A page of a market's thread, newest first.
+   * A page of a market's thread.
    *
-   * Cursor paginated on createdAt (`before` = the ISO timestamp of the last row
-   * you saw), matching the newest convention in the codebase — see
-   * UserNotificationService.listAll.
+   * Cursor paginated on createdAt: `cursor` is the timestamp of the last row
+   * you saw, and the comparison flips with `order`, so the same cursor works in
+   * both directions. Follows the convention in UserNotificationService.listAll.
    *
    * `viewerId` is optional because the route is public: JwtAuthGuard still
    * decodes a present token on @Public() routes, so a signed-in caller gets
@@ -84,12 +84,18 @@ export class CommentsService {
   async list(
     marketId: string,
     viewerId: string | null,
-    opts: { limit?: number; before?: string } = {},
+    opts: {
+      limit?: number;
+      cursor?: string;
+      order?: "newest" | "oldest";
+      holdersOnly?: boolean;
+    } = {},
   ): Promise<CommentView[]> {
     const take = Math.min(
       Math.max(opts.limit ?? DEFAULT_PAGE_SIZE, 1),
       MAX_PAGE_SIZE,
     );
+    const newestFirst = opts.order !== "oldest";
 
     const qb = this.repo
       .createQueryBuilder("c")
@@ -101,13 +107,44 @@ export class CommentsService {
       .andWhere("(c.deletedAt IS NULL OR c.deletedBy = :admin)", {
         admin: CommentDeletedBy.ADMIN,
       })
-      .orderBy("c.createdAt", "DESC")
+      // id is a tiebreaker, not decoration: two comments can land in the same
+      // millisecond, and without a total order the cursor below would either
+      // skip one or serve it twice.
+      .orderBy("c.createdAt", newestFirst ? "DESC" : "ASC")
+      .addOrderBy("c.id", newestFirst ? "DESC" : "ASC")
       .take(take);
 
-    if (opts.before) {
-      const before = new Date(opts.before);
-      if (!Number.isNaN(before.getTime())) {
-        qb.andWhere("c.createdAt < :before", { before });
+    // "Holders only": just the people with money on this market. Correlated on
+    // the comment's own columns so it stays a semi-join — positions is indexed
+    // on (userId, marketId), which is exactly this lookup.
+    if (opts.holdersOnly) {
+      qb.andWhere(
+        `EXISTS (SELECT 1 FROM positions p
+                  WHERE p."marketId" = c."marketId" AND p."userId" = c."userId")`,
+      );
+    }
+
+    // Cursor is "<createdAt ISO>|<id>" — the row you last saw. Compared as a
+    // tuple against the same two columns the ordering uses, so it is exact
+    // even when several comments share a millisecond. The id half is optional
+    // so a bare timestamp still works.
+    if (opts.cursor) {
+      const [rawTs, rawId] = opts.cursor.split("|");
+      const cursorTs = new Date(rawTs);
+      if (!Number.isNaN(cursorTs.getTime())) {
+        if (rawId) {
+          qb.andWhere(
+            newestFirst
+              ? `(c."createdAt", c."id") < (:cursorTs, :cursorId)`
+              : `(c."createdAt", c."id") > (:cursorTs, :cursorId)`,
+            { cursorTs, cursorId: rawId },
+          );
+        } else {
+          qb.andWhere(
+            newestFirst ? "c.createdAt < :cursorTs" : "c.createdAt > :cursorTs",
+            { cursorTs },
+          );
+        }
       }
     }
 
