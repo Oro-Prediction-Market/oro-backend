@@ -152,6 +152,16 @@ export class User {
   @Column({ default: "rookie" })
   reputationTier: string;
 
+  /**
+   * Set by a moderator to mute this user from commenting until the given time.
+   * Null (the normal case) means they can comment. This is the only per-user
+   * restriction on the platform — there is no general ban flag — and it exists
+   * so a repeat offender can be stopped once instead of having every comment
+   * deleted individually.
+   */
+  @Column({ type: "timestamptz", nullable: true })
+  commentsBlockedUntil: Date | null;
+
   /** Total resolved predictions (won + lost, excludes refunded). */
   @Column({ default: 0 })
   totalPredictions: number;

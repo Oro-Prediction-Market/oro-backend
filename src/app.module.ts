@@ -56,6 +56,9 @@ import { AmlModule } from "./aml/aml.module";
 import { SuggestionsModule } from "./suggestions/suggestions.module";
 import { MarketSuggestion } from "./entities/market-suggestion.entity";
 import { MarketSuggestionVote } from "./entities/market-suggestion-vote.entity";
+import { CommentsModule } from "./comments/comments.module";
+import { MarketComment } from "./entities/market-comment.entity";
+import { MarketCommentFlag } from "./entities/market-comment-flag.entity";
 import { EplModule } from "./epl/epl.module";
 import { UclModule } from "./ucl/ucl.module";
 import { FeedbackModule } from "./feedback/feedback.module";
@@ -139,6 +142,8 @@ import { UserNotification } from "./entities/user-notification.entity";
           AmlReport,
           MarketSuggestion,
           MarketSuggestionVote,
+          MarketComment,
+          MarketCommentFlag,
         ],
         // Schema changes ship as migrations ONLY. synchronize silently DROPs a
         // column when an entity property is renamed — irrecoverable financial
@@ -178,6 +183,7 @@ import { UserNotification } from "./entities/user-notification.entity";
     BtcModule,
     AmlModule,
     SuggestionsModule,
+    CommentsModule,
     EplModule,
     UclModule,
     FeedbackModule,
