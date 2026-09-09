@@ -27,6 +27,10 @@ export enum CardType {
 
 @Index(["creatorId", "status"])
 @Index(["marketId", "status"])
+// The admin dashboard's default view: newest first, optionally by status.
+// Neither composite above can serve it — a composite is no use to a query that
+// does not constrain its leading column.
+@Index(["status", "createdAt"])
 @Entity("challenges")
 export class Challenge {
   @PrimaryGeneratedColumn("uuid")
@@ -71,6 +75,7 @@ export class Challenge {
   wagerAmount: number;
 
   /** The user who accepted the challenge (null until someone joins) */
+  @Index()
   @Column({ type: "uuid", nullable: true })
   joinerId: string | null;
 

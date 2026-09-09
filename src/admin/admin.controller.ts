@@ -78,6 +78,9 @@ import { SetOutcomeEliminatedDto } from "./dto/set-outcome-eliminated.dto";
 import { ResolveDto } from "./dto/resolve.dto";
 import { ProposeResolutionDto } from "./dto/propose-resolution.dto";
 import { GetUsersQueryDto } from "./dto/get-users-query.dto";
+import { GetChallengesQueryDto } from "./dto/get-challenges-query.dto";
+import { Challenge, ChallengeStatus } from "../entities/challenge.entity";
+import { STUCK_DUEL, toDuelRow } from "./duel-view";
 import { ToggleAdminDto } from "./dto/toggle-admin.dto";
 import { HealthCheckResponse } from "./dto/health-check.dto";
 import { csvCell } from "../shared/utils/csv.util";
@@ -2209,6 +2212,134 @@ export class AdminController {
       },
       betting: betRows,
       recentTransactions: txRows,
+    };
+  }
+
+  // ── Duels (challenges) ────────────────────────────────────────────────────
+  /**
+   * Every duel, with both players, the market and the stake.
+   *
+   * Read-only on purpose. Duels were the one product surface with no admin
+   * view at all — the money showed up in the ledger as `duel_wager` /
+   * `duel_payout` rows, but nothing said who challenged whom or how it ended.
+   *
+   * The `summary` block is computed over the whole table rather than the
+   * current filter, the way listTransactions reports whole-ledger counts: the
+   * point of the page is the totals, and a total that moved when you changed a
+   * filter would be answering a different question.
+   */
+  @Get("challenges")
+  @ApiOperation({ summary: "List duels with filters, pagination and totals" })
+  @ApiQuery({ name: "search", required: false, type: String })
+  @ApiQuery({ name: "status", required: false, type: String })
+  @ApiQuery({ name: "stuck", required: false, type: Boolean })
+  @ApiQuery({ name: "marketId", required: false, type: String })
+  @ApiQuery({ name: "userId", required: false, type: String })
+  @ApiQuery({ name: "page", required: false, type: Number })
+  @ApiQuery({ name: "limit", required: false, type: Number })
+  async listChallenges(@Query() query: GetChallengesQueryDto) {
+    const {
+      search,
+      status = "all",
+      stuck,
+      marketId,
+      userId,
+      page = 1,
+      limit = 20,
+    } = query;
+
+    const take = Math.min(Number(limit), 100);
+    const skip = (Math.max(Number(page), 1) - 1) * take;
+
+    const qb = this.dataSource
+      .getRepository(Challenge)
+      .createQueryBuilder("c")
+      .leftJoinAndSelect("c.market", "m")
+      .leftJoinAndSelect("c.outcome", "o")
+      .leftJoinAndSelect("c.creator", "creator")
+      .leftJoinAndSelect("c.joiner", "joiner")
+      .orderBy("c.createdAt", "DESC")
+      .skip(skip)
+      .take(take);
+
+    if (status !== "all") qb.andWhere("c.status = :status", { status });
+    if (marketId) qb.andWhere("c.marketId = :marketId", { marketId });
+    if (userId) {
+      qb.andWhere("(c.creatorId = :userId OR c.joinerId = :userId)", {
+        userId,
+      });
+    }
+    if (stuck === "true") qb.andWhere(STUCK_DUEL);
+
+    if (search && search.trim()) {
+      // Escape LIKE special chars so input cannot wildcard-scan the table.
+      const safe = search
+        .trim()
+        .toLowerCase()
+        .replace(/[%_\\]/g, "\\$&");
+      const term = `%${safe}%`;
+      qb.andWhere(
+        `(
+          LOWER(c.id::text)                       LIKE :term ESCAPE '\\'
+          OR LOWER(COALESCE(m.title, ''))         LIKE :term ESCAPE '\\'
+          OR LOWER(COALESCE(creator.username,'')) LIKE :term ESCAPE '\\'
+          OR LOWER(COALESCE(joiner.username, '')) LIKE :term ESCAPE '\\'
+        )`,
+        { term },
+      );
+    }
+
+    const [rows, total] = await qb.getManyAndCount();
+
+    return {
+      data: rows.map((c) => toDuelRow(c)),
+      total,
+      page: Math.max(Number(page), 1),
+      limit: take,
+      pages: Math.ceil(total / take) || 1,
+      summary: await this.duelSummary(),
+    };
+  }
+
+  /** Whole-table counts and money, independent of the caller's filters. */
+  private async duelSummary() {
+    const repo = this.dataSource.getRepository(Challenge);
+
+    const [byStatus, totals, stuckRow] = await Promise.all([
+      repo
+        .createQueryBuilder("c")
+        .select("c.status", "status")
+        .addSelect("COUNT(*)", "count")
+        .addSelect("COALESCE(SUM(c.wagerAmount), 0)", "wagered")
+        .groupBy("c.status")
+        .getRawMany<{ status: string; count: string; wagered: string }>(),
+      repo
+        .createQueryBuilder("c")
+        .select("COUNT(*)", "count")
+        // Each side puts up the wager, so the money at stake is twice the sum.
+        .addSelect("COALESCE(SUM(c.wagerAmount) * 2, 0)", "staked")
+        .getRawOne<{ count: string; staked: string }>(),
+      repo
+        .createQueryBuilder("c")
+        .leftJoin("c.market", "m")
+        .select("COUNT(*)", "count")
+        .addSelect("COALESCE(SUM(c.wagerAmount) * 2, 0)", "locked")
+        .where(STUCK_DUEL)
+        .getRawOne<{ count: string; locked: string }>(),
+    ]);
+
+    const counts: Record<string, number> = {};
+    for (const s of Object.values(ChallengeStatus)) counts[s] = 0;
+    for (const r of byStatus) counts[r.status] = Number(r.count);
+
+    return {
+      counts,
+      total: Number(totals?.count ?? 0),
+      totalStaked: Number(totals?.staked ?? 0),
+      // Money the platform is holding that belongs to two users and that no
+      // code path will ever return. See STUCK_DUEL.
+      stuckCount: Number(stuckRow?.count ?? 0),
+      stuckLocked: Number(stuckRow?.locked ?? 0),
     };
   }
 
