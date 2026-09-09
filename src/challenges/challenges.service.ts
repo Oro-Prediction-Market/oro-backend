@@ -4,7 +4,7 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { InjectRepository, InjectDataSource } from "@nestjs/typeorm";
-import { Repository, DataSource, EntityManager } from "typeorm";
+import { Repository, DataSource, EntityManager, In } from "typeorm";
 import { SseService } from "../sse/sse.service";
 import {
   Challenge,
@@ -13,9 +13,15 @@ import {
 } from "../entities/challenge.entity";
 import { Position, PositionStatus } from "../entities/position.entity";
 import { Market, MarketStatus } from "../entities/market.entity";
-import { Transaction, TransactionType } from "../entities/transaction.entity";
+import {
+  Transaction,
+  TransactionType,
+  BTN_CURRENCY,
+} from "../entities/transaction.entity";
 import { User } from "../entities/user.entity";
 import { RevenueDistributionService } from "../markets/revenue-distribution.service";
+import { RedisService } from "../redis/redis.service";
+import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 
 const MIN_PREDICTIONS_REQUIRED = 5;
 const PLATFORM_FEE_PCT = 0.1;
@@ -25,7 +31,7 @@ const CARD_MILESTONES: Record<number, CardType> = {
   7: CardType.SHIELD,
   15: CardType.GHOST,
 };
-import { ledgerBalanceForAccount } from "../shared/utils/ledger.util";
+import { ledgerBalance } from "../shared/utils/ledger.util";
 
 @Injectable()
 export class ChallengesService {
@@ -39,13 +45,23 @@ export class ChallengesService {
     @InjectDataSource() private dataSource: DataSource,
     private sse: SseService,
     private revenueDistribution: RevenueDistributionService,
+    private redis: RedisService,
+    private telegram: TelegramSimpleService,
   ) {}
 
-  // ── Balance helper ─────────────────────────────────────────────────────────
-
-  private async getBalance(userId: string): Promise<number> {
-    return ledgerBalanceForAccount(this.dataSource, userId);
-  }
+  // ── Ledger helpers ─────────────────────────────────────────────────────────
+  //
+  // Duels are settled in ngultrum only. `Challenge.currency` is never set at
+  // create time, so every duel row takes the BTN column default — and both
+  // helpers below therefore read AND write the BTN book explicitly.
+  //
+  // They used to read `ledgerBalanceForAccount`, which scopes to the *account's*
+  // currency, while writing a row with no currency at all — which falls to the
+  // BTN default. For a USDT account that is a mint: the wager check passes
+  // against the USDT book, the debit lands in the BTN book (driving it negative),
+  // and a win pays out real ngultrum that was never staked. Reading and writing
+  // the same book closes it — a USDT-only account now correctly fails the
+  // balance check instead. See the same warning at admin.controller.ts.
 
   private async debit(
     userId: string,
@@ -64,7 +80,7 @@ export class ChallengesService {
         .getOne();
       if (!user) throw new NotFoundException("User not found");
 
-      const balanceBefore = await ledgerBalanceForAccount(m, userId);
+      const balanceBefore = await ledgerBalance(m, userId, BTN_CURRENCY);
       if (balanceBefore < amount) {
         throw new BadRequestException("Insufficient balance for wager");
       }
@@ -75,6 +91,7 @@ export class ChallengesService {
           userId,
           type: TransactionType.DUEL_WAGER,
           amount: -amount,
+          currency: BTN_CURRENCY,
           balanceBefore,
           balanceAfter: balanceBefore - amount,
           note,
@@ -91,24 +108,61 @@ export class ChallengesService {
     this.sse.emit(userId, "balance:updated", {});
   }
 
+  /**
+   * Credit a duel participant.
+   *
+   * `em` lets a caller fold the credit into its own transaction — a void has to
+   * claim the challenge row and pay both sides atomically, or a crash between
+   * the two leaves money stranded. Without `em` this opens its own transaction,
+   * so existing callers are unchanged.
+   *
+   * `type` is DUEL_PAYOUT for winnings and REFUND for a void — the same
+   * distinction the duel-expiry cron already makes in engagement.job.ts.
+   */
   private async credit(
     userId: string,
     amount: number,
     note: string,
     referenceId: string | null,
+    em?: EntityManager,
+    type: TransactionType = TransactionType.DUEL_PAYOUT,
   ): Promise<void> {
-    const balanceBefore = await this.getBalance(userId);
-    const tx = this.dataSource.getRepository(Transaction).create({
-      userId,
-      type: TransactionType.DUEL_PAYOUT,
-      amount,
-      balanceBefore,
-      balanceAfter: balanceBefore + amount,
-      note,
-      positionId: referenceId ?? undefined,
-    });
-    await this.dataSource.getRepository(Transaction).save(tx);
+    const run = async (m: EntityManager): Promise<void> => {
+      const balanceBefore = await ledgerBalance(m, userId, BTN_CURRENCY);
+      const txRepo = m.getRepository(Transaction);
+      await txRepo.save(
+        txRepo.create({
+          userId,
+          type,
+          amount,
+          currency: BTN_CURRENCY,
+          balanceBefore,
+          balanceAfter: balanceBefore + amount,
+          note,
+          positionId: referenceId ?? undefined,
+        }),
+      );
+    };
+
+    if (em) {
+      await run(em);
+    } else {
+      await this.dataSource.transaction(run);
+    }
     this.sse.emit(userId, "balance:updated", {});
+  }
+
+  /**
+   * Drop the cached balance so the next /me reflects the ledger immediately.
+   *
+   * The cache has a 15s TTL, so this self-heals — but a void DMs the player
+   * "your wager has been refunded", and that DM lands inside the window.
+   */
+  private async bustBalanceCache(...userIds: (string | null)[]): Promise<void> {
+    const keys = userIds
+      .filter((id): id is string => !!id)
+      .map((id) => `oro:cache:balance:${id}`);
+    if (keys.length) await this.redis.del(...keys).catch(() => {});
   }
 
   // ── Create ─────────────────────────────────────────────────────────────────
@@ -330,8 +384,107 @@ export class ChallengesService {
     });
   }
 
+  // ── Void & refund ──────────────────────────────────────────────────────────
+
+  /**
+   * Call the duel off and return every wager.
+   *
+   * Used when the market a duel rides on will never produce an answer: it was
+   * cancelled, or it settled as a refund. Nobody wins, so nobody pays the
+   * platform fee either — each side simply gets its stake back.
+   *
+   * Exactly-once by construction. The conditional UPDATE is the claim: only the
+   * caller whose UPDATE reports `affected = 1` proceeds to credit anyone, and
+   * the claim shares a transaction with both credits, so there is no window in
+   * which a challenge reads VOID with the money still held. That matters
+   * because two paths can now reach the same row — cancelMarket() and the
+   * hourly expiry cron in engagement.job.ts — and a duel wager refunded twice
+   * is money invented.
+   *
+   * Returns null when another caller got there first.
+   */
+  async voidChallenge(
+    challengeId: string,
+    note: string,
+  ): Promise<{
+    challenge: Challenge;
+    refunds: { userId: string; amount: number }[];
+  } | null> {
+    const challenge = await this.challengeRepo.findOne({
+      where: { id: challengeId },
+      relations: ["creator", "joiner", "market"],
+    });
+    if (!challenge) return null;
+
+    const wager = Number(challenge.wagerAmount);
+    const now = new Date();
+    const refunds: { userId: string; amount: number }[] = [];
+
+    const claimed = await this.dataSource.transaction(async (em) => {
+      const claim = await em.getRepository(Challenge).update(
+        {
+          id: challengeId,
+          status: In([ChallengeStatus.OPEN, ChallengeStatus.ACTIVE]),
+        },
+        { status: ChallengeStatus.VOID, settledAt: now },
+      );
+      if (!claim.affected) return false;
+
+      if (wager > 0) {
+        // A bragging-rights duel (wager 0) writes no ledger rows at all.
+        for (const userId of [challenge.creatorId, challenge.joinerId]) {
+          if (!userId) continue;
+          await this.credit(
+            userId,
+            wager,
+            note,
+            challengeId,
+            em,
+            TransactionType.REFUND,
+          );
+          refunds.push({ userId, amount: wager });
+        }
+      }
+      return true;
+    });
+
+    if (!claimed) return null;
+
+    challenge.status = ChallengeStatus.VOID;
+    challenge.settledAt = now;
+    await this.bustBalanceCache(challenge.creatorId, challenge.joinerId);
+    return { challenge, refunds };
+  }
+
+  /**
+   * Tell both players their duel was called off. Fire-and-forget, after commit.
+   * Telegram only — matching the duel-expiry cron. PWA/BhutanApp users get no
+   * push and no bell entry; the ledger note is their only trace.
+   */
+  private async notifyVoided(
+    challenge: Challenge,
+    wager: number,
+    reason: string,
+  ): Promise<void> {
+    const marketTitle = challenge.market?.title ?? "The market";
+    const refundLine =
+      wager > 0 ? ` Your Nu ${wager} wager has been returned in full.` : "";
+
+    for (const user of [challenge.creator, challenge.joiner]) {
+      if (!user?.telegramId) continue;
+      await this.telegram
+        .sendMessage(
+          Number(user.telegramId),
+          `🚫 <b>Your duel has been called off.</b>${refundLine}\n\n` +
+            `${reason} on <b>${marketTitle}</b>, so there was no result to settle on.`,
+        )
+        .catch(() => {});
+    }
+  }
+
   // ── Settle by market ───────────────────────────────────────────────────────
-  // Called by ParimutuelEngine (fire-and-forget) after a market resolves.
+  // Called by ParimutuelEngine after a market resolves, and with a null outcome
+  // when the market was cancelled or settled as a refund.
 
   async settleByMarket(
     marketId: string,
@@ -342,105 +495,88 @@ export class ChallengesService {
         { marketId, status: ChallengeStatus.ACTIVE },
         { marketId, status: ChallengeStatus.OPEN },
       ],
+      // creator/joiner/market are needed by the void DM. Without them
+      // `ch.creator` is undefined and the notification silently never fires.
+      relations: ["creator", "joiner", "market"],
     });
 
     for (const ch of challenges) {
       const wager = Number(ch.wagerAmount);
       const now = new Date();
 
+      // Market voided OR no one joined — refund every side.
+      // voidChallenge owns the status write and both credits in one guarded
+      // transaction, so `continue` past the shared save() at the end of the
+      // loop, which would otherwise clobber it with this stale in-memory copy.
       if (!winningOutcomeId || !ch.joinerId) {
-        // Market voided OR no one joined — refund creator
-        ch.status = ChallengeStatus.VOID;
-        ch.settledAt = now;
-        if (wager > 0) {
-          await this.credit(
-            ch.creatorId,
+        const result = await this.voidChallenge(
+          ch.id,
+          `Duel void refund — challenge ${ch.id}`,
+        );
+        if (result) {
+          await this.notifyVoided(
+            result.challenge,
             wager,
-            `Duel void refund — challenge ${ch.id}`,
-            ch.id,
+            winningOutcomeId
+              ? "Nobody accepted your challenge"
+              : "The market was called off",
           );
-          // Also refund joiner if they had joined
-          if (ch.joinerId) {
-            await this.credit(
-              ch.joinerId,
-              wager,
-              `Duel void refund — challenge ${ch.id}`,
-              ch.id,
-            );
-          }
         }
-      } else {
-        // Determine winner: creator wins if winning outcome matches their outcomeId
-        const creatorWins = ch.outcomeId === winningOutcomeId;
-        const winnerId = creatorWins ? ch.creatorId : ch.joinerId;
-        const loserId = creatorWins ? ch.joinerId : ch.creatorId;
-
-        ch.status = ChallengeStatus.SETTLED;
-        ch.winnerId = winnerId;
-        ch.settledAt = now;
-
-        if (wager > 0) {
-          const totalPot = wager * 2;
-          // Double Down card: creator equipped it → fee waived for this duel
-          const feeWaived = ch.equippedCard === CardType.DOUBLE_DOWN;
-          const platformCut = feeWaived ? 0 : totalPot * PLATFORM_FEE_PCT;
-          const winnerPayout = totalPot - platformCut;
-
-          await this.credit(
-            winnerId,
-            winnerPayout,
-            `Duel win payout${feeWaived ? " (Double Down — no fee)" : ""} — challenge ${ch.id}`,
-            ch.id,
-          );
-
-          // Record platform fee for revenue tracking and DK Bank transfer
-          if (platformCut > 0) {
-            await this.revenueDistribution
-              .recordDuelDistribution(ch.id, platformCut, totalPot, PLATFORM_FEE_PCT * 100)
-              .catch(() => {}); // non-fatal: settlement must not be blocked by fee tracking
-          }
-
-          // Loser already had their wager debited at join/create — nothing more to do
-          void loserId; // referenced to avoid lint unused-var
-        }
-
-        // Award milestone cards to the winner (fire-and-forget errors are non-fatal)
-        await this.awardMilestoneCards(winnerId).catch(() => {});
+        continue;
       }
 
-      await this.challengeRepo.save(ch);
-    }
-  }
+      // Determine winner: creator wins if winning outcome matches their outcomeId
+      const creatorWins = ch.outcomeId === winningOutcomeId;
+      const winnerId = creatorWins ? ch.creatorId : ch.joinerId;
+      const loserId = creatorWins ? ch.joinerId : ch.creatorId;
 
-  // ── Expire stale open challenges & refund wagers ───────────────────────────
-
-  async expireStale(): Promise<number> {
-    const stale = await this.challengeRepo.find({
-      where: { status: ChallengeStatus.OPEN },
-    });
-    const now = new Date();
-    let count = 0;
-
-    for (const ch of stale) {
-      if (ch.expiresAt >= now) continue;
-      ch.status = ChallengeStatus.EXPIRED;
+      ch.status = ChallengeStatus.SETTLED;
+      ch.winnerId = winnerId;
       ch.settledAt = now;
 
-      if (Number(ch.wagerAmount) > 0) {
+      if (wager > 0) {
+        const totalPot = wager * 2;
+        // Double Down card: creator equipped it → fee waived for this duel
+        const feeWaived = ch.equippedCard === CardType.DOUBLE_DOWN;
+        const platformCut = feeWaived ? 0 : totalPot * PLATFORM_FEE_PCT;
+        const winnerPayout = totalPot - platformCut;
+
         await this.credit(
-          ch.creatorId,
-          Number(ch.wagerAmount),
-          `Duel expired refund — challenge ${ch.id}`,
+          winnerId,
+          winnerPayout,
+          `Duel win payout${feeWaived ? " (Double Down — no fee)" : ""} — challenge ${ch.id}`,
           ch.id,
         );
+
+        // Record platform fee for revenue tracking and DK Bank transfer
+        if (platformCut > 0) {
+          await this.revenueDistribution
+            .recordDuelDistribution(
+              ch.id,
+              platformCut,
+              totalPot,
+              PLATFORM_FEE_PCT * 100,
+            )
+            .catch(() => {}); // non-fatal: settlement must not be blocked by fee tracking
+        }
+
+        // Loser already had their wager debited at join/create — nothing more to do
+        void loserId; // referenced to avoid lint unused-var
       }
 
-      await this.challengeRepo.save(ch);
-      count++;
-    }
+      // Award milestone cards to the winner (fire-and-forget errors are non-fatal)
+      await this.awardMilestoneCards(winnerId).catch(() => {});
 
-    return count;
+      await this.challengeRepo.save(ch);
+    }
   }
+
+  // Duel expiry lives in EngagementJob.expireAndNotifyStaleDuels() — the hourly
+  // cron that actually runs. A second copy of it lived here (`expireStale`),
+  // called by nothing but its own tests, booking the refund as DUEL_PAYOUT
+  // rather than REFUND and claiming no row before paying. Two unguarded
+  // implementations of "refund this wager" is how a duel gets paid twice, so it
+  // is gone rather than left as a trap.
 
   // ── Community open feed ────────────────────────────────────────────────────
 

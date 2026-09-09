@@ -61,11 +61,19 @@ import {
 } from "../jobs/notification.queue";
 
 // ─── Valid state machine transitions ────────────────────────────────────────
+//
+// CANCELLED is deliberately not a target here. transitionMarket() is a bare
+// status write with no money handling, so reaching CANCELLED through it strands
+// every position, dispute bond and duel on the market — the endpoint that fed
+// it (PATCH /admin/markets/:id/status) accepts any MarketStatus, so this table
+// was the only thing standing between a typo and a market full of frozen money.
+// Cancellation goes through POST /admin/markets/:id/cancel → cancelMarket(),
+// which refunds all three.
 const VALID_TRANSITIONS: Record<MarketStatus, MarketStatus[]> = {
-  [MarketStatus.UPCOMING]: [MarketStatus.OPEN, MarketStatus.CANCELLED],
-  [MarketStatus.OPEN]: [MarketStatus.CLOSED, MarketStatus.CANCELLED],
-  [MarketStatus.CLOSED]: [MarketStatus.RESOLVING, MarketStatus.CANCELLED],
-  [MarketStatus.RESOLVING]: [MarketStatus.CANCELLED],
+  [MarketStatus.UPCOMING]: [MarketStatus.OPEN],
+  [MarketStatus.OPEN]: [MarketStatus.CLOSED],
+  [MarketStatus.CLOSED]: [MarketStatus.RESOLVING],
+  [MarketStatus.RESOLVING]: [],
   [MarketStatus.RESOLVED]: [MarketStatus.SETTLED],
   [MarketStatus.SETTLED]: [],
   [MarketStatus.CANCELLED]: [],
@@ -657,8 +665,14 @@ export class ParimutuelEngine implements OnModuleInit {
 
     const allowed = VALID_TRANSITIONS[market.status];
     if (!allowed.includes(to)) {
+      // Point at the safe route rather than just refusing — a status write here
+      // would cancel the market without refunding anyone.
+      const hint =
+        to === MarketStatus.CANCELLED
+          ? " To cancel a market and refund every bet, bond and duel, use POST /admin/markets/:id/cancel."
+          : "";
       throw new BadRequestException(
-        `Cannot transition from ${market.status} → ${to}. Allowed: ${allowed.join(", ") || "none"}`,
+        `Cannot transition from ${market.status} → ${to}. Allowed: ${allowed.join(", ") || "none"}.${hint}`,
       );
     }
     market.status = to;
@@ -1251,9 +1265,19 @@ export class ParimutuelEngine implements OnModuleInit {
       );
     }
 
-    // Settle any active duels on this market — fire and forget
+    // Settle any active duels on this market — fire and forget.
+    //
+    // A refunded book has no winner to duel over. Thin-pool and payout-floor
+    // settlements hand every bettor their stake back but still carry a winning
+    // outcome and leave the market SETTLED, not CANCELLED — so passing the
+    // outcome through would pay one duellist double and take the other's wager
+    // on a market that was declared void. cancelReason is the signal that the
+    // book refunded; the DM guard below already reads it the same way.
     this.challengesService
-      .settleByMarket(marketId, winningOutcomeId)
+      .settleByMarket(
+        marketId,
+        settlement.cancelReason ? null : winningOutcomeId,
+      )
       .catch((err) =>
         this.logger.warn(
           `[Duels] settleByMarket failed for market ${marketId}: ${err.message}`,
@@ -2252,6 +2276,26 @@ Good luck! 🍀
       await this.refundPositions(em, bets, "Market cancelled — refund");
       await this.releaseLockedDisputeBonds(em, market);
     });
+
+    // Duels are money too, and they are not positions. Without this, every duel
+    // on the market stays ACTIVE forever with both wagers debited: settleByMarket
+    // is only reached from the resolve path, and the hourly expiry cron ignores
+    // anything already joined. Nothing else would ever refund them.
+    //
+    // Outside the transaction because credit() opens its own — inside, it would
+    // read pre-commit state. Awaited so the admin's cancel returns only once
+    // duels are settled, but never rethrown: the BTC/TER services call this and
+    // then await ensureBettableMarket(), so a throw here would leave those
+    // products with no bettable market. A failure leaves the duel visible on the
+    // admin Duels page, where it can be voided by hand.
+    await this.challengesService
+      .settleByMarket(marketId, null)
+      .catch((err: Error) =>
+        this.logger.error(
+          `[Duels] void-on-cancel failed for market ${marketId}: ${err.message} — ` +
+            `duels on this market are still holding wagers, void them from the admin Duels page`,
+        ),
+      );
   }
 
   /**

@@ -2,6 +2,7 @@ import { BadRequestException } from "@nestjs/common";
 import { ParimutuelEngine } from "../markets/parimutuel.engine";
 import { TransactionType } from "../entities/transaction.entity";
 import { ChallengeStatus } from "../entities/challenge.entity";
+import { MarketStatus } from "../entities/market.entity";
 import { MarketBook } from "../entities/market-book.entity";
 
 /**
@@ -98,7 +99,8 @@ describe("ParimutuelEngine.calcOdds", () => {
       null as any,
       bypassConfigService,
       null as any,
-      null as any, // challengesService
+      // cancelMarket and settleMarket both void/settle duels through this.
+      { settleByMarket: jest.fn().mockResolvedValue(undefined) } as any, // challengesService
       null as any, // marketsGateway
       null as any, // sse
       null as any, // revenueDistributionService
@@ -208,7 +210,8 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       null as any,
       bypassConfigService,
       null as any,
-      null as any, // challengesService
+      // cancelMarket and settleMarket both void/settle duels through this.
+      { settleByMarket: jest.fn().mockResolvedValue(undefined) } as any, // challengesService
       null as any, // marketsGateway
       null as any, // sse
       null as any, // revenueDistributionService
@@ -1316,7 +1319,8 @@ describe("Settlement wallet credit — no DK transfer on market settle", () => {
       mockDkGateway as any,
       bypassConfigService,
       null as any, // streakService
-      null as any, // challengesService
+      // cancelMarket and settleMarket both void/settle duels through this.
+      { settleByMarket: jest.fn().mockResolvedValue(undefined) } as any, // challengesService
       null as any, // marketsGateway
       null as any, // sse
       null as any, // revenueDistributionService
@@ -1871,7 +1875,8 @@ describe("ParimutuelEngine.resolveMarket — atomic concurrency claim", () => {
       null as any, // dkGateway
       bypassConfigService, // configService
       null as any, // streakService
-      null as any, // challengesService
+      // cancelMarket and settleMarket both void/settle duels through this.
+      { settleByMarket: jest.fn().mockResolvedValue(undefined) } as any, // challengesService
       null as any, // marketsGateway
       null as any, // sse
       null as any, // revenueDistributionService
@@ -2092,6 +2097,9 @@ describe("ParimutuelEngine.cancelMarket — dispute bond release", () => {
       transaction: jest.fn().mockImplementation((cb: Function) => cb(mockEm)),
     };
     const mockRedis = { del: jest.fn().mockResolvedValue(undefined) };
+    const mockChallenges = {
+      settleByMarket: jest.fn().mockResolvedValue(undefined),
+    };
 
     const engine = new ParimutuelEngine(
       null as any, // marketRepo
@@ -2109,7 +2117,7 @@ describe("ParimutuelEngine.cancelMarket — dispute bond release", () => {
       null as any, // dkGateway
       bypassConfigService,
       null as any, // streakService
-      null as any, // challengesService
+      mockChallenges as any, // challengesService
       null as any, // marketsGateway
       null as any, // sse
       null as any, // revenueDistributionService
@@ -2124,6 +2132,7 @@ describe("ParimutuelEngine.cancelMarket — dispute bond release", () => {
       savedDisputes,
       balanceReads,
       mockRedis,
+      mockChallenges,
       market,
     };
   }
@@ -2193,6 +2202,93 @@ describe("ParimutuelEngine.cancelMarket — dispute bond release", () => {
 
     expect(savedTransactions).toHaveLength(0);
     expect(savedDisputes[0].bondStatus).toBe("not_applicable");
+  });
+
+  // ── Duels are money too ─────────────────────────────────────────────────
+  //
+  // cancelMarket refunded positions and released bonds but left duels alone,
+  // so every duel on a cancelled market stayed ACTIVE forever with both
+  // wagers debited. settleByMarket is only otherwise reached from the resolve
+  // path, and the hourly expiry cron skips anything already joined — so
+  // nothing in the system would ever have given that money back.
+
+  it("voids the duels on the market it just cancelled", async () => {
+    const { engine, mockChallenges } = buildCancelEngine([]);
+
+    await engine.cancelMarket("m1");
+
+    // null outcome — a cancelled market has no winner to duel over, so both
+    // sides get their wager back rather than one being paid.
+    expect(mockChallenges.settleByMarket).toHaveBeenCalledWith("m1", null);
+  });
+
+  it("still cancels the market when voiding the duels fails", async () => {
+    const { engine, mockChallenges, market } = buildCancelEngine([]);
+    mockChallenges.settleByMarket.mockRejectedValue(new Error("duel boom"));
+
+    // Must not throw: BtcMarketService and TerMarketService call cancelMarket
+    // and then await ensureBettableMarket(), so propagating here would leave
+    // those products with no bettable market. The duel stays visible on the
+    // admin Duels page instead, where it can be voided by hand.
+    await expect(engine.cancelMarket("m1")).resolves.toBeUndefined();
+    expect(mockChallenges.settleByMarket).toHaveBeenCalled();
+    expect(market.status).toBe(MarketStatus.CANCELLED);
+  });
+});
+
+// ─── Cancellation has exactly one door ───────────────────────────────────────
+
+describe("ParimutuelEngine.transitionMarket — cancellation is not a transition", () => {
+  function buildTransitionEngine(status: string) {
+    const market = { id: "m1", status };
+    const marketRepo = {
+      findOneBy: jest.fn().mockResolvedValue(market),
+      save: jest.fn().mockImplementation((m: any) => Promise.resolve(m)),
+    };
+    const engine = new ParimutuelEngine(
+      marketRepo as any,
+      null as any, null as any, null as any, null as any, null as any,
+      null as any, null as any, null as any, null as any, null as any,
+      null as any, null as any,
+      bypassConfigService,
+      null as any, null as any, null as any, null as any, null as any,
+      null as any, null as any, null as any,
+    );
+    return { engine, marketRepo, market };
+  }
+
+  // transitionMarket is a bare status write — no refunds, no bond release, no
+  // duel void. Reaching CANCELLED through it stranded every position, bond and
+  // duel on the market, and the endpoint feeding it (PATCH
+  // /admin/markets/:id/status) accepts any MarketStatus.
+  it.each(["upcoming", "open", "closed", "resolving"])(
+    "refuses to cancel a %s market without refunding anyone",
+    async (status) => {
+      const { engine, marketRepo } = buildTransitionEngine(status);
+
+      await expect(
+        engine.transitionMarket("m1", MarketStatus.CANCELLED),
+      ).rejects.toThrow(/Cannot transition/);
+      expect(marketRepo.save).not.toHaveBeenCalled();
+    },
+  );
+
+  it("points the caller at the endpoint that does refund", async () => {
+    const { engine } = buildTransitionEngine("open");
+
+    await expect(
+      engine.transitionMarket("m1", MarketStatus.CANCELLED),
+    ).rejects.toThrow(/POST \/admin\/markets\/:id\/cancel/);
+  });
+
+  it("still allows the ordinary lifecycle steps", async () => {
+    const { engine, marketRepo } = buildTransitionEngine("open");
+
+    await engine.transitionMarket("m1", MarketStatus.CLOSED);
+
+    expect(marketRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({ status: MarketStatus.CLOSED }),
+    );
   });
 });
 
@@ -2330,7 +2426,8 @@ describe("ParimutuelEngine.resolveMarket — contests settle per book", () => {
       null as any, // dkGateway
       bypassConfigService,
       null as any, // streakService
-      null as any, // challengesService
+      // cancelMarket and settleMarket both void/settle duels through this.
+      { settleByMarket: jest.fn().mockResolvedValue(undefined) } as any, // challengesService
       null as any, // marketsGateway
       null as any, // sse
       null as any, // revenueDistributionService
@@ -2591,7 +2688,10 @@ describe("ParimutuelEngine.settleMarket — challenger reward routing by book", 
       { del: jest.fn().mockResolvedValue(undefined) } as any,
       null as any, null as any, null as any,
       bypassConfigService,
-      null as any, null as any, null as any, null as any, null as any,
+      null as any, // streakService
+      // cancelMarket and settleMarket both void/settle duels through this.
+      { settleByMarket: jest.fn().mockResolvedValue(undefined) } as any,
+      null as any, null as any, null as any,
       ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any,
       ({ resolveForMarket: async () => 0 }) as any, // freeCallsService
@@ -2717,7 +2817,10 @@ describe("ParimutuelEngine.cancelMarket — mixed-currency bond release", () => 
       { del: jest.fn().mockResolvedValue(undefined) } as any,
       null as any, null as any, null as any,
       bypassConfigService,
-      null as any, null as any, null as any, null as any, null as any,
+      null as any, // streakService
+      // cancelMarket and settleMarket both void/settle duels through this.
+      { settleByMarket: jest.fn().mockResolvedValue(undefined) } as any,
+      null as any, null as any, null as any,
       ({ create: async () => {} }) as any, // userNotifications
       ({ addBulk: async () => [] }) as any,
       ({ resolveForMarket: async () => 0 }) as any, // freeCallsService

@@ -7,6 +7,7 @@ import {
 } from "../entities/challenge.entity";
 import { PositionStatus } from "../entities/position.entity";
 import { MarketStatus } from "../entities/market.entity";
+import { TransactionType } from "../entities/transaction.entity";
 
 // ── Factories ────────────────────────────────────────────────────────────────
 
@@ -71,6 +72,10 @@ function makeChallengeRepo(
     count: jest.fn().mockResolvedValue(winCount),
     create: jest.fn().mockImplementation((d: any) => ({ ...d })),
     save: jest.fn().mockImplementation((d: any) => Promise.resolve(d)),
+    // voidChallenge claims the row with a conditional UPDATE and reads
+    // `affected` to decide whether it won. Default to winning the claim;
+    // tests that exercise the double-void guard override this with 0.
+    update: jest.fn().mockResolvedValue({ affected: 1 }),
     createQueryBuilder: jest.fn().mockReturnValue({
       leftJoinAndSelect: jest.fn().mockReturnThis(),
       setLock: jest.fn().mockReturnThis(),
@@ -152,7 +157,13 @@ function makeService(
   }
 
   const sseMock = { emit: jest.fn() } as any;
-  const revenueDistMock = { recordDuelDistribution: jest.fn().mockResolvedValue(null) } as any;
+  const revenueDistMock = {
+    recordDuelDistribution: jest.fn().mockResolvedValue(null),
+  } as any;
+  const redisMock = { del: jest.fn().mockResolvedValue(undefined) } as any;
+  const telegramMock = {
+    sendMessage: jest.fn().mockResolvedValue(undefined),
+  } as any;
   const service = new ChallengesService(
     challengeRepo as any,
     positionRepo as any,
@@ -160,9 +171,19 @@ function makeService(
     dataSource as any,
     sseMock,
     revenueDistMock,
+    redisMock,
+    telegramMock,
   );
 
-  return { service, challengeRepo, marketRepo, positionRepo, dataSource };
+  return {
+    service,
+    challengeRepo,
+    marketRepo,
+    positionRepo,
+    dataSource,
+    redisMock,
+    telegramMock,
+  };
 }
 
 // ── Tests: create() ───────────────────────────────────────────────────────────
@@ -375,55 +396,153 @@ describe("ChallengesService.findForUser()", () => {
   });
 });
 
-// ── Tests: expireStale() ──────────────────────────────────────────────────────
+// ── Tests: voidChallenge() ────────────────────────────────────────────────────
+//
+// The refund path for a duel whose market will never produce an answer. Its
+// defining property is that it pays out exactly once: two callers can now reach
+// the same row (cancelMarket and the hourly expiry cron), and a duel wager
+// refunded twice is money invented.
 
-describe("ChallengesService.expireStale()", () => {
-  it("expires stale open challenges and returns count", async () => {
-    const stale = [
-      makeChallenge({ id: "c1", expiresAt: new Date(Date.now() - 1000) }),
-      makeChallenge({ id: "c2", expiresAt: new Date(Date.now() - 2000) }),
-    ];
-    const challengeRepo = makeChallengeRepo();
-    challengeRepo.find.mockResolvedValue(stale);
-    challengeRepo.save.mockImplementation((d: any) => Promise.resolve(d));
-
-    const { service } = makeService({ challengeRepo });
-    const count = await service.expireStale();
-
-    expect(count).toBe(2);
-    expect(challengeRepo.save).toHaveBeenCalledTimes(2);
-  });
-
-  it("returns 0 when no stale challenges exist", async () => {
-    // All challenges have future expiresAt — none should be expired
-    const fresh = [
-      makeChallenge({ id: "c1", expiresAt: new Date(Date.now() + 9999999) }),
-    ];
-    const challengeRepo = makeChallengeRepo();
-    challengeRepo.find.mockResolvedValue(fresh);
-
-    const { service } = makeService({ challengeRepo });
-    const count = await service.expireStale();
-
-    expect(count).toBe(0);
-    expect(challengeRepo.save).not.toHaveBeenCalled();
-  });
-
-  it("refunds creator wager when challenge expires with wager > 0", async () => {
-    const stale = makeChallenge({
-      expiresAt: new Date(Date.now() - 1000),
-      wagerAmount: 50,
-    });
-    const challengeRepo = makeChallengeRepo();
-    challengeRepo.find.mockResolvedValue([stale]);
-    challengeRepo.save.mockImplementation((d: any) => Promise.resolve(d));
-
+describe("ChallengesService.voidChallenge()", () => {
+  it("refunds both players and marks the duel void", async () => {
+    const challengeRepo = makeChallengeRepo(
+      makeChallenge({ joinerId: "user-2", wagerAmount: 50 }),
+    );
     const dataSource = makeDataSource();
     const { service } = makeService({ challengeRepo, dataSource });
-    await service.expireStale();
 
-    // credit() was called → txRepo.save was called
-    expect(dataSource.txRepo.save).toHaveBeenCalled();
+    const result = await service.voidChallenge("challenge-1", "void refund");
+
+    expect(result).not.toBeNull();
+    expect(result!.refunds).toEqual([
+      { userId: "user-1", amount: 50 },
+      { userId: "user-2", amount: 50 },
+    ]);
+    expect(dataSource.txRepo.save).toHaveBeenCalledTimes(2);
+    expect(challengeRepo.update).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "challenge-1" }),
+      expect.objectContaining({ status: ChallengeStatus.VOID }),
+    );
+  });
+
+  it("pays nobody when another caller already claimed the duel", async () => {
+    const challengeRepo = makeChallengeRepo(
+      makeChallenge({ joinerId: "user-2", wagerAmount: 50 }),
+    );
+    // The conditional UPDATE matched no row — someone else voided it first.
+    challengeRepo.update.mockResolvedValue({ affected: 0 });
+    const dataSource = makeDataSource();
+    const { service } = makeService({ challengeRepo, dataSource });
+
+    expect(await service.voidChallenge("challenge-1", "void refund")).toBeNull();
+    expect(dataSource.txRepo.save).not.toHaveBeenCalled();
+  });
+
+  it("refunds only the creator when nobody joined", async () => {
+    const challengeRepo = makeChallengeRepo(
+      makeChallenge({ joinerId: null, wagerAmount: 50 }),
+    );
+    const dataSource = makeDataSource();
+    const { service } = makeService({ challengeRepo, dataSource });
+
+    const result = await service.voidChallenge("challenge-1", "void refund");
+
+    expect(result!.refunds).toEqual([{ userId: "user-1", amount: 50 }]);
+    expect(dataSource.txRepo.save).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes no ledger rows for a bragging-rights duel", async () => {
+    const challengeRepo = makeChallengeRepo(
+      makeChallenge({ joinerId: "user-2", wagerAmount: 0 }),
+    );
+    const dataSource = makeDataSource();
+    const { service } = makeService({ challengeRepo, dataSource });
+
+    const result = await service.voidChallenge("challenge-1", "void refund");
+
+    expect(result!.refunds).toEqual([]);
+    expect(dataSource.txRepo.save).not.toHaveBeenCalled();
+  });
+
+  it("books the refund as REFUND in the BTN book, not a duel payout", async () => {
+    const challengeRepo = makeChallengeRepo(
+      makeChallenge({ joinerId: null, wagerAmount: 50 }),
+    );
+    const dataSource = makeDataSource();
+    const { service } = makeService({ challengeRepo, dataSource });
+
+    await service.voidChallenge("challenge-1", "void refund");
+
+    expect(dataSource.txRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: TransactionType.REFUND,
+        currency: "BTN",
+        amount: 50,
+      }),
+    );
+  });
+
+  it("drops both players' cached balances so /me does not serve the old figure", async () => {
+    const challengeRepo = makeChallengeRepo(
+      makeChallenge({ joinerId: "user-2", wagerAmount: 50 }),
+    );
+    const { service, redisMock } = makeService({ challengeRepo });
+
+    await service.voidChallenge("challenge-1", "void refund");
+
+    expect(redisMock.del).toHaveBeenCalledWith(
+      "oro:cache:balance:user-1",
+      "oro:cache:balance:user-2",
+    );
+  });
+
+  it("returns null for a duel that does not exist", async () => {
+    const challengeRepo = makeChallengeRepo(null);
+    const { service } = makeService({ challengeRepo });
+
+    expect(await service.voidChallenge("nope", "void refund")).toBeNull();
+  });
+});
+
+// ── Tests: duel ledger currency ───────────────────────────────────────────────
+
+describe("duel ledger rows", () => {
+  // Balances are per-currency sums. Reading the account's book while writing a
+  // row with no currency (which defaults to BTN) let a USDT user stake money
+  // they did not have and be paid ngultrum they never put up.
+  it("stakes the wager in the BTN book", async () => {
+    const challengeRepo = makeChallengeRepo();
+    challengeRepo.findOne.mockResolvedValueOnce(null); // no duplicate duel
+    const dataSource = makeDataSource();
+    const { service } = makeService({ challengeRepo, dataSource });
+
+    await service.create("user-1", "market-1", "outcome-1", 50);
+
+    expect(dataSource.txRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: TransactionType.DUEL_WAGER,
+        currency: "BTN",
+        amount: -50,
+      }),
+    );
+  });
+
+  it("checks the wager against the BTN book, not the account's own currency", async () => {
+    const challengeRepo = makeChallengeRepo();
+    challengeRepo.findOne.mockResolvedValueOnce(null);
+    const dataSource = makeDataSource();
+    // A USDT-funded account: no ngultrum at all.
+    dataSource.txRepo.createQueryBuilder.mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      getRawOne: jest.fn().mockResolvedValue({ balance: "0" }),
+    });
+    const { service } = makeService({ challengeRepo, dataSource });
+
+    await expect(
+      service.create("user-1", "market-1", "outcome-1", 50),
+    ).rejects.toThrow("Insufficient balance for wager");
+    expect(dataSource.txRepo.save).not.toHaveBeenCalled();
   });
 });
 
@@ -553,6 +672,40 @@ describe("ChallengesService — Power Cards", () => {
     await expect(
       service.create("user-1", "market-1", "outcome-1", 0, CardType.SHIELD),
     ).rejects.toThrow(BadRequestException);
+  });
+
+  // ── settleByMarket: a market with no answer pays nobody ───────────────────
+  //
+  // This is the behaviour cancelMarket now selects by passing a null outcome,
+  // and the one a refunded (thin-pool) settlement selects too: a market that
+  // was voided has no winner, so paying one duellist double while the other
+  // eats their wager would be settling a contest that never happened.
+
+  it("refunds both sides rather than paying a winner when there is no outcome", async () => {
+    const challenge = makeChallenge({
+      status: ChallengeStatus.ACTIVE,
+      joinerId: "user-2",
+      outcomeId: "outcome-1",
+      wagerAmount: 100,
+    });
+    const challengeRepo = makeChallengeRepo(challenge);
+    challengeRepo.find.mockResolvedValue([challenge]);
+
+    const dataSource = makeDataSource();
+    const { service } = makeService({ challengeRepo, dataSource });
+    await service.settleByMarket("market-1", null);
+
+    const written = dataSource.txRepo.save.mock.calls.map((c: any[]) => c[0]);
+    // Two equal refunds of the stake — not one 180 payout and a 10% cut.
+    expect(written).toHaveLength(2);
+    expect(written.every((tx: any) => tx.amount === 100)).toBe(true);
+    expect(written.every((tx: any) => tx.type === TransactionType.REFUND)).toBe(
+      true,
+    );
+    expect(challengeRepo.update).toHaveBeenCalledWith(
+      expect.objectContaining({ id: challenge.id }),
+      expect.objectContaining({ status: ChallengeStatus.VOID }),
+    );
   });
 
   // ── settleByMarket: Double Down fee waiver ────────────────────────────────

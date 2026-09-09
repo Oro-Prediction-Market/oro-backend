@@ -28,6 +28,7 @@ export enum AuditAction {
   // Balance / financial
   BALANCE_CREDIT = "balance.credit", // manual admin credit (future)
   PAYMENT_VIEW = "payment.view",
+  DUEL_VOID = "duel.void", // call a stuck duel off and refund both wagers
 
   // User management
   USER_ADMIN_TOGGLE = "user.admin_toggle",

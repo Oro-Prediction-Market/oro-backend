@@ -15,6 +15,7 @@ import { TelegramModule } from "../telegram/telegram.module";
 import { EplModule } from "../epl/epl.module";
 import { UclModule } from "../ucl/ucl.module";
 import { SuggestionsModule } from "../suggestions/suggestions.module";
+import { ChallengesModule } from "../challenges/challenges.module";
 
 @Module({
   imports: [
@@ -32,6 +33,9 @@ import { SuggestionsModule } from "../suggestions/suggestions.module";
     EplModule,
     UclModule,
     SuggestionsModule,
+    // For voiding stuck duels. The Duels list reads Challenge through the
+    // DataSource directly, but refunding needs the service's guarded write path.
+    ChallengesModule,
   ],
   controllers: [AdminController],
   providers: [FixturesService, AuditService],

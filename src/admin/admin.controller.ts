@@ -80,7 +80,8 @@ import { ProposeResolutionDto } from "./dto/propose-resolution.dto";
 import { GetUsersQueryDto } from "./dto/get-users-query.dto";
 import { GetChallengesQueryDto } from "./dto/get-challenges-query.dto";
 import { Challenge, ChallengeStatus } from "../entities/challenge.entity";
-import { STUCK_DUEL, toDuelRow } from "./duel-view";
+import { STUCK_DUEL, toDuelRow, isStuck } from "./duel-view";
+import { ChallengesService } from "../challenges/challenges.service";
 import { ToggleAdminDto } from "./dto/toggle-admin.dto";
 import { HealthCheckResponse } from "./dto/health-check.dto";
 import { csvCell } from "../shared/utils/csv.util";
@@ -117,6 +118,7 @@ export class AdminController {
     private fixturesService: FixturesService,
     private auditService: AuditService,
     private telegramSimple: TelegramSimpleService,
+    private challengesService: ChallengesService,
     @InjectDataSource() private dataSource: DataSource,
     private redis: RedisService,
     @InjectRepository(Settlement)
@@ -2298,6 +2300,68 @@ export class AdminController {
       limit: take,
       pages: Math.ceil(total / take) || 1,
       summary: await this.duelSummary(),
+    };
+  }
+
+  /**
+   * Call a stuck duel off and return both wagers.
+   *
+   * Only reachable for duels `isStuck()` agrees are stranded — open or active on
+   * a cancelled market. A healthy duel is refused, so this cannot be used to
+   * kill a live contest, and a duel that lost the race to another voider is
+   * refused rather than paid twice.
+   *
+   * cancelMarket() now voids duels automatically, so this is the recovery tool
+   * for duels stranded before that fix shipped, and for any that slip past it.
+   */
+  @Post("challenges/:id/void")
+  @HttpCode(200)
+  @ApiOperation({ summary: "Void a stuck duel and refund both players" })
+  async voidChallenge(@Param("id") id: string, @Request() req: any) {
+    const challenge = await this.dataSource.getRepository(Challenge).findOne({
+      where: { id },
+      relations: ["market"],
+    });
+    if (!challenge) throw new NotFoundException("Duel not found");
+
+    if (!isStuck(challenge.status, challenge.market?.status ?? null)) {
+      throw new BadRequestException(
+        `This duel is not stuck (duel is ${challenge.status}, market is ` +
+          `${challenge.market?.status ?? "missing"}). Only a duel left open or ` +
+          `active on a cancelled market can be voided here.`,
+      );
+    }
+
+    const result = await this.challengesService.voidChallenge(
+      id,
+      `Duel void refund (admin) — challenge ${id}`,
+    );
+    if (!result) {
+      throw new BadRequestException(
+        "This duel was already settled, expired or voided — nothing was refunded.",
+      );
+    }
+
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true, // Admin controller - all users are admins
+      action: AuditAction.DUEL_VOID,
+      entityType: "challenge",
+      entityId: id,
+      before: { status: challenge.status, marketId: challenge.marketId },
+      after: { status: ChallengeStatus.VOID },
+      meta: {
+        refunds: result.refunds,
+        wagerAmount: Number(challenge.wagerAmount),
+      },
+      ipAddress: req.ip,
+    });
+
+    return {
+      id,
+      status: ChallengeStatus.VOID,
+      refunds: result.refunds,
+      refundedTotal: result.refunds.reduce((sum, r) => sum + r.amount, 0),
     };
   }
 
