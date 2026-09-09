@@ -1,6 +1,10 @@
 import { ApiPropertyOptional } from "@nestjs/swagger";
 import { IsOptional, IsIn, IsInt, Min, Max, MaxLength } from "class-validator";
 import { Type } from "class-transformer";
+import { TIER_ORDER } from "../../markets/tiers";
+
+/** "all" plus every rung, so the filter validates against the real ladder. */
+const TIER_FILTER_VALUES = ["all", ...TIER_ORDER];
 
 export class GetUsersQueryDto {
   @ApiPropertyOptional({ description: "Search query (max 200 chars)" })
@@ -29,6 +33,17 @@ export class GetUsersQueryDto {
   @IsOptional()
   @IsIn(["all", "BTN", "USDT"])
   currency?: "all" | "BTN" | "USDT";
+
+  @ApiPropertyOptional({
+    enum: TIER_FILTER_VALUES,
+    default: "all",
+    description:
+      "Reputation rung. Validated against TIER_ORDER, so adding a rung to the " +
+      "ladder makes it filterable here without touching this DTO.",
+  })
+  @IsOptional()
+  @IsIn(TIER_FILTER_VALUES)
+  tier?: string;
 
   @ApiPropertyOptional({
     enum: ["name", "balance", "streak", "joined"],

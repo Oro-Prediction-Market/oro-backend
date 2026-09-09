@@ -58,6 +58,7 @@ import {
   UclStatKey,
 } from "../ucl/ucl-stat-markets";
 import { DistributionStatus } from "../entities/revenue-distribution.entity";
+import { TIER_ORDER, TIER_LABELS } from "../markets/tiers";
 import { FixturesService } from "./fixtures.service";
 import { AuditService } from "./audit.service";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
@@ -1482,6 +1483,70 @@ export class AdminController {
   }
 
   // ── Users ─────────────────────────────────────────────────────────────────
+  /**
+   * Headcount on each rung of the reputation ladder.
+   *
+   * Reports two numbers per rung, because they answer different questions:
+   *   count  — every account holding that tier
+   *   ranked — those with at least one resolved prediction
+   * They differ sharply at the bottom: `reputationTier` defaults to 'rookie'
+   * for a brand-new account, so Rookie's `count` is mostly people who have
+   * never predicted at all. Reporting only `count` would read as a huge
+   * beginner cohort when most of them have simply never played.
+   *
+   * Every rung is returned even at zero — an empty Legend row is a real
+   * finding, not a gap to hide.
+   */
+  @Get("users/tier-distribution")
+  @ApiOperation({
+    summary: "How many users sit on each rung of the reputation ladder",
+  })
+  async userTierDistribution() {
+    const rows = await this.userRepo
+      .createQueryBuilder("u")
+      .select("u.reputationTier", "tier")
+      .addSelect("COUNT(*)", "count")
+      .addSelect(
+        'COUNT(*) FILTER (WHERE u."totalPredictions" > 0)',
+        "ranked",
+      )
+      .groupBy("u.reputationTier")
+      .getRawMany<{ tier: string | null; count: string; ranked: string }>();
+
+    const byTier = new Map(
+      rows.map((r) => [
+        r.tier ?? "rookie",
+        { count: Number(r.count), ranked: Number(r.ranked) },
+      ]),
+    );
+
+    const distribution = TIER_ORDER.map((tier) => ({
+      tier,
+      label: TIER_LABELS[tier],
+      count: byTier.get(tier)?.count ?? 0,
+      ranked: byTier.get(tier)?.ranked ?? 0,
+    }));
+
+    // A tier the ladder no longer defines — left over from an older ladder, or
+    // written by hand. Surfaced rather than dropped: silently discarding rows
+    // would make the totals disagree with the user list for no visible reason.
+    const unknown = rows
+      .filter((r) => r.tier != null && !TIER_LABELS[r.tier])
+      .map((r) => ({
+        tier: r.tier as string,
+        label: r.tier as string,
+        count: Number(r.count),
+        ranked: Number(r.ranked),
+      }));
+
+    const all = [...distribution, ...unknown];
+    return {
+      distribution: all,
+      total: all.reduce((n, d) => n + d.count, 0),
+      totalRanked: all.reduce((n, d) => n + d.ranked, 0),
+    };
+  }
+
   @Get("users")
   @ApiOperation({
     summary: "List users with search, filters, sort and pagination",
@@ -1507,6 +1572,7 @@ export class AdminController {
       role = "all",
       dkStatus = "all",
       currency = "all",
+      tier = "all",
       sortField = "joined",
       sortDir = "desc",
       page = 1,
@@ -1591,6 +1657,15 @@ export class AdminController {
       qb.andWhere("u.isAdmin = :isAdmin", { isAdmin: true });
     if (role === "user")
       qb.andWhere("u.isAdmin = :isAdmin", { isAdmin: false });
+
+    // ── Reputation rung ─────────────────────────────────────────────────────
+    // A never-scored account has the column default 'rookie', so filtering on
+    // rookie legitimately returns users who have simply never predicted. The
+    // tier-distribution endpoint reports those separately as the "ranked"
+    // count, which is what tells the two groups apart.
+    if (tier !== "all") {
+      qb.andWhere("u.reputationTier = :tier", { tier });
+    }
 
     // ── DK-link filter ──────────────────────────────────────────────────────
     if (dkStatus === "linked")
