@@ -705,17 +705,37 @@ export class AdminController {
       const s = status.toLowerCase();
       // Resolving a market immediately settles it (payout runs in the same step),
       // so every finished market ends up `settled` regardless of whether it was
-      // disputed. Split the two finished-market tabs by whether an objection was
-      // raised: "Resolved" = had a dispute that was adjudicated, "Settled" = clean
-      // resolution with no objection. Each finished market shows in exactly one tab.
+      // disputed. The finished-market tabs split it three ways, and a finished
+      // market still shows in exactly one of them:
+      //   "Refunded" = stakes returned, nothing paid out (checked first)
+      //   "Resolved" = paid out after a dispute was adjudicated
+      //   "Settled"  = paid out cleanly, no objection raised
+      // Cancelled markets are refunded too, but they are not `FINISHED` and keep
+      // their own tab, so they are deliberately left out of "Refunded".
       const FINISHED = ["resolved", "settled"];
       const HAD_DISPUTE = `EXISTS (SELECT 1 FROM disputes d WHERE d."marketId" = market.id)`;
-      if (s === "resolved") {
+      // A finished market whose stakes went back to the bettors instead of
+      // paying out — nearly always a thin pool with nothing to win against.
+      // Refunds are all-or-nothing per market (no market in the data is
+      // partly refunded), so a single refunded position identifies one.
+      //
+      // Deliberately not keyed off settlements.cancelReason: a market has one
+      // settlement per book, so that would need a DISTINCT and would still
+      // miss anything refunded outside the settlement path. What the admin
+      // wants to see is "did the money go back", and the positions are the
+      // record of that.
+      const WAS_REFUNDED = `EXISTS (SELECT 1 FROM positions p WHERE p."marketId" = market.id AND p.status = 'refunded')`;
+      if (s === "refunded") {
+        qb.andWhere("market.status IN (:...statuses)", { statuses: FINISHED });
+        qb.andWhere(WAS_REFUNDED);
+      } else if (s === "resolved") {
         qb.andWhere("market.status IN (:...statuses)", { statuses: FINISHED });
         qb.andWhere(HAD_DISPUTE);
+        qb.andWhere(`NOT ${WAS_REFUNDED}`);
       } else if (s === "settled") {
         qb.andWhere("market.status IN (:...statuses)", { statuses: FINISHED });
         qb.andWhere(`NOT ${HAD_DISPUTE}`);
+        qb.andWhere(`NOT ${WAS_REFUNDED}`);
       } else {
         qb.andWhere("market.status = :status", { status: s });
       }
