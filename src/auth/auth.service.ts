@@ -1083,6 +1083,33 @@ export class AuthService {
   }
 
   // ── JWT revocation ────────────────────────────────────────────────────────
+  /**
+   * Mint a session token for a user who has already proved who they are.
+   *
+   * Used by the PWA's silent refresh, which verifies the cookie's token and
+   * then needs a replacement carrying a later `exp`. A new `jti` is issued each
+   * time, so revoking the token that was refreshed does not blacklist the one
+   * that replaced it — and a refresh cannot outrun a revocation, because the
+   * old token has to verify (blacklist check included) before this is called.
+   */
+  mintSessionToken(userId: string, isAdmin: boolean): string {
+    return this.jwtService.sign({
+      sub: userId,
+      isAdmin,
+      jti: randomUUID(),
+    });
+  }
+
+  /**
+   * When a token expires, in epoch milliseconds, or null if it carries no
+   * `exp`. Decodes without verifying: the only caller sizes a cookie with it,
+   * and the token is verified everywhere it is actually trusted.
+   */
+  tokenExpiresAt(token: string): number | null {
+    const exp = (this.jwtService.decode(token) as { exp?: number } | null)?.exp;
+    return exp ? exp * 1000 : null;
+  }
+
   async getUserFromToken(token: string) {
     let payload: { sub?: string; jti?: string };
     try {

@@ -169,16 +169,29 @@ export class AuthController {
     private emailAuth: EmailAuthService,
   ) {}
 
+  /** Fallback only, for a token we somehow cannot read an `exp` out of. */
+  private static readonly DEFAULT_COOKIE_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
+
   private setAuthCookie(res: ExpressResponse, token: string) {
     const isProduction = process.env.NODE_ENV === "production";
     res.cookie("oro_auth", token, {
       httpOnly: true,
       secure: isProduction,
       sameSite: isProduction ? "strict" : "lax",
-      // Match JWT expiry (7 days). If you shorten JWT_EXPIRES_IN, lower this too.
-      maxAge: 7 * 24 * 60 * 60 * 1000,
+      // Read out of the token rather than hardcoded. The two used to be set
+      // independently — a 7-day cookie carrying an 8-hour JWT — so the cookie
+      // outlived its own contents and the session died while the browser still
+      // believed it was signed in. Deriving one from the other means they
+      // cannot drift again, whatever JWT_EXPIRES_IN is set to.
+      maxAge: this.cookieMaxAgeFor(token),
       path: "/",
     });
+  }
+
+  private cookieMaxAgeFor(token: string): number {
+    const expiresAt = this.authService.tokenExpiresAt(token);
+    if (!expiresAt) return AuthController.DEFAULT_COOKIE_MAX_AGE;
+    return Math.max(0, expiresAt - Date.now());
   }
 
   @Get("refresh")
@@ -198,16 +211,30 @@ export class AuthController {
     const token: string | undefined = req.cookies?.["oro_auth"];
     if (!token) return { token: null, user: null };
 
-    let user: unknown;
+    let user: Awaited<ReturnType<AuthService["getUserFromToken"]>>;
     try {
       user = await this.authService.getUserFromToken(token);
     } catch {
       // Cookie present but invalid/expired — same as no session to the caller.
       return { token: null, user: null };
     }
-    // Re-issue the cookie to reset its maxAge
-    this.setAuthCookie(res, token);
-    return { token, user };
+
+    // Mint a replacement rather than handing the same token back.
+    //
+    // This used to re-issue the cookie carrying the token it had just read,
+    // which reset the cookie's maxAge but not the JWT's `exp`. The session
+    // therefore ended a fixed period after LOGIN however much the app was
+    // used: a daily user was signed out on schedule, and the cookie sat there
+    // afterwards looking valid while its contents no longer verified.
+    //
+    // Refreshing the token makes the session slide instead — every visit
+    // resets the clock, so the window is one of inactivity, not of age. The
+    // old token is not blacklisted: it is the copy in the caller's cookie,
+    // about to be overwritten, and revoking it would log out the very request
+    // doing the refreshing.
+    const fresh = this.authService.mintSessionToken(user.id, user.isAdmin);
+    this.setAuthCookie(res, fresh);
+    return { token: fresh, user };
   }
 
   @Post("telegram")
