@@ -2,7 +2,7 @@ import { Module } from "@nestjs/common";
 import { APP_GUARD } from "@nestjs/core";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import { ScheduleModule } from "@nestjs/schedule";
-import { ThrottlerModule, ThrottlerGuard } from "@nestjs/throttler";
+import { ThrottlerModule } from "@nestjs/throttler";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { BullModule } from "@nestjs/bullmq";
 import { AuthModule } from "./auth/auth.module";
@@ -70,6 +70,7 @@ import { FeedbackModule } from "./feedback/feedback.module";
 import { AmlAlert } from "./aml/entities/aml-alert.entity";
 import { AmlReport } from "./aml/entities/aml-report.entity";
 import { UserNotification } from "./entities/user-notification.entity";
+import { FriendlyThrottlerGuard } from "./shared/guards/friendly-throttler.guard";
 
 @Module({
   imports: [
@@ -198,6 +199,8 @@ import { UserNotification } from "./entities/user-notification.entity";
     InsightsModule,
     FreeCallsModule,
   ],
-  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
+  // Subclassed only to answer a 429 in a sentence a user can act on; the
+  // limiting behaviour is the stock guard's. See friendly-throttler.guard.ts.
+  providers: [{ provide: APP_GUARD, useClass: FriendlyThrottlerGuard }],
 })
 export class AppModule {}
