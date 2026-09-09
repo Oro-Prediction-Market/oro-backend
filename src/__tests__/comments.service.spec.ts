@@ -89,10 +89,19 @@ function makeService(overrides: any = {}) {
 // ── Blocklist ────────────────────────────────────────────────────────────────
 
 describe("blocklist", () => {
-  it("folds case, accents, leetspeak and repeated letters", () => {
-    expect(normalise("FUUUCK")).toBe("fuck");
+  it("folds case, accents and leetspeak", () => {
     expect(normalise("sh1t")).toBe("shit");
     expect(normalise("café")).toBe("cafe");
+    expect(normalise("SHOUTING")).toBe("shouting");
+  });
+
+  // Repeated letters are absorbed by the match patterns rather than by
+  // normalise: collapsing the body would turn "ass" into "as", which appears in
+  // most English sentences.
+  it("catches a stretched or doubled letter", () => {
+    expect(normalise("FUUUCK")).toBe("fuuuck");
+    expect(findBlockedTerm("FUUUCK")).toBe("fuck");
+    expect(findBlockedTerm("ffuuuuck this market")).toBe("fuck");
   });
 
   it("closes up a term padded with punctuation or spaces", () => {
@@ -102,9 +111,32 @@ describe("blocklist", () => {
 
   it("catches obvious profanity", () => {
     expect(findBlockedTerm("what a bitch of a result")).toBe("bitch");
-    expect(findBlockedTerm("F*CKING robbery")).toBe("fucking");
+    expect(findBlockedTerm("F*CKING robbery")).toBe("fuck");
     expect(findBlockedTerm("sh#t call")).toBe("shit");
     expect(findBlockedTerm("c-nt of a referee")).toBe("cunt");
+  });
+
+  // The old matcher listed every form by hand and so caught the base word only:
+  // "fuck" was blocked and "fucked", "bitches" and "retards" all went through.
+  it("catches the inflections of a listed term", () => {
+    expect(findBlockedTerm("that was fucked")).toBe("fuck");
+    expect(findBlockedTerm("bitches be betting")).toBe("bitch");
+    expect(findBlockedTerm("shitting myself over this one")).toBe("shit");
+    expect(findBlockedTerm("what a bunch of retards")).toBe("retard");
+    expect(findBlockedTerm("absolutely retarded call")).toBe("retard");
+    expect(findBlockedTerm("dumbass bet")).toBe("dumbass");
+  });
+
+  // A digit substitution the leet map cannot undo: "c4nt" folds to "cant",
+  // which is a word, so only the censored pass can see it.
+  it("catches a substitution that folds to an ordinary word", () => {
+    expect(findBlockedTerm("c4nt of a ref")).toBe("cunt");
+    expect(findBlockedTerm("f@ck this")).toBe("fuck");
+  });
+
+  it("catches harassment phrases", () => {
+    expect(findBlockedTerm("kys loser")).toBe("kys");
+    expect(findBlockedTerm("go kill yourself")).toBe("kill yourself");
   });
 
   // The first letter of a censored term stays literal on purpose: without that
@@ -129,8 +161,35 @@ describe("blocklist", () => {
       "3-1 at half-time, well-taken goal",
       "Nu 5,000 on the draw — 2.4x is generous",
       "back-to-back clean sheets",
+      // "arse" is on the list and Arsenal play every week. The suffix set is
+      // what keeps these apart, so this is the case to re-run after editing it.
+      "Arsenal away to Spurs",
+      "van Dijk is back from injury",
+      "assess the odds before you bet",
+      "assists leader this season",
+      "the title race is over",
+      "City are cocky after that run",
+      "cocktail of injuries",
+      "association football",
+      "Pakistan vs India",
+      "GBP/USD at 1.27",
+      "6-0 aggregate, 1-1 on the night",
     ]) {
       expect(findBlockedTerm(clean)).toBeNull();
+    }
+  });
+
+  // Blocking these would gut ordinary match argument, which is the whole point
+  // of the thread. They are the flag queue's job, not the matcher's.
+  it("lets mild words through on purpose", () => {
+    for (const mild of [
+      "damn that was close",
+      "what a stupid mistake by the keeper",
+      "crap performance from the back four",
+      "this ref is an idiot",
+      "the git repo is public",
+    ]) {
+      expect(findBlockedTerm(mild)).toBeNull();
     }
   });
 });
