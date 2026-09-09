@@ -17,6 +17,7 @@ import { RedisService } from "../redis/redis.service";
 import { User } from "../entities/user.entity";
 import { Market, MarketStatus } from "../entities/market.entity";
 import { Outcome } from "../entities/outcome.entity";
+import { tierLabel as formatTier } from "../markets/tiers";
 
 /**
  * BotPollingService
@@ -494,14 +495,7 @@ export class BotPollingService
       return;
     }
 
-    const tierLabel =
-      user.reputationTier === "legend"
-        ? "Legend"
-        : user.reputationTier === "hot_hand"
-          ? "Hot Hand"
-          : user.reputationTier === "sharpshooter"
-            ? "Sharpshooter"
-            : "Rookie";
+    const tierLabel = formatTier(user.reputationTier);
     // Show the literal resolved record — not the confidence-smoothed
     // reputationScore, which prints a % that can't be reconciled with the count.
     const record = `${user.correctPredictions ?? 0}/${user.totalPredictions ?? 0} correct`;
@@ -608,14 +602,7 @@ export class BotPollingService
         reputationLine =
           "\n\n⭐ <i>Make your first prediction to start building your reputation score. Top predictors carry more weight in market probabilities.</i>";
       } else {
-        const tierLabel =
-          user.reputationTier === "legend"
-            ? "Legend"
-            : user.reputationTier === "hot_hand"
-              ? "Hot Hand"
-              : user.reputationTier === "sharpshooter"
-                ? "Sharpshooter"
-                : "Rookie";
+        const tierLabel = formatTier(user.reputationTier);
         // Literal record, not the smoothed reputationScore % — a percentage next
         // to a count invites a check the smoothed number fails.
         const record = ` · ${user.correctPredictions ?? 0}/${user.totalPredictions} correct`;

@@ -18,6 +18,7 @@ import { TelegramVerificationService } from "../telegram/telegram-verification.s
 import { LeaguesService } from "../leagues/leagues.service";
 import { BotPollingService } from "./bot-polling.service";
 import { RedisService } from "../redis/redis.service";
+import { tierLabel as formatTier } from "../markets/tiers";
 import { User } from "../entities/user.entity";
 import { Market, MarketStatus } from "../entities/market.entity";
 
@@ -306,14 +307,7 @@ export class BotController {
             );
             break;
           }
-          const tierLabel =
-            user.reputationTier === "legend"
-              ? "Legend"
-              : user.reputationTier === "hot_hand"
-                ? "Hot Hand"
-                : user.reputationTier === "sharpshooter"
-                  ? "Sharpshooter"
-                  : "Rookie";
+          const tierLabel = formatTier(user.reputationTier);
           // Show the literal resolved record — not the confidence-smoothed
           // reputationScore, which prints a % that can't be reconciled with the count.
           const record = `${user.correctPredictions ?? 0}/${user.totalPredictions ?? 0} correct`;
@@ -418,14 +412,7 @@ export class BotController {
         reputationLine =
           "\n\n⭐ <i>Make your first prediction to start building your reputation score. Top predictors carry more weight in market probabilities.</i>";
       } else {
-        const tierLabel =
-          user.reputationTier === "legend"
-            ? "Legend"
-            : user.reputationTier === "hot_hand"
-              ? "Hot Hand"
-              : user.reputationTier === "sharpshooter"
-                ? "Sharpshooter"
-                : "Rookie";
+        const tierLabel = formatTier(user.reputationTier);
         // Literal record, not the smoothed reputationScore % — a percentage next
         // to a count invites a check the smoothed number fails.
         const record = ` · ${user.correctPredictions ?? 0}/${user.totalPredictions} correct`;
