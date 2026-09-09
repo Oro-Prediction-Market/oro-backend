@@ -121,11 +121,102 @@ export class KeeperService {
   }
 
   /** Manual trigger for a specific job from the admin UI. */
-  async triggerJob(job: "expiry" | "dispute" | "liquidity"): Promise<void> {
+  async triggerJob(
+    job: "expiry" | "dispute" | "liquidity" | "matchday",
+  ): Promise<void> {
     this.addLog("info", `Manual trigger: Running ${job} job...`);
     if (job === "expiry") await this.handleMarketExpirations();
     else if (job === "dispute") await this.handleDisputeWindowExpiry();
     else if (job === "liquidity") await this.simulateActivity();
+    else if (job === "matchday") await this.backfillMatchdays();
+  }
+
+  /**
+   * Stamp `metadata.matchday` on fixture markets that are missing it.
+   *
+   * The keeper writes the round when it CREATES a market, so every market made
+   * before that shipped has no round at all — and dedup means it will never be
+   * recreated, so nothing would ever fill it in. The hub pages group by this
+   * field, so those fixtures all collapse into one "Other fixtures" heading.
+   *
+   * Idempotent and safe to re-run: it only touches markets whose stored round
+   * differs from the provider's, so a second run is a no-op. Matching is by
+   * externalMatchId, never by team names or kickoff date — a gameweek
+   * routinely straddles a weekend and the following midweek, so any date-based
+   * guess would split one round across two headings.
+   *
+   * Returns how many markets each competition updated.
+   */
+  async backfillMatchdays(): Promise<{ epl: number; ucl: number }> {
+    const result = { epl: 0, ucl: 0 };
+
+    const competitions: {
+      key: "epl" | "ucl";
+      subcategory: string;
+      load: () => Promise<Map<number, number>>;
+    }[] = [
+      {
+        key: "epl",
+        subcategory: "epl-match",
+        load: () => this.epl.getSeasonMatchdays(),
+      },
+      {
+        key: "ucl",
+        subcategory: "ucl-match",
+        load: () => this.ucl.getSeasonMatchdays(),
+      },
+    ];
+
+    for (const comp of competitions) {
+      let rounds: Map<number, number>;
+      try {
+        rounds = await comp.load();
+      } catch (err) {
+        this.addLog(
+          "warn",
+          `Matchday backfill: ${comp.key.toUpperCase()} fixture list unavailable (${
+            err instanceof Error ? err.message : String(err)
+          }).`,
+        );
+        continue;
+      }
+      if (rounds.size === 0) {
+        // A missing API key returns an empty map rather than throwing. Writing
+        // nothing is right, but say so — silently reporting "0 updated" reads
+        // as "already correct".
+        this.addLog(
+          "warn",
+          `Matchday backfill: ${comp.key.toUpperCase()} returned no fixtures — check FOOTBALL_DATA_API_KEY.`,
+        );
+        continue;
+      }
+
+      const markets = await this.marketRepo.find({
+        where: { subcategory: comp.subcategory },
+      });
+
+      for (const market of markets) {
+        const externalId = Number(market.externalMatchId);
+        if (!Number.isFinite(externalId)) continue;
+        const round = rounds.get(externalId);
+        if (round == null) continue;
+
+        const metadata = { ...((market.metadata as object | null) ?? {}) } as
+          Record<string, unknown>;
+        if (metadata.matchday === round) continue;
+
+        metadata.matchday = round;
+        market.metadata = metadata as typeof market.metadata;
+        await this.marketRepo.save(market);
+        result[comp.key] += 1;
+      }
+    }
+
+    this.addLog(
+      "info",
+      `Matchday backfill: ${result.epl} EPL and ${result.ucl} UCL markets updated.`,
+    );
+    return result;
   }
 
   // ── Cron: auto-open UPCOMING markets + close expired OPEN markets (every minute) ──

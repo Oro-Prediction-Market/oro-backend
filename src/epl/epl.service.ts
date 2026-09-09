@@ -262,6 +262,25 @@ export class EplService {
       .filter((f: any) => f.id && f.homeTeam && f.awayTeam && f.utcDate);
   }
 
+  /**
+   * externalMatchId → gameweek, for every match of the current season.
+   *
+   * Deliberately unfiltered by status, unlike getUpcomingFixtures: labelling
+   * the "Previous" tab means naming the gameweek of matches already played,
+   * which a SCHEDULED,TIMED query can never return. One request covers the
+   * whole season, so this stays well inside the provider's rate limit.
+   */
+  async getSeasonMatchdays(): Promise<Map<number, number>> {
+    const data = await this.footballData<any>("competitions/PL/matches");
+    const out = new Map<number, number>();
+    for (const m of data?.matches ?? []) {
+      const id = Number(m?.id);
+      const md = Number(m?.matchday);
+      if (Number.isFinite(id) && Number.isFinite(md) && md > 0) out.set(id, md);
+    }
+    return out;
+  }
+
   async getStats(): Promise<EplStats> {
     const cacheKey = "oro:epl:stats";
     const cached = await this.redis.getJson<EplStats>(cacheKey);

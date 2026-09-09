@@ -2791,16 +2791,17 @@ export class AdminController {
   @Post("keeper/trigger/:job")
   @HttpCode(200)
   @ApiOperation({
-    summary: "Manually trigger a keeper job (expiry | dispute | liquidity)",
+    summary:
+      "Manually trigger a keeper job (expiry | dispute | liquidity | matchday)",
   })
   async triggerKeeperJob(@Param("job") job: string) {
-    if (!["expiry", "dispute", "liquidity"].includes(job)) {
+    if (!["expiry", "dispute", "liquidity", "matchday"].includes(job)) {
       throw new BadRequestException(
-        "Unknown job. Valid: expiry, dispute, liquidity",
+        "Unknown job. Valid: expiry, dispute, liquidity, matchday",
       );
     }
     await this.keeperService.triggerJob(
-      job as "expiry" | "dispute" | "liquidity",
+      job as "expiry" | "dispute" | "liquidity" | "matchday",
     );
     return { triggered: job };
   }

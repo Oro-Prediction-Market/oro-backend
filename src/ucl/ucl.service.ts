@@ -266,6 +266,29 @@ export class UclService {
       .filter((f: any) => f.id && f.homeTeam && f.awayTeam && f.utcDate);
   }
 
+  /**
+   * externalMatchId → league-phase matchday, for every match of the current
+   * season.
+   *
+   * Unfiltered by status, unlike getUpcomingFixtures: naming the round of a
+   * match already played is exactly what the "Previous" tab needs, and a
+   * SCHEDULED,TIMED query can never return one.
+   *
+   * Knockout ties carry no matchday and are simply absent from the map — they
+   * are identified by `stage`, and the hub groups them under their own
+   * heading rather than a numbered round.
+   */
+  async getSeasonMatchdays(): Promise<Map<number, number>> {
+    const data = await this.footballData<any>("competitions/CL/matches");
+    const out = new Map<number, number>();
+    for (const m of data?.matches ?? []) {
+      const id = Number(m?.id);
+      const md = Number(m?.matchday);
+      if (Number.isFinite(id) && Number.isFinite(md) && md > 0) out.set(id, md);
+    }
+    return out;
+  }
+
   /** Build the knockout bracket (Round of 16 → Final) from the CL match list.
    *  football-data.org exposes each knockout match with a `stage` but no bracket
    *  slot, so we group two-legged ties by team pair, then reconstruct the tree by
