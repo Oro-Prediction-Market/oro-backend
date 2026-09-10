@@ -1,4 +1,7 @@
-import { ProbabilityHistoryService } from "../insights/probability-history.service";
+import {
+  ProbabilityHistoryService,
+  smoothedShare,
+} from "../insights/probability-history.service";
 import { MarketStatus } from "../entities/market.entity";
 
 /**
@@ -25,7 +28,11 @@ describe("ProbabilityHistoryService", () => {
           return moverRows.first;
         }
         if (sql.includes("capturedAt\" DESC")) {
-          return sql.includes("totalPool") ? moverRows.last : latestRows;
+          // Both DESC queries are DISTINCT ON over the same table; tell them
+          // apart by what they filter on, not by which columns they select.
+          // Keying on a column name silently reroutes the moment either query
+          // selects one more field.
+          return sql.includes('"marketId" = ANY') ? latestRows : moverRows.last;
         }
         return [];
       }),
@@ -55,7 +62,12 @@ describe("ProbabilityHistoryService", () => {
     return { svc, inserted, snapshotRepo, marketRepo, redis };
   }
 
-  const market = (id: string, probs: number[], pool = 1000) => ({
+  const market = (
+    id: string,
+    probs: number[],
+    pool = 1000,
+    pools?: number[],
+  ) => ({
     id,
     title: `Question ${id}`,
     category: "sports",
@@ -65,6 +77,7 @@ describe("ProbabilityHistoryService", () => {
       id: `${id}-o${i}`,
       label: `Outcome ${i}`,
       lmsrProbability: p,
+      totalBetAmount: pools?.[i],
       sortOrder: i,
       isWinner: false,
     })),
@@ -119,6 +132,93 @@ describe("ProbabilityHistoryService", () => {
     );
 
     expect(await svc.sample()).toBe(0);
+  });
+
+  // ── The share gate ────────────────────────────────────────────────────────
+  //
+  // LMSR saturates on a lopsided book, so it is the wrong thing to threshold
+  // on: it barely twitches through moves that visibly change the number the
+  // apps print. Movement is measured on the smoothed share as well.
+
+  it("captures a move the displayed share makes but LMSR does not", async () => {
+    // Pools 5000/200 → a Nu 500 stake on the favourite. LMSR goes .9918→.9951
+    // (0.33pp, under the epsilon) while the share goes .887→.896 (0.84pp).
+    // The old LMSR-only gate wrote nothing here and the curve flatlined.
+    const { svc, inserted } = build(
+      [market("m1", [0.9951, 0.0049], 5700, [5500, 200])],
+      [
+        {
+          marketId: "m1",
+          outcomeId: "m1-o0",
+          probability: "0.991800",
+          totalPool: "5200",
+          outcomePool: "5000",
+        },
+        {
+          marketId: "m1",
+          outcomeId: "m1-o1",
+          probability: "0.008200",
+          totalPool: "5200",
+          outcomePool: "200",
+        },
+      ],
+    );
+
+    expect(await svc.sample()).toBe(2);
+    expect(inserted[0][0]).toMatchObject({ outcomePool: 5500 });
+    expect(inserted[0][1]).toMatchObject({ outcomePool: 200 });
+  });
+
+  it("still writes nothing when neither the share nor LMSR moved", async () => {
+    const { svc, inserted } = build(
+      [market("m1", [0.4, 0.6], 1000, [400, 600])],
+      [
+        {
+          marketId: "m1",
+          outcomeId: "m1-o0",
+          probability: "0.400000",
+          totalPool: "1000",
+          outcomePool: "400",
+        },
+        {
+          marketId: "m1",
+          outcomeId: "m1-o1",
+          probability: "0.600000",
+          totalPool: "1000",
+          outcomePool: "600",
+        },
+      ],
+    );
+
+    expect(await svc.sample()).toBe(0);
+    expect(inserted).toHaveLength(0);
+  });
+
+  it("treats a legacy row with no outcomePool as unchanged, not as moved", async () => {
+    // Rows written before the column existed must not force a write on every
+    // tick forever — that would turn the table into a log of the cron running.
+    const { svc } = build(
+      [market("m1", [0.4, 0.6], 1000, [400, 600])],
+      [
+        { marketId: "m1", outcomeId: "m1-o0", probability: "0.400000" },
+        { marketId: "m1", outcomeId: "m1-o1", probability: "0.600000" },
+      ],
+    );
+
+    expect(await svc.sample()).toBe(0);
+  });
+
+  it("writes a zero outcome pool as 0, never NaN", async () => {
+    // An outcome relation loaded without the column would make a bare
+    // Number(undefined) into NaN, which Postgres rejects on insert.
+    const { svc, inserted } = build([market("m1", [0.5, 0.5])]);
+
+    await svc.sample();
+
+    for (const row of inserted[0]) {
+      expect(row.outcomePool).toBe(0);
+      expect(Number.isNaN(row.outcomePool)).toBe(false);
+    }
   });
 
   it("skips markets with no outcomes rather than writing an empty distribution", async () => {
@@ -207,5 +307,46 @@ describe("ProbabilityHistoryService", () => {
     await svc.sampleOpenMarkets();
 
     expect(marketRepo.find).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The number the chart plots must be the number the outcome row prints.
+ *
+ * `smoothedShare` is a third copy of a formula that also lives in each app's
+ * `calcProb`. They cannot import from each other, so this test pins the shape:
+ * if someone changes the prior here, or in a frontend, this is what should
+ * fail. The figures come from a real market — pools 3675/4200 of 7875 — where
+ * the stored LMSR reads 37.2% and every screen shows 47.0%.
+ */
+describe("smoothedShare", () => {
+  const calcProbInTheApps = (pool: number, total: number, n: number) =>
+    (pool + 1000 / n) / (total + 1000);
+
+  it("reproduces what the apps display, not the stored LMSR", () => {
+    expect(smoothedShare(3675, 7875, 2, 0.371684)).toBeCloseTo(
+      calcProbInTheApps(3675, 7875, 2),
+      12,
+    );
+    expect(smoothedShare(3675, 7875, 2, 0.371684)).toBeCloseTo(0.4704, 4);
+    // The value it must NOT return.
+    expect(smoothedShare(3675, 7875, 2, 0.371684)).not.toBeCloseTo(0.3717, 3);
+  });
+
+  it("falls back to the LMSR value when the pool is empty", () => {
+    // An untouched book has no share to compute; softmax is the honest split.
+    expect(smoothedShare(0, 0, 2, 0.5)).toBe(0.5);
+  });
+
+  it("falls back when the point predates the outcomePool column", () => {
+    expect(smoothedShare(null, 7875, 2, 0.371684)).toBe(0.371684);
+  });
+
+  it("treats a zero pool as real, not as unknown", () => {
+    // 0 is a legitimate outcome pool: nobody has backed it yet.
+    expect(smoothedShare(0, 7875, 2, 0.371684)).toBeCloseTo(
+      calcProbInTheApps(0, 7875, 2),
+      12,
+    );
   });
 });

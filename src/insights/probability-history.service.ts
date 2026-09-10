@@ -12,16 +12,58 @@ const MOVE_EPSILON = 0.005;
 /** Snapshots for markets settled longer ago than this are pruned. */
 const RETAIN_SETTLED_DAYS = 365;
 
+/**
+ * Laplace prior for the ngultrum book, matching `smoothingPrior("BTN")` in the
+ * apps. Snapshots mirror the BTN book only, so this is the only prior in play.
+ */
+const BTN_SMOOTHING_PRIOR = 1000;
+
+/**
+ * The probability the apps actually display: this outcome's Laplace-smoothed
+ * share of the pool.
+ *
+ * Kept identical to `calcProb` in the frontends. The stored `probability` is
+ * the LMSR value, which saturates on a lopsided book — on a real market it
+ * reads 37% where the outcome row beside it prints 47% — so a chart drawn from
+ * it would contradict the page it sits on. Falls back to the LMSR value when
+ * the pool is empty (there, the softmax is the honest starting split) or when
+ * the point predates the outcomePool column.
+ */
+export function smoothedShare(
+  outcomePool: number | null,
+  totalPool: number,
+  outcomeCount: number,
+  fallback: number,
+): number {
+  if (outcomePool == null || !Number.isFinite(outcomePool)) return fallback;
+  if (!(totalPool > 0)) return fallback;
+  const n = outcomeCount || 1;
+  return (
+    (outcomePool + BTN_SMOOTHING_PRIOR / n) / (totalPool + BTN_SMOOTHING_PRIOR)
+  );
+}
+
 export interface HistoryPoint {
   capturedAt: Date;
   probability: number;
   totalPool: number;
+  /** This outcome's own pool. NULL on rows written before the column existed. */
+  outcomePool: number | null;
+  /** What to plot — the smoothed share, or `probability` when unknowable. */
+  share: number;
 }
 
 export interface OutcomeHistory {
   outcomeId: string;
   label: string;
   points: HistoryPoint[];
+}
+
+/** The most recent stored point per outcome, used as the movement baseline. */
+interface LatestPoint {
+  probability: number;
+  totalPool: number;
+  outcomePool: number | null;
 }
 
 export interface Mover {
@@ -87,13 +129,34 @@ export class ProbabilityHistoryService {
       const outcomes = market.outcomes ?? [];
       if (outcomes.length === 0) continue;
 
+      const marketPool = Number(market.totalPool ?? 0) || 0;
+
       // A market is written as a whole or not at all: a curve where one outcome
       // has a point and its sibling does not cannot be read as a distribution.
+      //
+      // Movement is measured on BOTH the LMSR value and the smoothed share,
+      // because they move at very different speeds and we plot the latter.
+      // LMSR saturates on a lopsided book: with pools of 5000/200, a Nu 500
+      // stake on the favourite moves the displayed share 0.84pp but LMSR only
+      // 0.32pp — under the threshold, so the old gate wrote nothing and the
+      // chart flatlined through exactly the movement it exists to show.
       const moved = outcomes.some((o) => {
         const prev = latest.get(`${market.id}:${o.id}`);
+        if (prev === undefined) return true;
+
+        const live = Number(o.lmsrProbability);
+        if (Math.abs(live - prev.probability) >= MOVE_EPSILON) return true;
+
+        // "Either side unknown" counts as unchanged, so legacy rows with no
+        // outcomePool don't force a write on every tick forever.
+        if (prev.outcomePool === null) return false;
+        const pool = Number(o.totalBetAmount ?? 0) || 0;
+        const n = outcomes.length;
         return (
-          prev === undefined ||
-          Math.abs(Number(o.lmsrProbability) - prev) >= MOVE_EPSILON
+          Math.abs(
+            smoothedShare(pool, marketPool, n, live) -
+              smoothedShare(prev.outcomePool, prev.totalPool, n, prev.probability),
+          ) >= MOVE_EPSILON
         );
       });
       if (!moved) continue;
@@ -103,7 +166,10 @@ export class ProbabilityHistoryService {
           marketId: market.id,
           outcomeId: o.id,
           probability: Number(o.lmsrProbability),
-          totalPool: Number(market.totalPool ?? 0),
+          totalPool: marketPool,
+          // `?? 0` guards a relation loaded without the column: a bare
+          // Number(undefined) is NaN, which Postgres rejects on insert.
+          outcomePool: Number(o.totalBetAmount ?? 0) || 0,
         });
       }
     }
@@ -125,22 +191,32 @@ export class ProbabilityHistoryService {
   /** Latest recorded probability per outcome, keyed `${marketId}:${outcomeId}`. */
   private async latestByOutcome(
     marketIds: string[],
-  ): Promise<Map<string, number>> {
+  ): Promise<Map<string, LatestPoint>> {
     const rows = await this.snapshotRepo.query(
       `SELECT DISTINCT ON ("marketId", "outcomeId")
-              "marketId", "outcomeId", "probability"
+              "marketId", "outcomeId", "probability", "totalPool", "outcomePool"
          FROM "market_probability_snapshots"
         WHERE "marketId" = ANY($1)
         ORDER BY "marketId", "outcomeId", "capturedAt" DESC`,
       [marketIds],
     );
-    const out = new Map<string, number>();
+    const out = new Map<string, LatestPoint>();
     for (const r of rows as {
       marketId: string;
       outcomeId: string;
       probability: string;
+      totalPool: string | null;
+      outcomePool: string | null;
     }[]) {
-      out.set(`${r.marketId}:${r.outcomeId}`, Number(r.probability));
+      // `== null` on purpose: a legacy row reads NULL, and a caller that never
+      // selected the column reads undefined. Both mean "unknown" — letting
+      // undefined through would make Number() produce NaN, and a NaN share
+      // compares unequal to everything, so every market would look moved.
+      out.set(`${r.marketId}:${r.outcomeId}`, {
+        probability: Number(r.probability),
+        totalPool: Number(r.totalPool ?? 0) || 0,
+        outcomePool: r.outcomePool == null ? null : Number(r.outcomePool),
+      });
     }
     return out;
   }
@@ -172,31 +248,56 @@ export class ProbabilityHistoryService {
       .orderBy("s.capturedAt", "ASC")
       .getMany();
 
+    const outcomeCount = (market.outcomes ?? []).length;
+
     const byOutcome = new Map<string, HistoryPoint[]>();
     for (const s of snapshots) {
       const list = byOutcome.get(s.outcomeId) ?? [];
+      const probability = Number(s.probability);
+      const totalPool = Number(s.totalPool);
+      const outcomePool = s.outcomePool === null ? null : Number(s.outcomePool);
       list.push({
         capturedAt: s.capturedAt,
-        probability: Number(s.probability),
-        totalPool: Number(s.totalPool),
+        probability,
+        totalPool,
+        outcomePool,
+        share: smoothedShare(outcomePool, totalPool, outcomeCount, probability),
       });
       byOutcome.set(s.outcomeId, list);
     }
 
     const now = new Date();
+    const marketPool = Number(market.totalPool ?? 0) || 0;
     return (market.outcomes ?? [])
       .slice()
       .sort((a, b) => a.sortOrder - b.sortOrder)
       .map((o) => {
         const points = byOutcome.get(o.id) ?? [];
         const live = Number(o.lmsrProbability);
+        const livePool = Number(o.totalBetAmount ?? 0) || 0;
+        const liveShare = smoothedShare(
+          livePool,
+          marketPool,
+          outcomeCount,
+          live,
+        );
         const last = points[points.length - 1];
         // Append the live value unless the last stored point already is it.
-        if (!last || Math.abs(last.probability - live) >= MOVE_EPSILON) {
+        // Compared on the share as well as the LMSR value, for the same reason
+        // the sampler's gate is: this is often the only point a curve has, and
+        // an LMSR-only comparison suppresses it while the displayed number has
+        // visibly moved.
+        if (
+          !last ||
+          Math.abs(last.probability - live) >= MOVE_EPSILON ||
+          Math.abs(last.share - liveShare) >= MOVE_EPSILON
+        ) {
           points.push({
             capturedAt: now,
             probability: live,
-            totalPool: Number(market.totalPool ?? 0),
+            totalPool: marketPool,
+            outcomePool: livePool,
+            share: liveShare,
           });
         }
         return { outcomeId: o.id, label: o.label, points };

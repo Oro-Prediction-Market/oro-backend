@@ -32,6 +32,24 @@ export class MarketProbabilitySnapshot {
   @Column({ type: "decimal", precision: 18, scale: 2, default: 0 })
   totalPool: number;
 
+  /**
+   * This outcome's own pool at capture time — the BTN book, same as
+   * `totalPool` above and `outcomes.totalBetAmount`.
+   *
+   * `probability` is the LMSR value, which the apps deliberately do NOT show:
+   * on a lopsided book it saturates to ~99/1 and stops describing where the
+   * money actually is. Every screen instead prints the Laplace-smoothed pool
+   * share, and that cannot be recomputed from a market-wide total alone. So the
+   * per-outcome pool is stored and the share is derived at read time.
+   *
+   * NULLABLE with no default, deliberately: 0 is a real pool, and rows written
+   * before this column existed have no honest value. NULL is the only way a
+   * reader can tell "empty" from "unknown" and drop the point instead of
+   * drawing a confidently wrong one.
+   */
+  @Column({ type: "decimal", precision: 18, scale: 2, nullable: true })
+  outcomePool: number | null;
+
   @Index()
   @CreateDateColumn({ type: "timestamptz" })
   capturedAt: Date;
