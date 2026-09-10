@@ -23,6 +23,10 @@ export { PositionStatus as BetStatus };
 
 @Index(["userId", "marketId"])
 @Index(["placedAt"])
+// The probability chart replays a market's bets in time order. No existing
+// index leads with marketId, so that read scanned (userId, marketId) sideways
+// and then sorted.
+@Index("IDX_positions_market_placedAt", ["marketId", "placedAt"])
 // Declared here as well as in the migration: DB_SYNCHRONIZE drops any index
 // absent from entity metadata.
 @Index("IDX_positions_currency", ["currency"])

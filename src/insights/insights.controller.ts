@@ -30,20 +30,24 @@ export class InsightsController {
   @Public()
   @ApiOperation({
     summary:
-      "Probability curve for one market, per outcome, oldest point first. " +
-      "Ends at the live probability.",
+      "Probability curve for one market, per outcome, oldest point first — " +
+      "replayed from the bets that produced it. Ends at the live probability " +
+      "while the market can still move.",
   })
   @ApiQuery({
     name: "hours",
     required: false,
-    description: "Window size in hours (default 720 = 30 days, max 8760)",
+    description:
+      "Window size in hours. Omit for the market's whole life, which is the " +
+      "default: a market that closed more than a window ago would otherwise " +
+      "return nothing.",
   })
   async getHistory(
     @Param("id", ParseUUIDPipe) id: string,
     @Query("hours") hours?: string,
   ) {
     const parsed = hours ? Number(hours) : undefined;
-    return this.history.getHistory(id, {
+    return this.history.deriveHistory(id, {
       hours: Number.isFinite(parsed) ? parsed : undefined,
     });
   }

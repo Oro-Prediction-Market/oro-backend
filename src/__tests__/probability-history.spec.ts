@@ -14,6 +14,7 @@ describe("ProbabilityHistoryService", () => {
     markets: any[],
     latestRows: any[] = [],
     moverRows: { first: any[]; last: any[] } = { first: [], last: [] },
+    positionRows: any[] = [],
   ) {
     const inserted: any[][] = [];
     const queries: string[] = [];
@@ -58,8 +59,19 @@ describe("ProbabilityHistoryService", () => {
       releaseLock: jest.fn().mockResolvedValue(undefined),
     };
 
-    const svc = new ProbabilityHistoryService(snapshotRepo, marketRepo, redis);
-    return { svc, inserted, snapshotRepo, marketRepo, redis };
+    // Bets, for the derived-curve tests. `query` returns the aggregated
+    // (instant, outcome, amount) rows deriveHistory asks Postgres for.
+    const positionRepo: any = {
+      query: jest.fn(async () => positionRows),
+    };
+
+    const svc = new ProbabilityHistoryService(
+      snapshotRepo,
+      marketRepo,
+      positionRepo,
+      redis,
+    );
+    return { svc, inserted, snapshotRepo, marketRepo, positionRepo, redis };
   }
 
   const market = (
@@ -298,6 +310,195 @@ describe("ProbabilityHistoryService", () => {
     });
 
     expect(await svc.getMovers({ minDelta: 0.05 })).toEqual([]);
+  });
+
+  // ── The derived curve ─────────────────────────────────────────────────────
+  //
+  // The snapshot table holds 431 rows and 1,864 of the 1,877 markets that have
+  // been bet on have no row in it, so the curve is replayed from the bets
+  // instead. Pools only ever grow, so the pool behind any past instant is the
+  // sum of the stakes placed up to it.
+
+  const bet = (t: number, outcomeId: string, amt: number) => ({
+    t: String(t),
+    outcomeId,
+    amt: String(amt),
+  });
+
+  /** A market whose createdAt is fixed so t0 is assertable. */
+  const dated = (id: string, probs: number[], pool: number, created: number) => ({
+    ...market(id, probs, pool),
+    createdAt: new Date(created),
+  });
+
+  /**
+   * The same, finished. Used wherever the assertion is about the replay itself:
+   * an open market correctly gains a trailing point at `now`, which would make
+   * every timestamp array unassertable.
+   */
+  const finished = (
+    id: string,
+    probs: number[],
+    pool: number,
+    created: number,
+  ) => ({ ...dated(id, probs, pool, created), status: MarketStatus.SETTLED });
+
+  it("opens the curve at the even split, not at today's probability", async () => {
+    // smoothedShare() returns its fallback when the pool is empty, so routing
+    // the seed through it would draw the market's CURRENT number at its
+    // creation — a curve that starts by lying about the past.
+    const { svc } = build(
+      [dated("m1", [0.9, 0.1], 1000, 1_000)],
+      [],
+      { first: [], last: [] },
+      [bet(5_000, "m1-o0", 900), bet(5_000, "m1-o1", 100)],
+    );
+
+    const series = await svc.deriveHistory("m1");
+
+    expect(series[0].points[0]).toEqual({ t: 1_000, p: 0.5 });
+    expect(series[1].points[0]).toEqual({ t: 1_000, p: 0.5 });
+  });
+
+  it("replays the pools so every instant sums to 100%", async () => {
+    const { svc } = build(
+      [finished("m1", [0.6, 0.4], 3000, 1_000)],
+      [],
+      { first: [], last: [] },
+      [
+        bet(2_000, "m1-o0", 1000),
+        bet(3_000, "m1-o1", 500),
+        bet(4_000, "m1-o0", 1500),
+      ],
+    );
+
+    const series = await svc.deriveHistory("m1");
+
+    // t0 plus one vertex per distinct instant.
+    expect(series[0].points.map((p) => p.t)).toEqual([1_000, 2_000, 3_000, 4_000]);
+    for (let i = 0; i < 4; i++) {
+      const sum = series.reduce((a, s) => a + s.points[i].p, 0);
+      expect(sum).toBeCloseTo(1, 6);
+    }
+    // After the first Nu 1000 on o0: (1000 + 500) / (1000 + 1000) = 0.75.
+    expect(series.find((s) => s.outcomeId === "m1-o0")!.points[1].p).toBeCloseTo(
+      0.75,
+      6,
+    );
+  });
+
+  it("treats stakes sharing an instant as one vertex", async () => {
+    // Two bets in the same millisecond moved the same denominator; emitting a
+    // point between them would draw a distribution that never existed.
+    const { svc } = build(
+      [finished("m1", [0.5, 0.5], 2000, 1_000)],
+      [],
+      { first: [], last: [] },
+      [bet(9_000, "m1-o0", 1000), bet(9_000, "m1-o1", 1000)],
+    );
+
+    const series = await svc.deriveHistory("m1");
+
+    expect(series[0].points.map((p) => p.t)).toEqual([1_000, 9_000]);
+    expect(series[0].points[1].p).toBeCloseTo(0.5, 6);
+  });
+
+  it("returns nothing for a market nobody has bet on", async () => {
+    const { svc } = build([dated("m1", [0.5, 0.5], 0, 1_000)]);
+
+    expect(await svc.deriveHistory("m1")).toEqual([]);
+  });
+
+  it("does not drag a settled market's price across to today", async () => {
+    const settled = {
+      ...dated("m1", [0.5, 0.5], 2000, 1_000),
+      status: MarketStatus.SETTLED,
+    };
+    const { svc } = build([settled], [], { first: [], last: [] }, [
+      bet(9_000, "m1-o0", 2000),
+    ]);
+
+    const series = await svc.deriveHistory("m1");
+
+    // Last point is the last bet, not `now`.
+    expect(series[0].points[series[0].points.length - 1].t).toBe(9_000);
+  });
+
+  it("ends an open market on the live number", async () => {
+    const { svc } = build(
+      [dated("m1", [0.5, 0.5], 2000, 1_000)],
+      [],
+      { first: [], last: [] },
+      [bet(9_000, "m1-o0", 2000)],
+    );
+
+    const series = await svc.deriveHistory("m1");
+    const points = series[0].points;
+
+    expect(points[points.length - 1].t).toBeGreaterThan(9_000);
+  });
+
+  it("keeps every outcome on one shared set of timestamps", async () => {
+    // Each bet moves one numerator and every denominator, so the lines share
+    // their vertices — and a tooltip reads them all at one instant.
+    const { svc } = build(
+      [dated("m1", [0.4, 0.6], 2500, 1_000)],
+      [],
+      { first: [], last: [] },
+      [bet(2_000, "m1-o0", 1000), bet(3_000, "m1-o1", 1500)],
+    );
+
+    const series = await svc.deriveHistory("m1");
+    const first = series[0].points.map((p) => p.t);
+    for (const s of series) {
+      expect(s.points.map((p) => p.t)).toEqual(first);
+    }
+  });
+
+  it("caps a busy market without moving its endpoints", async () => {
+    const bets = Array.from({ length: 600 }, (_, k) =>
+      bet(10_000 + k * 1_000, k % 2 === 0 ? "m1-o0" : "m1-o1", 100),
+    );
+    const { svc } = build(
+      [finished("m1", [0.5, 0.5], 60_000, 1_000)],
+      [],
+      { first: [], last: [] },
+      bets,
+    );
+
+    const series = await svc.deriveHistory("m1");
+
+    expect(series[0].points.length).toBeLessThanOrEqual(200);
+    expect(series[0].points[0].t).toBe(1_000);
+    // Still ends where the replay ended, and still shares one x-axis.
+    expect(series[0].points.map((p) => p.t)).toEqual(
+      series[1].points.map((p) => p.t),
+    );
+  });
+
+  it("windows what it emits without restarting the pools", async () => {
+    // Filtering the bets instead of the points would replay a market older
+    // than the window from an empty pool and end it on the wrong number.
+    const now = Date.now();
+    const { svc } = build(
+      [dated("m1", [0.5, 0.5], 2000, now - 100 * 3600_000)],
+      [],
+      { first: [], last: [] },
+      [
+        bet(now - 90 * 3600_000, "m1-o0", 1000),
+        bet(now - 1 * 3600_000, "m1-o1", 1000),
+      ],
+    );
+
+    const windowed = await svc.deriveHistory("m1", { hours: 24 });
+    const full = await svc.deriveHistory("m1");
+
+    // The old bet is outside the window but its money is not: both curves end
+    // on the same value.
+    const lastOf = (s: any[]) =>
+      s[0].points[s[0].points.length - 1].p;
+    expect(lastOf(windowed)).toBeCloseTo(lastOf(full), 6);
+    expect(windowed[0].points.length).toBeLessThan(full[0].points.length);
   });
 
   it("does not sample when the cron lock is held", async () => {

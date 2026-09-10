@@ -16,7 +16,12 @@ describe("ProbabilityHistoryService.pruneOldSnapshots", () => {
       releaseLock: jest.fn().mockResolvedValue(undefined),
     };
     const logged: string[] = [];
-    const svc = new ProbabilityHistoryService(snapshotRepo, {} as any, redis);
+    const svc = new ProbabilityHistoryService(
+      snapshotRepo,
+      {} as any,
+      {} as any,
+      redis,
+    );
     (svc as any).logger = {
       log: (m: string) => logged.push(m),
       warn: () => {},

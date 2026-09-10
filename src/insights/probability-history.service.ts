@@ -4,6 +4,8 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, In } from "typeorm";
 import { MarketProbabilitySnapshot } from "../entities/market-probability-snapshot.entity";
 import { Market, MarketStatus } from "../entities/market.entity";
+import { Position } from "../entities/position.entity";
+import { BTN_CURRENCY } from "../entities/transaction.entity";
 import { RedisService } from "../redis/redis.service";
 
 /** Smallest move worth recording, in probability points (0.5pp). */
@@ -66,6 +68,32 @@ interface LatestPoint {
   outcomePool: number | null;
 }
 
+/**
+ * One vertex of a derived curve. Deliberately two short fields: a 32-outcome
+ * market can carry thousands of these, and the fat `HistoryPoint` shape below
+ * would put the response into the hundreds of kilobytes.
+ */
+export interface CurvePoint {
+  /** Epoch milliseconds. */
+  t: number;
+  /** The share the outcome rows display, 0–1. */
+  p: number;
+}
+
+export interface DerivedSeries {
+  outcomeId: string;
+  label: string;
+  points: CurvePoint[];
+}
+
+/**
+ * Caps on a derived curve. A phone card is ~340px wide, so 200 vertices is
+ * already finer than one per pixel, and the outcome rows below the chart remain
+ * the complete list however many series are drawn.
+ */
+const MAX_CURVE_POINTS = 200;
+const MAX_CURVE_SERIES = 8;
+
 export interface Mover {
   marketId: string;
   title: string;
@@ -90,6 +118,8 @@ export class ProbabilityHistoryService {
     private readonly snapshotRepo: Repository<MarketProbabilitySnapshot>,
     @InjectRepository(Market)
     private readonly marketRepo: Repository<Market>,
+    @InjectRepository(Position)
+    private readonly positionRepo: Repository<Position>,
     private readonly redis: RedisService,
   ) {}
 
@@ -302,6 +332,246 @@ export class ProbabilityHistoryService {
         }
         return { outcomeId: o.id, label: o.label, points };
       });
+  }
+
+  /**
+   * A market's probability curve, replayed from the bets that produced it.
+   *
+   * The snapshot table cannot answer this. It began collecting on 9 Sep 2026,
+   * writes only when a price moves, and 1,864 of the 1,877 markets that have
+   * ever been bet on have no row in it at all — so a chart drawn from it is a
+   * flat line beginning at the deploy date.
+   *
+   * The pools are not lost, though. `parimutuel.engine` only ever ADDS a stake
+   * to a pool (`:359-361`) and nothing anywhere subtracts from one — a refund
+   * does not. So the pool behind any past instant is exactly the sum of the
+   * bets placed up to it, and replaying them reproduces what the market showed
+   * at the time. Checked against the live database, this reproduces the stored
+   * pool for 6,618 of 6,622 outcomes; the exception is Nu 250 across 4 outcomes
+   * on markets settled in May 2026, where positions no longer exist.
+   *
+   * Only the ngultrum book: `positions.currency` filters to it, matching the
+   * BTN-only mirror in `outcomes.totalBetAmount` that the pages read.
+   */
+  async deriveHistory(
+    marketId: string,
+    opts: { hours?: number } = {},
+  ): Promise<DerivedSeries[]> {
+    const market = await this.marketRepo.findOne({
+      where: { id: marketId },
+      relations: ["outcomes"],
+    });
+    if (!market) return [];
+
+    const outcomes = (market.outcomes ?? [])
+      .slice()
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+    const n = outcomes.length;
+    if (n === 0) return [];
+
+    // Aggregated per (instant, outcome) so two stakes in the same millisecond
+    // are one vertex, and each decimal is summed in Postgres rather than
+    // arriving as a string per row.
+    //
+    // Epoch is taken in SQL on purpose: `placedAt` is `timestamp without time
+    // zone` holding UTC, and letting the driver hand back a JS Date would shift
+    // every point by the server's own offset.
+    const rows: { t: string; outcomeId: string; amt: string }[] =
+      await this.positionRepo.query(
+        `SELECT EXTRACT(EPOCH FROM p."placedAt" AT TIME ZONE 'UTC') * 1000 AS t,
+                p."outcomeId" AS "outcomeId",
+                SUM(p."amount") AS amt
+           FROM "positions" p
+          WHERE p."marketId" = $1 AND p."currency" = $2
+          GROUP BY 1, 2
+          ORDER BY 1 ASC`,
+        [marketId, BTN_CURRENCY],
+      );
+
+    // No bets means no curve. Drawing the opening 1/n split alone would be a
+    // flat line across an empty market, which is what this change exists to
+    // stop doing.
+    if (rows.length === 0) return [];
+
+    // ── Replay ───────────────────────────────────────────────────────────────
+    const pools = new Map<string, number>(outcomes.map((o) => [o.id, 0]));
+    let total = 0;
+
+    // The opening split, before any money arrived. Computed as 1/n rather than
+    // through smoothedShare(), which returns its `fallback` argument on an
+    // empty pool — passing today's probability there would draw today's number
+    // at the market's creation.
+    const openingSplit = 1 / n;
+    const t0 = market.createdAt
+      ? new Date(market.createdAt).getTime()
+      : Number(rows[0].t);
+    const timeline: number[] = [t0];
+    const values = new Map<string, number[]>(
+      outcomes.map((o) => [o.id, [openingSplit]]),
+    );
+
+    let i = 0;
+    while (i < rows.length) {
+      const t = Number(rows[i].t);
+      // Every bet at this instant lands before the distribution is read: they
+      // all moved the same denominator.
+      while (i < rows.length && Number(rows[i].t) === t) {
+        const r = rows[i];
+        const amt = Number(r.amt) || 0;
+        if (pools.has(r.outcomeId)) {
+          pools.set(r.outcomeId, (pools.get(r.outcomeId) ?? 0) + amt);
+          total += amt;
+        }
+        i++;
+      }
+      timeline.push(t);
+      for (const o of outcomes) {
+        values
+          .get(o.id)!
+          .push(
+            smoothedShare(pools.get(o.id) ?? 0, total, n, openingSplit),
+          );
+      }
+    }
+
+    // The replay should land on the pool the market actually holds. It does for
+    // 1,874 of the 1,877 markets that have bets; the exceptions are markets
+    // whose positions were hard-deleted (`markets.service.ts:1677,1694,1719`),
+    // where the money is real but the rows recording it are gone.
+    //
+    // Warn, but still serve the curve: those markets have no snapshots either,
+    // so the only alternative is no chart at all, and a curve that is right
+    // about every move and slightly low on absolute pool is worth more than a
+    // blank card. The tolerance absorbs the rounding the engine accumulates
+    // writing a running float into a numeric(18,2) column on every bet.
+    const livePoolTotal = Number(market.totalPool ?? 0) || 0;
+    const tolerance = Math.max(1, rows.length * 0.01);
+    if (Math.abs(total - livePoolTotal) > tolerance) {
+      this.logger.warn(
+        `[Probability] ${marketId} replayed ${total} against a stored pool of ` +
+          `${livePoolTotal} — positions are missing for this market`,
+      );
+    }
+
+    // ── Trailing live point ──────────────────────────────────────────────────
+    // Only while a market can still move. A market settled six months ago must
+    // not have its last price dragged flat across the intervening half year.
+    const isLive =
+      market.status === MarketStatus.OPEN ||
+      market.status === MarketStatus.CLOSED;
+    if (isLive) {
+      const livePool = Number(market.totalPool ?? 0) || 0;
+      const now = Date.now();
+      if (now > timeline[timeline.length - 1]) {
+        timeline.push(now);
+        for (const o of outcomes) {
+          values
+            .get(o.id)!
+            .push(
+              smoothedShare(
+                Number(o.totalBetAmount ?? 0) || 0,
+                livePool,
+                n,
+                openingSplit,
+              ),
+            );
+        }
+      }
+    }
+
+    const keep = this.selectIndices(
+      timeline,
+      values,
+      outcomes.map((o) => o.id),
+      opts.hours,
+    );
+
+    // Series are capped by final share rather than by sort order: with 32
+    // outcomes the tail is a mat of overlapping near-zero lines.
+    return outcomes
+      .map((o) => {
+        const series = values.get(o.id)!;
+        return {
+          outcomeId: o.id,
+          label: o.label,
+          // Rounded at the wire: the fifth decimal of a percentage cannot be
+          // drawn and costs a byte per point per outcome.
+          points: keep.map((k) => ({
+            t: timeline[k],
+            p: Number(series[k].toFixed(5)),
+          })),
+          final: series[series.length - 1],
+        };
+      })
+      .sort((a, b) => b.final - a.final)
+      .slice(0, MAX_CURVE_SERIES)
+      .map(({ outcomeId, label, points }) => ({ outcomeId, label, points }));
+  }
+
+  /**
+   * Which vertices of the replayed timeline survive to the wire.
+   *
+   * One shared set of indices for every outcome, never one per series: each bet
+   * changes one outcome's numerator and *every* outcome's denominator, so the
+   * lines share their vertices, and a tooltip has to read them all at one
+   * instant. Downsampling per series would break both.
+   *
+   * Selection is by largest move rather than by even spacing, because a share
+   * is a step function whose shape *is* its jumps — but a fifth of the budget
+   * is reserved for evenly spaced picks so a long quiet stretch still has
+   * somewhere to put the cursor.
+   */
+  private selectIndices(
+    timeline: number[],
+    values: Map<string, number[]>,
+    outcomeIds: string[],
+    hours?: number,
+  ): number[] {
+    // The window clips what is *emitted*; the replay above always starts at the
+    // market's first bet. Filtering the input instead would restart every pool
+    // from zero and end the curve on the wrong number.
+    let lo = 0;
+    if (hours && hours > 0) {
+      const since = Date.now() - hours * 3600_000;
+      // The last point at or before the window start is kept as the anchor, so
+      // the line enters the window at the price it actually held.
+      for (let i = 0; i < timeline.length; i++) {
+        if (timeline[i] <= since) lo = i;
+        else break;
+      }
+    }
+
+    const last = timeline.length - 1;
+    if (last - lo + 1 <= MAX_CURVE_POINTS) {
+      const all: number[] = [];
+      for (let i = lo; i <= last; i++) all.push(i);
+      return all;
+    }
+
+    const keep = new Set<number>([lo, last]);
+
+    const uniform = Math.floor(MAX_CURVE_POINTS * 0.2);
+    for (let u = 1; u < uniform; u++) {
+      keep.add(lo + Math.round(((last - lo) * u) / uniform));
+    }
+
+    // Score every interior vertex by the largest single-outcome move it made.
+    const scored: { i: number; move: number }[] = [];
+    for (let i = lo + 1; i < last; i++) {
+      let move = 0;
+      for (const id of outcomeIds) {
+        const s = values.get(id)!;
+        move = Math.max(move, Math.abs(s[i] - s[i - 1]));
+      }
+      scored.push({ i, move });
+    }
+    scored.sort((a, b) => b.move - a.move);
+    for (const s of scored) {
+      if (keep.size >= MAX_CURVE_POINTS) break;
+      keep.add(s.i);
+    }
+
+    return [...keep].sort((a, b) => a - b);
   }
 
   /**
