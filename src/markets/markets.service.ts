@@ -469,6 +469,34 @@ export class MarketsService implements OnModuleInit {
     return markets;
   }
 
+  /**
+   * A specific set of markets, hydrated exactly as the feed hydrates its own.
+   *
+   * Saved markets are rendered with the same cards as the feed, so they need
+   * the same shape — outcomes sorted, reputation signal attached, both books
+   * synthesised. Doing it here rather than in the caller is what keeps the two
+   * lists from drifting apart, and it is one pass of each helper rather than
+   * one per market.
+   *
+   * Unlike {@link findAll} this is not cached: the id list differs per user,
+   * so a shared key would be wrong and a per-user key would be mostly misses.
+   * The underlying helpers do their own caching where it pays.
+   */
+  async findManyByIds(ids: string[]): Promise<Market[]> {
+    if (!ids.length) return [];
+
+    const markets = await this.marketRepo
+      .createQueryBuilder("market")
+      .leftJoinAndSelect("market.outcomes", "outcome")
+      .where("market.id IN (:...ids)", { ids })
+      .addOrderBy("outcome.sortOrder", "ASC")
+      .getMany();
+
+    await Promise.all(markets.map((m) => this.attachSignal(m)));
+    await this.attachBooksToMany(markets);
+    return markets;
+  }
+
   async findOne(id: string): Promise<Market> {
     const cacheKey = `oro:cache:market:${id}`;
     const cached = await this.redis.getJson<Market>(cacheKey);

@@ -66,6 +66,8 @@ import { EplModule } from "./epl/epl.module";
 import { UclModule } from "./ucl/ucl.module";
 import { InsightsModule } from "./insights/insights.module";
 import { FreeCallsModule } from "./free-calls/free-calls.module";
+import { SavedMarketsModule } from "./saved/saved-markets.module";
+import { SavedMarket } from "./entities/saved-market.entity";
 import { FeedbackModule } from "./feedback/feedback.module";
 import { AmlAlert } from "./aml/entities/aml-alert.entity";
 import { AmlReport } from "./aml/entities/aml-report.entity";
@@ -153,6 +155,7 @@ import { FriendlyThrottlerGuard } from "./shared/guards/friendly-throttler.guard
           MarketCommentLike,
           MarketProbabilitySnapshot,
           FreeCall,
+          SavedMarket,
         ],
         // Schema changes ship as migrations ONLY. synchronize silently DROPs a
         // column when an entity property is renamed — irrecoverable financial
@@ -198,6 +201,7 @@ import { FriendlyThrottlerGuard } from "./shared/guards/friendly-throttler.guard
     FeedbackModule,
     InsightsModule,
     FreeCallsModule,
+    SavedMarketsModule,
   ],
   // Subclassed only to answer a 429 in a sentence a user can act on; the
   // limiting behaviour is the stock guard's. See friendly-throttler.guard.ts.
