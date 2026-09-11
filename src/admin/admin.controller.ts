@@ -692,7 +692,20 @@ export class AdminController {
       .getRepository(Market)
       .createQueryBuilder("market")
       .leftJoinAndSelect("market.outcomes", "outcome")
-      .orderBy("market.createdAt", "DESC")
+      // Most recently finished first. An admin opening this screen is looking
+      // for what just settled, not for what was created longest ago.
+      //
+      // `markets.resolvedAt` is the settlement clock, not `settlements.settledAt`:
+      // that column is `timestamp WITHOUT time zone` and was written in Bhutan
+      // local time until early September 2026 and in UTC after it, so rows on
+      // either side of the change interleave six hours wrong. `resolvedAt` is
+      // timestamptz and is set on every finished market — all 2,991 of them.
+      //
+      // NULLS FIRST keeps the markets that have NOT finished — open, resolving,
+      // closed, cancelled — at the top, where a management screen wants them,
+      // ordered among themselves by when they were created.
+      .orderBy("market.resolvedAt", "DESC", "NULLS FIRST")
+      .addOrderBy("market.createdAt", "DESC")
       .skip(skip)
       .take(take);
     if (category && category.toLowerCase() !== "all") {
