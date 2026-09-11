@@ -9,6 +9,7 @@ import { ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
 import { Public } from "../auth/guards";
 import { ProbabilityHistoryService } from "./probability-history.service";
 import { AnswerService } from "./answer.service";
+import { PlatformAccuracyService } from "./platform-accuracy.service";
 
 /**
  * The read-only, no-login face of Oro.
@@ -24,7 +25,19 @@ export class InsightsController {
   constructor(
     private readonly history: ProbabilityHistoryService,
     private readonly answers: AnswerService,
+    private readonly accuracy: PlatformAccuracyService,
   ) {}
+
+  @Get("platform-accuracy")
+  @Public()
+  @ApiOperation({
+    summary:
+      "How often the crowd is right: the share of each settled market's pool " +
+      "that backed the winning outcome, overall and by week.",
+  })
+  getPlatformAccuracy() {
+    return this.accuracy.get();
+  }
 
   @Get("markets/:id/history")
   @Public()

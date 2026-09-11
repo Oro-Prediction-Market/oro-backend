@@ -16,6 +16,7 @@ import { EplModule } from "../epl/epl.module";
 import { UclModule } from "../ucl/ucl.module";
 import { SuggestionsModule } from "../suggestions/suggestions.module";
 import { ChallengesModule } from "../challenges/challenges.module";
+import { InsightsModule } from "../insights/insights.module";
 
 @Module({
   imports: [
@@ -36,6 +37,9 @@ import { ChallengesModule } from "../challenges/challenges.module";
     // For voiding stuck duels. The Duels list reads Challenge through the
     // DataSource directly, but refunding needs the service's guarded write path.
     ChallengesModule,
+    // The public platform-accuracy service: the admin page reads the same
+    // numbers rather than keeping its own copy of the query.
+    InsightsModule,
   ],
   controllers: [AdminController],
   providers: [FixturesService, AuditService],
