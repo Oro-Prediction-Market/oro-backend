@@ -11,6 +11,7 @@ import { CryptoWithdrawal } from "../entities/crypto-withdrawal.entity";
 import { Season } from "../entities/season.entity";
 import { UserNotification } from "../entities/user-notification.entity";
 import { FreeCall } from "../entities/free-call.entity";
+import { SavedMarket } from "../entities/saved-market.entity";
 import { UsersController } from "./users.controller";
 import { StreakService } from "./streak.service";
 import { SeasonService } from "./season.service";
@@ -37,6 +38,7 @@ import { TelegramModule } from "../telegram/telegram.module";
       Season,
       UserNotification,
       FreeCall,
+      SavedMarket,
       DKGatewayAuthToken,
     ]),
     TelegramModule,

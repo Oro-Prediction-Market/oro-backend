@@ -39,6 +39,7 @@ import {
   BTN_CURRENCY,
 } from "../entities/transaction.entity";
 import { Position, PositionStatus } from "../entities/position.entity";
+import { SavedMarket } from "../entities/saved-market.entity";
 import { RedisService } from "../redis/redis.service";
 import { StreakService } from "./streak.service";
 import {
@@ -226,6 +227,8 @@ export class UsersController {
     @InjectRepository(Position) private betRepo: Repository<Position>,
     @InjectRepository(CryptoWithdrawal)
     private cryptoWithdrawalRepo: Repository<CryptoWithdrawal>,
+    @InjectRepository(SavedMarket)
+    private savedMarketRepo: Repository<SavedMarket>,
     private readonly redis: RedisService,
     private readonly streakService: StreakService,
     private readonly config: ConfigService,
@@ -792,6 +795,11 @@ export class UsersController {
       take: 3,
     });
 
+    // Counted here rather than fetched by the profile's saved-markets row:
+    // that row needs a number, not the markets, and hydrating up to 30 of them
+    // to print one is a page load's worth of work for a subtitle.
+    const savedMarketCount = await this.savedMarketRepo.countBy({ userId: id });
+
     const seasonBadgeStats = await this.footballSeasonBadgeStats(id);
 
     return {
@@ -817,6 +825,7 @@ export class UsersController {
       contrarianBadge: user.contrarianBadge,
       contrarianWins: user.contrarianWins ?? 0,
       featuredAchievementIds: user.featuredAchievementIds ?? [],
+      savedMarketCount,
       recentCalls: recentCalls.map((call) => ({
         id: call.id,
         marketTitle: call.market?.title ?? "Prediction market",

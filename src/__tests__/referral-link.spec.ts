@@ -32,6 +32,7 @@ describe("UsersController.getReferral link format", () => {
       transactionRepo as any,
       {} as any, // betRepo
       { find: jest.fn().mockResolvedValue([]) } as any, // cryptoWithdrawalRepo
+      {} as any, // savedMarketRepo
       {} as any, // redis
       {} as any, // streakService
       config as any,
