@@ -1032,6 +1032,34 @@ export class UsersController {
     return last === todayUtc || last === yesterdayUtc ? count : 0;
   }
 
+  /**
+   * What the month pays, and who can collect it.
+   *
+   * Served rather than hardcoded in the apps: these are real-money figures,
+   * and two hand-copied frontends would go on promising Nu 700 long after the
+   * constant changed. Read straight from season.service, so there is one
+   * definition.
+   *
+   * Returned on BOTH boards. The prize is a standing fact about the month, not
+   * a property of the board you happen to be looking at — a visitor reading
+   * the all-time table should still learn that the month pays.
+   *
+   * NB the podium is NOT either board's top three. The monthly board orders by
+   * raw win rate and the all-time board by reputation, while the season pays on
+   * a blend of accuracy and volume among users clearing the floors below. Show
+   * the pot and the rules; never put a prize against a row.
+   */
+  private static readonly MONTHLY_PRIZE = {
+    amounts: SEASON_PRIZES,
+    currency: BTN_CURRENCY,
+    minPicks: SEASON_MIN_PICKS,
+    minWins: SEASON_MIN_WINS,
+    minWinRate: SEASON_MIN_WIN_RATE,
+    minQualifiers: SEASON_MIN_QUALIFIERS,
+    skillWeight: SEASON_SKILL_WEIGHT,
+    volumeWeight: SEASON_VOLUME_WEIGHT,
+  };
+
   @Get("leaderboard")
   @Public()
   @ApiOperation({ summary: "Global leaderboard — top 50 predictors" })
@@ -1126,24 +1154,7 @@ export class UsersController {
         board,
         myRank: meInBoard ? meInBoard.rank : null,
         totalRanked,
-        // What is actually at stake this month, served rather than hardcoded in
-        // the apps: these are real-money figures, and a frontend copy would go
-        // on promising Nu 700 after the constant changed.
-        //
-        // NB the podium here is NOT this board's top three. The board orders by
-        // raw monthly win rate; the season pays on a blend of accuracy and
-        // volume, and only to users clearing the floors below. The apps show
-        // the pot and the rules, never a prize against a row.
-        prize: {
-          amounts: SEASON_PRIZES,
-          currency: BTN_CURRENCY,
-          minPicks: SEASON_MIN_PICKS,
-          minWins: SEASON_MIN_WINS,
-          minWinRate: SEASON_MIN_WIN_RATE,
-          minQualifiers: SEASON_MIN_QUALIFIERS,
-          skillWeight: SEASON_SKILL_WEIGHT,
-          volumeWeight: SEASON_VOLUME_WEIGHT,
-        },
+        prize: UsersController.MONTHLY_PRIZE,
       };
     }
 
@@ -1241,7 +1252,7 @@ export class UsersController {
       .where("u.totalPredictions >= 10")
       .getCount();
 
-    return { board, myRank, totalRanked };
+    return { board, myRank, totalRanked, prize: UsersController.MONTHLY_PRIZE };
   }
 
   // ── Seasons ───────────────────────────────────────────────────────────────
