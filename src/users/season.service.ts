@@ -14,7 +14,7 @@ import { ledgerBalanceForAccount } from "../shared/utils/ledger.util";
 
 // Real-money prizes paid every month to the top-3 finishers.
 // #1 → Nu 700, #2 → Nu 500, #3 → Nu 350
-const SEASON_PRIZES: Record<number, number> = { 1: 700, 2: 500, 3: 350 };
+export const SEASON_PRIZES: Record<number, number> = { 1: 700, 2: 500, 3: 350 };
 
 // Collectible badge earned by finishing on the monthly podium. Keyed by rank;
 // these ids must match the frontend badge definitions in BadgeGrid.tsx. Stored
@@ -37,9 +37,9 @@ const PODIUM_BADGE_ID: Record<number, string> = {
 // run away with the board — doubling an already-large stake barely moves it.
 // Only real-money (non-bonus) resolved picks count toward volume.
 // Tune the weights here; they must sum to 1.
-const SEASON_MIN_PICKS = 15;
-const SEASON_SKILL_WEIGHT = 0.6;
-const SEASON_VOLUME_WEIGHT = 0.4;
+export const SEASON_MIN_PICKS = 15;
+export const SEASON_SKILL_WEIGHT = 0.6;
+export const SEASON_VOLUME_WEIGHT = 0.4;
 
 // ── Prize eligibility floors ────────────────────────────────────────────────
 // Guardrails so real money isn't handed out in a dead or unopposed month.
@@ -51,9 +51,9 @@ const SEASON_VOLUME_WEIGHT = 0.4;
 // contenders exist — otherwise a single grinder could take Nu 700 unopposed
 // in a quiet month. Below the floor, the season closes with NO payout. At 3,
 // a full top-3 podium is enough to pay out (every prize has a distinct winner).
-const SEASON_MIN_WINS = 8;
-const SEASON_MIN_WIN_RATE = 0.5;
-const SEASON_MIN_QUALIFIERS = 3;
+export const SEASON_MIN_WINS = 8;
+export const SEASON_MIN_WIN_RATE = 0.5;
+export const SEASON_MIN_QUALIFIERS = 3;
 
 @Injectable()
 export class SeasonService implements OnApplicationBootstrap {

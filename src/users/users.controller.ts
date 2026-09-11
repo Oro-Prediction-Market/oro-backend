@@ -33,11 +33,24 @@ import { JwtAuthGuard, PreKycJwtAuthGuard, Public } from "../auth/guards";
 import { User } from "../entities/user.entity";
 import { CryptoWithdrawal } from "../entities/crypto-withdrawal.entity";
 import { Payment } from "../entities/payment.entity";
-import { Transaction, TransactionType } from "../entities/transaction.entity";
+import {
+  Transaction,
+  TransactionType,
+  BTN_CURRENCY,
+} from "../entities/transaction.entity";
 import { Position, PositionStatus } from "../entities/position.entity";
 import { RedisService } from "../redis/redis.service";
 import { StreakService } from "./streak.service";
-import { SeasonService } from "./season.service";
+import {
+  SeasonService,
+  SEASON_PRIZES,
+  SEASON_MIN_PICKS,
+  SEASON_MIN_WINS,
+  SEASON_MIN_WIN_RATE,
+  SEASON_MIN_QUALIFIERS,
+  SEASON_SKILL_WEIGHT,
+  SEASON_VOLUME_WEIGHT,
+} from "./season.service";
 import { OnboardService } from "./onboard.service";
 import { ParimutuelEngine } from "../markets/parimutuel.engine";
 import { DKGatewayService } from "../payment/services/dk-gateway/dk-gateway.service";
@@ -1113,6 +1126,24 @@ export class UsersController {
         board,
         myRank: meInBoard ? meInBoard.rank : null,
         totalRanked,
+        // What is actually at stake this month, served rather than hardcoded in
+        // the apps: these are real-money figures, and a frontend copy would go
+        // on promising Nu 700 after the constant changed.
+        //
+        // NB the podium here is NOT this board's top three. The board orders by
+        // raw monthly win rate; the season pays on a blend of accuracy and
+        // volume, and only to users clearing the floors below. The apps show
+        // the pot and the rules, never a prize against a row.
+        prize: {
+          amounts: SEASON_PRIZES,
+          currency: BTN_CURRENCY,
+          minPicks: SEASON_MIN_PICKS,
+          minWins: SEASON_MIN_WINS,
+          minWinRate: SEASON_MIN_WIN_RATE,
+          minQualifiers: SEASON_MIN_QUALIFIERS,
+          skillWeight: SEASON_SKILL_WEIGHT,
+          volumeWeight: SEASON_VOLUME_WEIGHT,
+        },
       };
     }
 
