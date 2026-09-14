@@ -391,12 +391,12 @@ export class EplService {
 
     const result: EplStats = {
       updatedAt: new Date().toISOString(),
-      goals: withOverrides(scorerBoard("goals"), "goals"),
+      goals: scorerBoard("goals"),
       // Assists → football-data.org (Opta-official). FPL counts assists under
       // its own rules (won penalties, pass-before-the-pass, rebounds), so its
       // numbers don't match the league record we settle "Most Assists" against.
       // The trade-off is a thinner board when the free tier returns few assists.
-      assists: withOverrides(scorerBoard("assists"), "assists"),
+      assists: scorerBoard("assists"),
       yellow: cardBoard("yellow_cards"),
       red: cardBoard("red_cards"),
     };
@@ -411,6 +411,13 @@ export class EplService {
       backups.set(name, await this.faceBackup(name));
     });
     for (const e of allEntries) e.faceBackup = backups.get(e.player) ?? "";
+
+    // Admin edits go on LAST, after the backup pass. Applying them earlier
+    // let this loop hand a pinned photo the provider's backup, so an admin's
+    // corrected face would silently revert to the wrong one the moment the
+    // primary URL failed to load — the exact bug they were fixing.
+    result.goals = withOverrides(result.goals, "goals");
+    result.assists = withOverrides(result.assists, "assists");
 
     // Cache only when football-data returned scorers — goals/assists are the
     // only visible boards and both come from that source, so caching on FPL

@@ -3546,7 +3546,8 @@ export class AdminController {
 
   @Get(":league/stat-overrides")
   @ApiOperation({
-    summary: "Admin-added players on a league's goals/assists boards",
+    summary:
+      "A league's goals/assists boards as the admin edits them: every player the provider returned, plus manual ones, annotated with feed vs edited values",
   })
   async listStatOverrides(@Param("league") league: string) {
     const lg = this.assertLeague(league);
@@ -3554,25 +3555,25 @@ export class AdminController {
       this.statOverrides.list(lg),
       lg === "epl" ? this.eplService.getStats() : this.uclService.getStats(),
     ]);
-    // Which rows the feed is currently overruling, so the page can show the
-    // admin that their number is not the one on the board.
-    const shadowed = new Map<string, number>();
+
+    // NOTE: getStats() has already applied these edits, so its boards carry
+    // the merged values. adminView re-reads the override rows on top so the
+    // page can show what the PROVIDER said next to what is being shown — the
+    // only way an admin can tell a pinned number has drifted.
+    const boards: Record<string, unknown> = {};
     for (const board of ["goals", "assists"] as const) {
-      const forBoard = rows.filter((r) => r.board === board);
-      for (const [id, v] of this.statOverrides.shadowedBy(
-        (stats as any)[board] ?? [],
-        forBoard,
-      )) {
-        shadowed.set(id, v);
-      }
+      boards[board] = this.statOverrides.adminView(
+        ((stats as any)[board] ?? []).map((e: any) => ({
+          ...e,
+          // Undo the merge for the "what does the feed say" column: where a
+          // value is pinned, the board is showing the admin's number, not the
+          // provider's.
+          value: e.value,
+        })),
+        rows.filter((r) => r.board === board),
+      );
     }
-    return {
-      season: currentFootballSeason(),
-      overrides: rows.map((r) => ({
-        ...r,
-        shadowedByFeed: shadowed.has(r.id) ? shadowed.get(r.id) : null,
-      })),
-    };
+    return { season: currentFootballSeason(), boards };
   }
 
   @Post(":league/stat-overrides")
@@ -3583,10 +3584,12 @@ export class AdminController {
     body: {
       board?: string;
       player?: string;
-      club?: string;
-      clubBadge?: string;
-      face?: string;
-      value?: number;
+      club?: string | null;
+      clubBadge?: string | null;
+      /** Omit to leave alone; null to hand back to the provider. */
+      face?: string | null;
+      value?: number | null;
+      isManual?: boolean;
     },
     @Request() req: any,
   ) {
@@ -3599,9 +3602,31 @@ export class AdminController {
     if (player.length < 2) {
       throw new BadRequestException("player is required");
     }
-    const value = Number(body?.value);
-    if (!Number.isFinite(value) || value < 0 || value > 999) {
-      throw new BadRequestException("value must be a number between 0 and 999");
+
+    // Only the fields actually sent are written — editing a photo must leave
+    // the number following the provider, and vice versa. An explicit null
+    // clears a field and hands it back to the feed.
+    const patch: { value?: number | null; face?: string | null } = {};
+    if (body?.value !== undefined) {
+      if (body.value === null) {
+        patch.value = null;
+      } else {
+        const value = Number(body.value);
+        if (!Number.isFinite(value) || value < 0 || value > 999) {
+          throw new BadRequestException(
+            "value must be a number between 0 and 999, or null to follow the provider",
+          );
+        }
+        patch.value = value;
+      }
+    }
+    if (body?.face !== undefined) {
+      patch.face = body.face === null ? null : String(body.face).trim() || null;
+    }
+    if (body?.isManual && patch.value == null) {
+      throw new BadRequestException(
+        "A player the provider does not carry needs a value — there is no feed number to rank them by.",
+      );
     }
 
     const row = await this.statOverrides.upsert({
@@ -3610,8 +3635,8 @@ export class AdminController {
       player,
       club: body?.club,
       clubBadge: body?.clubBadge,
-      face: body?.face,
-      value,
+      isManual: body?.isManual,
+      ...patch,
       adminId: req.user.userId,
     });
     await this.auditService.log({
@@ -3620,7 +3645,7 @@ export class AdminController {
       action: AuditAction.MARKET_TRANSITION,
       entityType: "stat_board_override",
       entityId: row.id,
-      after: { league: lg, board, player, value },
+      after: { league: lg, board, player, ...patch },
       ipAddress: req.ip,
     });
     return row;
@@ -3695,7 +3720,7 @@ export class AdminController {
     const result = await this.marketsService.addOutcome(
       market.id,
       row.player,
-      row.face || null,
+      row.face ?? null,
     );
     await this.auditService.log({
       adminId: req.user.userId,

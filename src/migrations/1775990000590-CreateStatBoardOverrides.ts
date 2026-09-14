@@ -1,12 +1,18 @@
 import { MigrationInterface, QueryRunner } from "typeorm";
 
 /**
- * Admin-supplied rows for the EPL/UCL goals and assists leaderboards.
+ * Admin edits to the EPL/UCL goals and assists leaderboards.
+ *
+ * Every editable column is NULLABLE on purpose. A row records only the fields
+ * an admin actually changed; anything left null keeps following the live feed.
+ * That is what makes "fetch from the provider, but our correction sticks"
+ * expressible per field — an admin fixing a wrong photo does not thereby also
+ * freeze the goal count, which would go stale the moment the player scored.
  *
  * Additive only: a new table that nothing else references, so the feature is
  * revertible by reverting code plus dropping this table. No change to
- * `markets` or `outcomes` — making a manual player bettable stays a separate
- * admin action that goes through the existing add-outcome path.
+ * `markets` or `outcomes` — making a player bettable stays a separate admin
+ * action through the existing add-outcome path.
  */
 export class CreateStatBoardOverrides1775990000590
   implements MigrationInterface
@@ -22,10 +28,14 @@ export class CreateStatBoardOverrides1775990000590
         "season"           VARCHAR(8)   NOT NULL,
         "playerKey"        VARCHAR(160) NOT NULL,
         "player"           VARCHAR(160) NOT NULL,
-        "club"             VARCHAR(160) NOT NULL DEFAULT '',
-        "clubBadge"        VARCHAR(512) NOT NULL DEFAULT '',
-        "face"             VARCHAR(512) NOT NULL DEFAULT '',
-        "value"            INTEGER      NOT NULL DEFAULT 0,
+        -- Null means "no admin opinion, use whatever the provider says".
+        "club"             VARCHAR(160) NULL,
+        "clubBadge"        VARCHAR(512) NULL,
+        "face"             VARCHAR(512) NULL,
+        "value"            INTEGER      NULL,
+        -- True for a player the provider does not carry at all, who therefore
+        -- exists on the board only because an admin added them.
+        "isManual"         BOOLEAN      NOT NULL DEFAULT false,
         "updatedByAdminId" UUID         NULL,
         "createdAt"        TIMESTAMPTZ  NOT NULL DEFAULT now(),
         "updatedAt"        TIMESTAMPTZ  NOT NULL DEFAULT now(),

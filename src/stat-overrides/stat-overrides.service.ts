@@ -18,6 +18,23 @@ export interface StatBoardEntry {
   value: number;
 }
 
+/** One board row as the admin page sees it: the live value, and the edit. */
+export interface AdminBoardRow {
+  player: string;
+  club: string;
+  face: string;
+  /** What the board is actually showing, after any edit. */
+  value: number;
+  /** What the provider reports, or null when it does not carry this player. */
+  feedValue: number | null;
+  feedFace: string | null;
+  /** The admin's row, when one exists. */
+  overrideId: string | null;
+  valueEdited: boolean;
+  faceEdited: boolean;
+  isManual: boolean;
+}
+
 /** Redis keys the leagues cache their built boards under. */
 const STATS_CACHE_KEY: Record<StatBoardLeague, string> = {
   epl: "oro:epl:stats",
@@ -25,7 +42,7 @@ const STATS_CACHE_KEY: Record<StatBoardLeague, string> = {
 };
 
 /**
- * Normalised player name, used for matching an override against the feed.
+ * Normalised player name, used for matching an edit against the feed.
  *
  * Accents are folded because the two sources disagree about them — a provider
  * writing "Kylian Mbappe" and an admin typing "Kylian Mbappé" are the same
@@ -46,8 +63,8 @@ export function playerKeyOf(name: string): string {
  *
  * Seasons run August–May, so anything from June onwards belongs to the
  * campaign starting that year. Matches the window `eplStatMarketCloseDate`
- * already uses, and keeps last season's manual entries from reappearing when
- * the new one kicks off.
+ * already uses, and keeps last season's edits from reappearing when the new
+ * one kicks off.
  */
 export function currentFootballSeason(now = new Date()): string {
   return String(now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1);
@@ -69,48 +86,77 @@ export class StatOverridesService {
   ): Promise<StatBoardOverride[]> {
     return this.repo.find({
       where: { league, season },
-      order: { board: "ASC", value: "DESC" },
+      order: { board: "ASC", player: "ASC" },
     });
   }
 
+  /**
+   * Record an admin's edit to one player.
+   *
+   * Only the fields present in `input` are written, so editing a photo leaves
+   * the value following the feed and vice versa. Passing `null` for a field
+   * clears it, handing that field back to the provider.
+   */
   async upsert(input: {
     league: StatBoardLeague;
     board: StatBoardKey;
     player: string;
-    club?: string;
-    clubBadge?: string;
-    face?: string;
-    value: number;
+    club?: string | null;
+    clubBadge?: string | null;
+    face?: string | null;
+    value?: number | null;
+    isManual?: boolean;
     adminId?: string | null;
     season?: string;
   }): Promise<StatBoardOverride> {
     const season = input.season ?? currentFootballSeason();
     const playerKey = playerKeyOf(input.player);
 
-    // Write through the unique constraint rather than read-then-write: two
-    // admins saving the same player at once would otherwise both see "not
-    // there" and insert.
-    await this.repo
-      .createQueryBuilder()
-      .insert()
-      .into(StatBoardOverride)
-      .values({
-        league: input.league,
-        board: input.board,
-        season,
-        playerKey,
-        player: input.player.trim(),
-        club: input.club ?? "",
-        clubBadge: input.clubBadge ?? "",
-        face: input.face ?? "",
-        value: Math.max(0, Math.round(input.value)),
-        updatedByAdminId: input.adminId ?? null,
-      })
-      .orUpdate(
-        ["player", "club", "clubBadge", "face", "value", "updatedByAdminId"],
-        ["league", "board", "season", "playerKey"],
-      )
-      .execute();
+    const patch: Partial<StatBoardOverride> = {
+      updatedByAdminId: input.adminId ?? null,
+    };
+    if (input.club !== undefined) patch.club = input.club;
+    if (input.clubBadge !== undefined) patch.clubBadge = input.clubBadge;
+    if (input.face !== undefined) patch.face = input.face;
+    if (input.value !== undefined) {
+      patch.value =
+        input.value === null ? null : Math.max(0, Math.round(input.value));
+    }
+    if (input.isManual !== undefined) patch.isManual = input.isManual;
+
+    const existing = await this.repo.findOne({
+      where: { league: input.league, board: input.board, season, playerKey },
+    });
+
+    if (existing) {
+      await this.repo.update({ id: existing.id }, patch);
+    } else {
+      // Insert through the unique constraint rather than read-then-write: two
+      // admins saving the same player at once would otherwise both see "not
+      // there" and insert.
+      await this.repo
+        .createQueryBuilder()
+        .insert()
+        .into(StatBoardOverride)
+        .values({
+          league: input.league,
+          board: input.board,
+          season,
+          playerKey,
+          player: input.player.trim(),
+          club: patch.club ?? null,
+          clubBadge: patch.clubBadge ?? null,
+          face: patch.face ?? null,
+          value: patch.value ?? null,
+          isManual: patch.isManual ?? false,
+          updatedByAdminId: input.adminId ?? null,
+        })
+        .orUpdate(
+          ["club", "clubBadge", "face", "value", "isManual", "updatedByAdminId"],
+          ["league", "board", "season", "playerKey"],
+        )
+        .execute();
+    }
 
     await this.bust(input.league);
     const row = await this.repo.findOne({
@@ -128,13 +174,13 @@ export class StatOverridesService {
   }
 
   /**
-   * Fold the admin's rows into a freshly built board.
+   * Lay the admin's edits over a freshly fetched board.
    *
-   * The feed wins wherever it reports a player: an override whose name already
-   * appears is dropped, not merged. What is left are the players the provider
-   * is silent about, which is the gap this exists to fill. Re-sorted and
-   * re-capped so a manual entry lands in its rightful place rather than at the
-   * bottom.
+   * The provider supplies every row and every default. An override then
+   * replaces only the fields it actually carries, and rows flagged `isManual`
+   * are appended because the provider has no row of its own for them. The
+   * result is re-sorted and re-capped, so an edited number moves the player to
+   * where that number belongs rather than leaving them in their old slot.
    */
   applyToBoard<T extends StatBoardEntry>(
     board: T[],
@@ -142,37 +188,89 @@ export class StatOverridesService {
     limit: number,
   ): T[] {
     if (overrides.length === 0) return board;
-    const fromFeed = new Set(board.map((e) => playerKeyOf(e.player)));
-    const extra = overrides
-      .filter((o) => !fromFeed.has(o.playerKey) && o.value > 0)
+    const byKey = new Map(overrides.map((o) => [o.playerKey, o]));
+
+    const merged = board.map((e) => {
+      const o = byKey.get(playerKeyOf(e.player));
+      if (!o) return e;
+      return {
+        ...e,
+        club: o.club ?? e.club,
+        clubBadge: o.clubBadge ?? e.clubBadge,
+        face: o.face ?? e.face,
+        // A photo the admin chose should not be silently replaced by the
+        // provider's backup when the primary fails to load.
+        faceBackup: o.face ? "" : e.faceBackup,
+        value: o.value ?? e.value,
+      };
+    });
+
+    const onBoard = new Set(board.map((e) => playerKeyOf(e.player)));
+    const added = overrides
+      .filter((o) => o.isManual && !onBoard.has(o.playerKey) && (o.value ?? 0) > 0)
       .map(
         (o) =>
           ({
             player: o.player,
-            club: o.club,
-            clubBadge: o.clubBadge,
-            face: o.face,
+            club: o.club ?? "",
+            clubBadge: o.clubBadge ?? "",
+            face: o.face ?? "",
             faceBackup: "",
-            value: o.value,
+            value: o.value ?? 0,
           }) as unknown as T,
       );
-    if (extra.length === 0) return board;
-    return [...board, ...extra].sort((a, b) => b.value - a.value).slice(0, limit);
+
+    return [...merged, ...added]
+      .sort((a, b) => b.value - a.value)
+      .slice(0, limit);
   }
 
-  /** Which overrides the feed is currently overruling, for the admin page. */
-  shadowedBy<T extends StatBoardEntry>(
+  /**
+   * The board as the admin page shows it: every row the provider returned,
+   * plus the manual ones, each annotated with what the feed says versus what
+   * has been edited. This is what makes an edit reviewable — without
+   * `feedValue` there is no way to see that a pinned number has drifted from
+   * the provider's.
+   */
+  adminView<T extends StatBoardEntry>(
     board: T[],
     overrides: StatBoardOverride[],
-  ): Map<string, number> {
-    const feedValue = new Map<string, number>();
-    for (const e of board) feedValue.set(playerKeyOf(e.player), e.value);
-    const out = new Map<string, number>();
+  ): AdminBoardRow[] {
+    const byKey = new Map(overrides.map((o) => [o.playerKey, o]));
+    const rows: AdminBoardRow[] = board.map((e) => {
+      const o = byKey.get(playerKeyOf(e.player));
+      return {
+        player: e.player,
+        club: o?.club ?? e.club,
+        face: o?.face ?? e.face,
+        value: o?.value ?? e.value,
+        feedValue: e.value,
+        feedFace: e.face || null,
+        overrideId: o?.id ?? null,
+        valueEdited: o?.value != null,
+        faceEdited: !!o?.face,
+        isManual: false,
+      };
+    });
+
+    const onBoard = new Set(board.map((e) => playerKeyOf(e.player)));
     for (const o of overrides) {
-      const v = feedValue.get(o.playerKey);
-      if (v !== undefined) out.set(o.id, v);
+      if (onBoard.has(o.playerKey)) continue;
+      rows.push({
+        player: o.player,
+        club: o.club ?? "",
+        face: o.face ?? "",
+        value: o.value ?? 0,
+        feedValue: null,
+        feedFace: null,
+        overrideId: o.id,
+        valueEdited: o.value != null,
+        faceEdited: !!o.face,
+        isManual: true,
+      });
     }
-    return out;
+
+    return rows.sort((a, b) => b.value - a.value);
   }
 
   /**

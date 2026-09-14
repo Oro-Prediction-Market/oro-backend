@@ -493,8 +493,8 @@ export class UclService {
 
     const result: UclStats = {
       updatedAt: new Date().toISOString(),
-      goals: withOverrides(scorerBoard("goals"), "goals"),
-      assists: withOverrides(scorerBoard("assists"), "assists"),
+      goals: scorerBoard("goals"),
+      assists: scorerBoard("assists"),
       yellow: [],
       red: [],
     };
@@ -507,6 +507,11 @@ export class UclService {
       backups.set(name, await this.faceBackup(name));
     });
     for (const e of allEntries) e.faceBackup = backups.get(e.player) ?? "";
+
+    // Admin edits go on LAST, after the backup pass — see the EPL service for
+    // why: applied earlier, a pinned photo gets handed the provider's backup.
+    result.goals = withOverrides(result.goals, "goals");
+    result.assists = withOverrides(result.assists, "assists");
 
     if (scorers.length > 0) {
       await this.redis.setJsonEx(cacheKey, CACHE_TTL_SEC, result);
