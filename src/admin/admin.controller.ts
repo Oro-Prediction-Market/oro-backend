@@ -52,6 +52,11 @@ import {
 } from "../epl/epl-stat-markets";
 import { UclService } from "../ucl/ucl.service";
 import {
+  StatOverridesService,
+  playerKeyOf,
+  currentFootballSeason,
+} from "../stat-overrides/stat-overrides.service";
+import {
   UCL_STAT_MARKET_META,
   UCL_STAT_SUBCATEGORIES,
   buildUclStatMarketDto,
@@ -134,6 +139,7 @@ export class AdminController {
     private revenueDistributionService: RevenueDistributionService,
     private eplService: EplService,
     private uclService: UclService,
+    private statOverrides: StatOverridesService,
   ) {}
 
   // ── Late-money monitor (REAL aggregation — no random/demo data) ────────────
@@ -3523,6 +3529,192 @@ export class AdminController {
       ipAddress: req.ip,
     });
     return market;
+  }
+
+  // ── Stat board overrides (EPL + UCL) ──────────────────────────────────────
+  //
+  // The goals/assists boards come live from football-data.org, and on the free
+  // tier they are thin: /scorers is goal-ranked, so a player with assists but
+  // few goals never appears at all. The Stats tab renders rows from the BOARD
+  // and attaches betting only where a market outcome name matches one, so a
+  // missing player is both invisible and unbettable.
+  //
+  // These endpoints let an admin fill that gap. The feed stays authoritative:
+  // an override for a player the provider already reports is kept but not
+  // applied, and the listing says so (`shadowedByFeed`) rather than letting the
+  // edit look like it took effect.
+
+  @Get(":league/stat-overrides")
+  @ApiOperation({
+    summary: "Admin-added players on a league's goals/assists boards",
+  })
+  async listStatOverrides(@Param("league") league: string) {
+    const lg = this.assertLeague(league);
+    const [rows, stats] = await Promise.all([
+      this.statOverrides.list(lg),
+      lg === "epl" ? this.eplService.getStats() : this.uclService.getStats(),
+    ]);
+    // Which rows the feed is currently overruling, so the page can show the
+    // admin that their number is not the one on the board.
+    const shadowed = new Map<string, number>();
+    for (const board of ["goals", "assists"] as const) {
+      const forBoard = rows.filter((r) => r.board === board);
+      for (const [id, v] of this.statOverrides.shadowedBy(
+        (stats as any)[board] ?? [],
+        forBoard,
+      )) {
+        shadowed.set(id, v);
+      }
+    }
+    return {
+      season: currentFootballSeason(),
+      overrides: rows.map((r) => ({
+        ...r,
+        shadowedByFeed: shadowed.has(r.id) ? shadowed.get(r.id) : null,
+      })),
+    };
+  }
+
+  @Post(":league/stat-overrides")
+  @ApiOperation({ summary: "Add or update a player on a league's stat board" })
+  async upsertStatOverride(
+    @Param("league") league: string,
+    @Body()
+    body: {
+      board?: string;
+      player?: string;
+      club?: string;
+      clubBadge?: string;
+      face?: string;
+      value?: number;
+    },
+    @Request() req: any,
+  ) {
+    const lg = this.assertLeague(league);
+    const board = body?.board;
+    if (board !== "goals" && board !== "assists") {
+      throw new BadRequestException("board must be one of: goals, assists");
+    }
+    const player = (body?.player ?? "").trim();
+    if (player.length < 2) {
+      throw new BadRequestException("player is required");
+    }
+    const value = Number(body?.value);
+    if (!Number.isFinite(value) || value < 0 || value > 999) {
+      throw new BadRequestException("value must be a number between 0 and 999");
+    }
+
+    const row = await this.statOverrides.upsert({
+      league: lg,
+      board,
+      player,
+      club: body?.club,
+      clubBadge: body?.clubBadge,
+      face: body?.face,
+      value,
+      adminId: req.user.userId,
+    });
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action: AuditAction.MARKET_TRANSITION,
+      entityType: "stat_board_override",
+      entityId: row.id,
+      after: { league: lg, board, player, value },
+      ipAddress: req.ip,
+    });
+    return row;
+  }
+
+  @Delete(":league/stat-overrides/:id")
+  @ApiOperation({ summary: "Remove an admin-added player from a stat board" })
+  async deleteStatOverride(
+    @Param("league") league: string,
+    @Param("id") id: string,
+    @Request() req: any,
+  ) {
+    this.assertLeague(league);
+    const row = await this.statOverrides.remove(id);
+    if (!row) throw new NotFoundException("Override not found");
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action: AuditAction.MARKET_TRANSITION,
+      entityType: "stat_board_override",
+      entityId: id,
+      before: { league: row.league, board: row.board, player: row.player, value: row.value },
+      ipAddress: req.ip,
+    });
+    return { deleted: true };
+  }
+
+  @Post(":league/stat-overrides/:id/open-betting")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      "Add an admin-added player to the live stat market as a bettable outcome",
+  })
+  async openBettingOnStatOverride(
+    @Param("league") league: string,
+    @Param("id") id: string,
+    @Request() req: any,
+  ) {
+    const lg = this.assertLeague(league);
+    const rows = await this.statOverrides.list(lg);
+    const row = rows.find((r) => r.id === id);
+    if (!row) throw new NotFoundException("Override not found");
+
+    // Deliberately a separate action from adding the player to the board:
+    // this writes an outcome into a parimutuel market people already hold
+    // positions in, which is not something a display edit should do silently.
+    const subcategory =
+      lg === "epl"
+        ? EPL_STAT_MARKET_META[row.board as EplStatKey]?.subcategory
+        : UCL_STAT_MARKET_META[row.board as UclStatKey]?.subcategory;
+    const market = await this.dataSource.getRepository(Market).findOne({
+      where: {
+        subcategory,
+        status: In([MarketStatus.UPCOMING, MarketStatus.OPEN]),
+      },
+      relations: ["outcomes"],
+    });
+    if (!market) {
+      throw new BadRequestException(
+        `No open "${subcategory}" market to add this player to. Create the stat market first.`,
+      );
+    }
+    const already = (market.outcomes ?? []).some(
+      (o) => playerKeyOf(o.label) === row.playerKey,
+    );
+    if (already) {
+      throw new BadRequestException(
+        `${row.player} is already an outcome on this market.`,
+      );
+    }
+
+    const result = await this.marketsService.addOutcome(
+      market.id,
+      row.player,
+      row.face || null,
+    );
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action: AuditAction.MARKET_TRANSITION,
+      entityType: "market",
+      entityId: market.id,
+      after: { addedOutcome: row.player, fromOverride: row.id },
+      ipAddress: req.ip,
+    });
+    return result;
+  }
+
+  /** Only these two leagues have stat boards. */
+  private assertLeague(league: string): "epl" | "ucl" {
+    if (league !== "epl" && league !== "ucl") {
+      throw new BadRequestException("league must be one of: epl, ucl");
+    }
+    return league;
   }
 
   // ── Per-currency market books ───────────────────────────────────────────────

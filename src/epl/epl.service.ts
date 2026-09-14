@@ -1,6 +1,8 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { RedisService } from "../redis/redis.service";
+import { StatOverridesService } from "../stat-overrides/stat-overrides.service";
+import { StatBoardOverride } from "../entities/stat-board-override.entity";
 
 // EPL live data sources — both free:
 //  • football-data.org  → standings + goals/assists (official, accurate).
@@ -72,6 +74,7 @@ export class EplService {
   constructor(
     private readonly config: ConfigService,
     private readonly redis: RedisService,
+    private readonly statOverrides: StatOverridesService,
   ) {}
 
   /** GET football-data.org. Returns the parsed JSON body, or null on any
@@ -373,14 +376,27 @@ export class EplService {
         .sort((a: EplStatEntry, b: EplStatEntry) => b.value - a.value)
         .slice(0, TOP_N);
 
+    // Admin-supplied entries for players the provider is silent about. The
+    // feed still wins wherever it reports someone — see StatOverridesService.
+    const overrides: StatBoardOverride[] = await this.statOverrides
+      .list("epl")
+      // A board without the manual rows beats no board at all.
+      .catch(() => []);
+    const withOverrides = (board: EplStatEntry[], key: "goals" | "assists") =>
+      this.statOverrides.applyToBoard(
+        board,
+        overrides.filter((o) => o.board === key),
+        TOP_N,
+      );
+
     const result: EplStats = {
       updatedAt: new Date().toISOString(),
-      goals: scorerBoard("goals"),
+      goals: withOverrides(scorerBoard("goals"), "goals"),
       // Assists → football-data.org (Opta-official). FPL counts assists under
       // its own rules (won penalties, pass-before-the-pass, rebounds), so its
       // numbers don't match the league record we settle "Most Assists" against.
       // The trade-off is a thinner board when the free tier returns few assists.
-      assists: scorerBoard("assists"),
+      assists: withOverrides(scorerBoard("assists"), "assists"),
       yellow: cardBoard("yellow_cards"),
       red: cardBoard("red_cards"),
     };

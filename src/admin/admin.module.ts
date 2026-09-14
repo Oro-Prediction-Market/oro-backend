@@ -14,6 +14,7 @@ import { AuditService } from "./audit.service";
 import { TelegramModule } from "../telegram/telegram.module";
 import { EplModule } from "../epl/epl.module";
 import { UclModule } from "../ucl/ucl.module";
+import { StatOverridesModule } from "../stat-overrides/stat-overrides.module";
 import { SuggestionsModule } from "../suggestions/suggestions.module";
 import { ChallengesModule } from "../challenges/challenges.module";
 import { InsightsModule } from "../insights/insights.module";
@@ -33,6 +34,7 @@ import { InsightsModule } from "../insights/insights.module";
     TelegramModule,
     EplModule,
     UclModule,
+    StatOverridesModule,
     SuggestionsModule,
     // For voiding stuck duels. The Duels list reads Challenge through the
     // DataSource directly, but refunding needs the service's guarded write path.

@@ -1,6 +1,8 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { RedisService } from "../redis/redis.service";
+import { StatOverridesService } from "../stat-overrides/stat-overrides.service";
+import { StatBoardOverride } from "../entities/stat-board-override.entity";
 
 // UEFA Champions League live data — football-data.org (free tier includes CL).
 //  • standings  → league-phase table (36-team single table in the 2024+ format)
@@ -92,6 +94,7 @@ export class UclService {
   constructor(
     private readonly config: ConfigService,
     private readonly redis: RedisService,
+    private readonly statOverrides: StatOverridesService,
   ) {}
 
   /** GET football-data.org. Returns the parsed JSON body, or null on any
@@ -474,10 +477,24 @@ export class UclService {
         .sort((a, b) => b.value - a.value)
         .slice(0, TOP_N);
 
+    // Admin-supplied entries for players the provider is silent about. The
+    // feed still wins wherever it reports someone — see StatOverridesService.
+    // The free CL tier is thinner than the PL one, so this matters more here.
+    const overrides: StatBoardOverride[] = await this.statOverrides
+      .list("ucl")
+      // A board without the manual rows beats no board at all.
+      .catch(() => []);
+    const withOverrides = (board: UclStatEntry[], key: "goals" | "assists") =>
+      this.statOverrides.applyToBoard(
+        board,
+        overrides.filter((o) => o.board === key),
+        TOP_N,
+      );
+
     const result: UclStats = {
       updatedAt: new Date().toISOString(),
-      goals: scorerBoard("goals"),
-      assists: scorerBoard("assists"),
+      goals: withOverrides(scorerBoard("goals"), "goals"),
+      assists: withOverrides(scorerBoard("assists"), "assists"),
       yellow: [],
       red: [],
     };
