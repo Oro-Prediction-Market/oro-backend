@@ -293,10 +293,19 @@ export class EplService {
     // stats. Show nothing rather than carrying last season's boards over. (Not
     // cached — flips to real data on the first call once the season is live.)
     if (!(await this.seasonHasStarted())) {
+      // Assists are curated by hand and scoped to the season, so there is no
+      // stale-data risk in showing them here — unlike the provider's boards,
+      // which would still be carrying last season's numbers.
+      const offSeason: StatBoardOverride[] = await this.statOverrides
+        .list("epl")
+        .catch(() => []);
       return {
         updatedAt: new Date().toISOString(),
         goals: [],
-        assists: [],
+        assists: this.statOverrides.buildManualBoard(
+          offSeason.filter((o) => o.board === "assists"),
+          TOP_N,
+        ),
         yellow: [],
         red: [],
       };
@@ -376,8 +385,8 @@ export class EplService {
         .sort((a: EplStatEntry, b: EplStatEntry) => b.value - a.value)
         .slice(0, TOP_N);
 
-    // Admin-supplied entries for players the provider is silent about. The
-    // feed still wins wherever it reports someone — see StatOverridesService.
+    // Admin edits. Goals are provider-first with these laid over the top;
+    // assists are built from these alone — see below.
     const overrides: StatBoardOverride[] = await this.statOverrides
       .list("epl")
       // A board without the manual rows beats no board at all.
@@ -392,11 +401,17 @@ export class EplService {
     const result: EplStats = {
       updatedAt: new Date().toISOString(),
       goals: scorerBoard("goals"),
-      // Assists → football-data.org (Opta-official). FPL counts assists under
-      // its own rules (won penalties, pass-before-the-pass, rebounds), so its
-      // numbers don't match the league record we settle "Most Assists" against.
-      // The trade-off is a thinner board when the free tier returns few assists.
-      assists: scorerBoard("assists"),
+      // Assists are ADMIN-MANAGED — the provider is not consulted.
+      //
+      // football-data.org's free tier ranks /scorers by goals and carries
+      // assists only incidentally, so the assists board it yields is a
+      // near-arbitrary subset of the real one: a player with assists but few
+      // goals never appears at all. That is worse than nothing, because it
+      // looks authoritative while being wrong, and it is the board a "Most
+      // Assists" market settles against. FPL counts assists under its own
+      // rules (won penalties, pass-before-the-pass, rebounds) so it is not a
+      // substitute either. Filled in after the backup pass, below.
+      assists: [],
       yellow: cardBoard("yellow_cards"),
       red: cardBoard("red_cards"),
     };
@@ -417,7 +432,10 @@ export class EplService {
     // corrected face would silently revert to the wrong one the moment the
     // primary URL failed to load — the exact bug they were fixing.
     result.goals = withOverrides(result.goals, "goals");
-    result.assists = withOverrides(result.assists, "assists");
+    result.assists = this.statOverrides.buildManualBoard(
+      overrides.filter((o) => o.board === "assists"),
+      TOP_N,
+    );
 
     // Cache only when football-data returned scorers — goals/assists are the
     // only visible boards and both come from that source, so caching on FPL

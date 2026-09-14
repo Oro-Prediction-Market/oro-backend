@@ -3563,14 +3563,11 @@ export class AdminController {
     const boards: Record<string, unknown> = {};
     for (const board of ["goals", "assists"] as const) {
       boards[board] = this.statOverrides.adminView(
-        ((stats as any)[board] ?? []).map((e: any) => ({
-          ...e,
-          // Undo the merge for the "what does the feed say" column: where a
-          // value is pinned, the board is showing the admin's number, not the
-          // provider's.
-          value: e.value,
-        })),
+        (stats as any)[board] ?? [],
         rows.filter((r) => r.board === board),
+        // Assists have no provider behind them, so every row is the admin's
+        // and there is no feed value to compare against.
+        board === "assists",
       );
     }
     return { season: currentFootballSeason(), boards };

@@ -226,6 +226,39 @@ export class StatOverridesService {
   }
 
   /**
+   * A board built entirely from the admin's rows, with no provider input.
+   *
+   * Used for assists in both leagues. football-data.org's free tier ranks
+   * /scorers by goals and carries assists only incidentally, so the assists
+   * board it produces is a near-arbitrary subset of the real one — worse than
+   * nothing, because it looks authoritative. Assists are therefore curated by
+   * hand, and the provider is not consulted at all.
+   *
+   * Rows need a value: with no feed number underneath them there is nothing
+   * else to rank by.
+   */
+  buildManualBoard<T extends StatBoardEntry>(
+    overrides: StatBoardOverride[],
+    limit: number,
+  ): T[] {
+    return overrides
+      .filter((o) => (o.value ?? 0) > 0)
+      .map(
+        (o) =>
+          ({
+            player: o.player,
+            club: o.club ?? "",
+            clubBadge: o.clubBadge ?? "",
+            face: o.face ?? "",
+            faceBackup: "",
+            value: o.value ?? 0,
+          }) as unknown as T,
+      )
+      .sort((a, b) => b.value - a.value)
+      .slice(0, limit);
+  }
+
+  /**
    * The board as the admin page shows it: every row the provider returned,
    * plus the manual ones, each annotated with what the feed says versus what
    * has been edited. This is what makes an edit reviewable — without
@@ -235,7 +268,25 @@ export class StatOverridesService {
   adminView<T extends StatBoardEntry>(
     board: T[],
     overrides: StatBoardOverride[],
+    /** True for a board with no provider behind it, i.e. assists. */
+    manualOnly = false,
   ): AdminBoardRow[] {
+    if (manualOnly) {
+      return overrides
+        .map((o) => ({
+          player: o.player,
+          club: o.club ?? "",
+          face: o.face ?? "",
+          value: o.value ?? 0,
+          feedValue: null,
+          feedFace: null,
+          overrideId: o.id,
+          valueEdited: o.value != null,
+          faceEdited: !!o.face,
+          isManual: true,
+        }))
+        .sort((a, b) => b.value - a.value);
+    }
     const byKey = new Map(overrides.map((o) => [o.playerKey, o]));
     const rows: AdminBoardRow[] = board.map((e) => {
       const o = byKey.get(playerKeyOf(e.player));

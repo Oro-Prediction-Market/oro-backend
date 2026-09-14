@@ -494,7 +494,9 @@ export class UclService {
     const result: UclStats = {
       updatedAt: new Date().toISOString(),
       goals: scorerBoard("goals"),
-      assists: scorerBoard("assists"),
+      // Assists are ADMIN-MANAGED — see the EPL service for why the
+      // provider's assists board is not usable. Filled in below.
+      assists: [],
       yellow: [],
       red: [],
     };
@@ -511,7 +513,10 @@ export class UclService {
     // Admin edits go on LAST, after the backup pass — see the EPL service for
     // why: applied earlier, a pinned photo gets handed the provider's backup.
     result.goals = withOverrides(result.goals, "goals");
-    result.assists = withOverrides(result.assists, "assists");
+    result.assists = this.statOverrides.buildManualBoard(
+      overrides.filter((o) => o.board === "assists"),
+      TOP_N,
+    );
 
     if (scorers.length > 0) {
       await this.redis.setJsonEx(cacheKey, CACHE_TTL_SEC, result);

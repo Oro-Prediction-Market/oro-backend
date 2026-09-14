@@ -164,6 +164,58 @@ describe("stat board: provider first, admin edit wins once made", () => {
     });
   });
 
+  describe("assists: admin-managed, provider not consulted", () => {
+    it("builds the board from the admin's rows alone", () => {
+      const out = svc.buildManualBoard(
+        [
+          ov("a", "Kevin De Bruyne", { value: 6 }),
+          ov("b", "Bukayo Saka", { value: 9 }),
+        ],
+        12,
+      );
+      expect(out.map((e) => [e.player, e.value])).toEqual([
+        ["Bukayo Saka", 9],
+        ["Kevin De Bruyne", 6],
+      ]);
+    });
+
+    it("drops rows with no value — nothing ranks them", () => {
+      const out = svc.buildManualBoard(
+        [ov("a", "No Number"), ov("b", "Real", { value: 3 })],
+        12,
+      );
+      expect(out.map((e) => e.player)).toEqual(["Real"]);
+    });
+
+    it("never carries a provider backup photo", () => {
+      const [row] = svc.buildManualBoard(
+        [ov("a", "Someone", { value: 3, face: "admin.jpg" })],
+        12,
+      );
+      expect(row.face).toBe("admin.jpg");
+      expect(row.faceBackup).toBe("");
+    });
+
+    it("respects the cap", () => {
+      const rows = Array.from({ length: 30 }, (_, i) =>
+        ov(String(i), `P${i}`, { value: 30 - i }),
+      );
+      expect(svc.buildManualBoard(rows, 12)).toHaveLength(12);
+    });
+
+    it("adminView reports every row as the admin's, with no feed value", () => {
+      const rows = svc.adminView(
+        [],
+        [ov("a", "Kevin De Bruyne", { value: 6 })],
+        true,
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].feedValue).toBeNull();
+      expect(rows[0].isManual).toBe(true);
+      expect(rows[0].overrideId).toBe("a");
+    });
+  });
+
   it("keys seasons to the campaign's starting year", () => {
     expect(currentFootballSeason(new Date("2026-09-14"))).toBe("2026");
     expect(currentFootballSeason(new Date("2027-05-01"))).toBe("2026");
