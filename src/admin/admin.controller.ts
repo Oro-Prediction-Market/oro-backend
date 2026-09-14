@@ -92,12 +92,13 @@ import { ToggleAdminDto } from "./dto/toggle-admin.dto";
 import { HealthCheckResponse } from "./dto/health-check.dto";
 import { csvCell } from "../shared/utils/csv.util";
 import { buildLateMoneyStats, LateMoneyStats } from "./late-money.util";
+import {
+  attachParticipationTo,
+  fetchMarketParticipation,
+} from "./market-participation";
 import { BTN_CURRENCY } from "../entities/transaction.entity";
 import { MarketBookService } from "../markets/market-book.service";
-import {
-  accountCurrency,
-  ledgerBalance,
-} from "../shared/utils/ledger.util";
+import { accountCurrency, ledgerBalance } from "../shared/utils/ledger.util";
 
 class CreditUserDto {
   @ApiProperty({ example: 500, description: "Amount to credit (BTN)" })
@@ -789,34 +790,11 @@ export class AdminController {
     const [data, total] = await qb.getManyAndCount();
     await this.marketsService.attachBooksTo(data);
 
-    // Attach the currency each market's pool is denominated in, so the admin
-    // odds panel can label pool amounts "Nu" vs "$" instead of assuming BTN.
-    // Markets carry no currency column — the pool takes whatever currency the
-    // bettors used, and a user's currency is fixed at signup, so in practice a
-    // market is single-currency. MIN() collapses the group; a market that
-    // somehow mixed would show its alphabetically-first currency, which is
-    // wrong but no worse than today's hardcoded "NU.".
-    if (data.length > 0) {
-      const rows = await this.dataSource.query(
-        `SELECT "marketId", MIN(currency) AS currency
-           FROM positions
-          WHERE "marketId" = ANY($1)
-          GROUP BY "marketId"`,
-        [data.map((m) => m.id)],
-      );
-      const byMarket = new Map<string, string>(
-        (rows as { marketId: string; currency: string }[]).map((r) => [
-          r.marketId,
-          r.currency,
-        ]),
-      );
-      for (const m of data) {
-        // No positions yet → nothing staked, so the label is cosmetic; BTN is
-        // the platform default and matches users.currency's default.
-        (m as Market & { poolCurrency: string }).poolCurrency =
-          byMarket.get(m.id) ?? "BTN";
-      }
-    }
+    // How many people bet, and on which outcome — alongside the currency the
+    // pool is denominated in, so the odds panel can label amounts "Nu" vs "$"
+    // instead of assuming BTN. Pool size alone says how much is staked but not
+    // how many staked it, which is what tells a crowd apart from a whale.
+    await attachParticipationTo(this.dataSource, data);
 
     return {
       data,
@@ -832,10 +810,18 @@ export class AdminController {
     return this.marketsService.getZeroPoolSettled();
   }
 
+  // Must stay above `markets/:id` — Nest matches in declaration order, so a
+  // literal segment declared after the param route is swallowed by it.
+  //
+  // There was a second `@Get("markets/stats")` further down the file, below
+  // `markets/:id`. Nest binds the first match, so it had never once run — it
+  // counted BTC/TER auto-markets and summed every non-cancelled pool, neither
+  // of which matches what the dashboard shows. Removed rather than reconciled:
+  // two handlers on one path is a trap, and this is the one that was live.
   @Get("markets/stats")
   @ApiOperation({
     summary:
-      "Dashboard KPIs aggregated over ALL markets (not a single page): open count, open pool volume, unsettled count",
+      "Dashboard KPIs aggregated over ALL markets (not a single page): open count, open pool volume, unsettled count, people who have bet",
   })
   async marketStats() {
     const repo = this.dataSource.getRepository(Market);
@@ -849,32 +835,58 @@ export class AdminController {
     const excludeAuto =
       "(m.externalSource IS NULL OR m.externalSource NOT IN (:...auto))";
 
-    const [activeMarkets, unsettledMarkets, poolRow] = await Promise.all([
-      repo
-        .createQueryBuilder("m")
-        .where("m.status = :s", { s: MarketStatus.OPEN })
-        .andWhere(excludeAuto, { auto: AUTO_SOURCES })
-        .getCount(),
-      // "Unsettled" = betting has stopped but the result isn't in yet: markets
-      // waiting to be resolved. (Once resolved, payout runs in the same step.)
-      repo
-        .createQueryBuilder("m")
-        .where("m.status IN (:...st)", {
-          st: [MarketStatus.CLOSED, MarketStatus.RESOLVING],
-        })
-        .andWhere(excludeAuto, { auto: AUTO_SOURCES })
-        .getCount(),
-      repo
-        .createQueryBuilder("m")
-        .select("COALESCE(SUM(m.totalPool), 0)", "sum")
-        .where("m.status = :s", { s: MarketStatus.OPEN })
-        .andWhere(excludeAuto, { auto: AUTO_SOURCES })
-        .getRawOne<{ sum: string }>(),
-    ]);
+    const [activeMarkets, unsettledMarkets, poolRow, bettorRows] =
+      await Promise.all([
+        repo
+          .createQueryBuilder("m")
+          .where("m.status = :s", { s: MarketStatus.OPEN })
+          .andWhere(excludeAuto, { auto: AUTO_SOURCES })
+          .getCount(),
+        // "Unsettled" = betting has stopped but the result isn't in yet: markets
+        // waiting to be resolved. (Once resolved, payout runs in the same step.)
+        repo
+          .createQueryBuilder("m")
+          .where("m.status IN (:...st)", {
+            st: [MarketStatus.CLOSED, MarketStatus.RESOLVING],
+          })
+          .andWhere(excludeAuto, { auto: AUTO_SOURCES })
+          .getCount(),
+        repo
+          .createQueryBuilder("m")
+          .select("COALESCE(SUM(m.totalPool), 0)", "sum")
+          .where("m.status = :s", { s: MarketStatus.OPEN })
+          .andWhere(excludeAuto, { auto: AUTO_SOURCES })
+          .getRawOne<{ sum: string }>(),
+        // How many real people have ever placed a prediction, and how many still
+        // are. Registered users is a vanity number next to this one — signing up
+        // is free, staking money is not.
+        //
+        // Deliberately NOT filtered by `excludeAuto` like the market counts
+        // above. Those exclude BTC/TER because a ticker that opens and settles
+        // every few minutes makes a *market count* meaningless. A person who only
+        // ever bet on BTC is still a person who bet — 56 of the 1,286 are exactly
+        // that, and dropping them would answer a different question than the one
+        // the tile asks.
+        //
+        // Counted over `positions`, so it is people who bet, not people who
+        // opened the app. Positions are hard-deleted when a market is cancelled,
+        // so someone whose only bet was refunded out of existence falls off the
+        // count; the alternative is a soft-delete flag, which is a schema change
+        // for a dashboard tile.
+        this.dataSource.query(
+          `SELECT COUNT(DISTINCT "userId")::int AS total,
+                COUNT(DISTINCT "userId") FILTER (
+                  WHERE "placedAt" >= NOW() - INTERVAL '30 days'
+                )::int AS active30d
+           FROM positions`,
+        ) as Promise<{ total: number; active30d: number }[]>,
+      ]);
     return {
       activeMarkets,
       unsettledMarkets,
       totalPoolVolume: Number(poolRow?.sum ?? 0),
+      totalBettors: Number(bettorRows?.[0]?.total ?? 0),
+      activeBettors30d: Number(bettorRows?.[0]?.active30d ?? 0),
     };
   }
 
@@ -894,42 +906,12 @@ export class AdminController {
     return { deleted: count };
   }
 
-  // Must stay above `markets/:id` — Nest matches in declaration order, so a
-  // literal segment declared after the param route is swallowed by it.
-  @Get("markets/stats")
-  @ApiOperation({ summary: "Dashboard counters: active, unsettled, pool volume" })
-  async getMarketStats() {
-    const marketRepo = this.dataSource.getRepository(Market);
-    const [activeMarkets, unsettledMarkets, poolRow] = await Promise.all([
-      marketRepo.count({ where: { status: MarketStatus.OPEN } }),
-      // Trading is over but money hasn't been paid out yet.
-      marketRepo.count({
-        where: [
-          { status: MarketStatus.CLOSED },
-          { status: MarketStatus.RESOLVING },
-          { status: MarketStatus.RESOLVED },
-        ],
-      }),
-      marketRepo
-        .createQueryBuilder("m")
-        .select("COALESCE(SUM(m.totalPool), 0)", "total")
-        .where("m.status != :cancelled", {
-          cancelled: MarketStatus.CANCELLED,
-        })
-        .getRawOne<{ total: string }>(),
-    ]);
-
-    return {
-      activeMarkets,
-      unsettledMarkets,
-      totalPoolVolume: Number(poolRow?.total ?? 0),
-    };
-  }
-
   @Get("markets/:id")
   @ApiOperation({ summary: "Get market details" })
-  getMarket(@Param("id", ParseUUIDPipe) id: string) {
-    return this.marketsService.findOne(id);
+  async getMarket(@Param("id", ParseUUIDPipe) id: string) {
+    const market = await this.marketsService.findOne(id);
+    await attachParticipationTo(this.dataSource, [market]);
+    return market;
   }
 
   @Patch("markets/:id")
@@ -964,8 +946,7 @@ export class AdminController {
 
   @Post("markets/:id/outcomes")
   @ApiOperation({
-    summary:
-      "Add a new outcome to a market (allowed while Upcoming or Open)",
+    summary: "Add a new outcome to a market (allowed while Upcoming or Open)",
   })
   async addOutcome(
     @Param("id") id: string,
@@ -1373,6 +1354,14 @@ export class AdminController {
     const market = await this.marketsService.findOne(id);
     const totalPool = Number(market.totalPool);
     const houseEdge = Number(market.houseEdgePct);
+    const participation = (
+      await fetchMarketParticipation(this.dataSource, [id])
+    ).get(id) ?? {
+      bettorCount: 0,
+      betCount: 0,
+      byOutcome: {} as Record<string, number>,
+      poolCurrency: "BTN",
+    };
     return {
       marketId: id,
       title: market.title,
@@ -1381,6 +1370,12 @@ export class AdminController {
       houseEdgePct: houseEdge,
       houseAmount: totalPool * (houseEdge / 100),
       payoutPool: totalPool * (1 - houseEdge / 100),
+      poolCurrency: participation.poolCurrency,
+      // Distinct people in the market. Deliberately NOT the sum of the
+      // per-outcome counts below — someone hedging across three outcomes is
+      // one person here and appears under all three there.
+      bettorCount: participation.bettorCount,
+      betCount: participation.betCount,
       outcomes: market.outcomes.map((o) => ({
         id: o.id,
         label: o.label,
@@ -1390,6 +1385,7 @@ export class AdminController {
           totalPool > 0
             ? ((Number(o.totalBetAmount) / totalPool) * 100).toFixed(2) + "%"
             : "0%",
+        bettorCount: participation.byOutcome[o.id] ?? 0,
         isWinner: o.isWinner,
       })),
     };
@@ -1470,10 +1466,7 @@ export class AdminController {
       .createQueryBuilder("u")
       .select("u.reputationTier", "tier")
       .addSelect("COUNT(*)", "count")
-      .addSelect(
-        'COUNT(*) FILTER (WHERE u."totalPredictions" > 0)',
-        "ranked",
-      )
+      .addSelect('COUNT(*) FILTER (WHERE u."totalPredictions" > 0)', "ranked")
       .groupBy("u.reputationTier")
       .getRawMany<{ tier: string | null; count: string; ranked: string }>();
 
@@ -2158,9 +2151,7 @@ export class AdminController {
         accountName: bank.accountName,
         verified: bank.verified,
         cid: reveal ? bank.cid : mask(bank.cid),
-        accountNumber: reveal
-          ? bank.accountNumber
-          : mask(bank.accountNumber),
+        accountNumber: reveal ? bank.accountNumber : mask(bank.accountNumber),
         masked: !reveal,
       },
       books: Object.values(books),
@@ -2481,7 +2472,7 @@ export class AdminController {
         AND p.status = 'pending'
     `,
       )
-      .then((r: any[]) => parseFloat(r[0].total))
+      .then((r: any[]) => parseFloat(r[0].total));
 
     const totalDeposits = Number(depositRow.total);
     const depositCount = Number(depositRow.count);
@@ -2553,7 +2544,7 @@ export class AdminController {
       AS total
     `,
       )
-      .then((r: any[]) => parseFloat(r[0].total))
+      .then((r: any[]) => parseFloat(r[0].total));
 
     const totalBonusIssuedRow = await em
       .getRepository(Transaction)
@@ -2751,7 +2742,10 @@ export class AdminController {
     // Server-side search across id, username, first name and note so it spans
     // the whole ledger — not just the rows on the current page.
     if (search && search.trim()) {
-      const safe = search.trim().toLowerCase().replace(/[%_\\]/g, "\\$&");
+      const safe = search
+        .trim()
+        .toLowerCase()
+        .replace(/[%_\\]/g, "\\$&");
       const term = `%${safe}%`;
       qb.andWhere(
         `(
@@ -2808,12 +2802,11 @@ export class AdminController {
   }
 
   @Get("transactions/export")
-  @ApiOperation({ summary: "Export transactions as CSV — full financial ledger" })
+  @ApiOperation({
+    summary: "Export transactions as CSV — full financial ledger",
+  })
   @ApiQuery({ name: "type", required: false })
-  async exportTransactions(
-    @Res() res: Response,
-    @Query("type") type?: string,
-  ) {
+  async exportTransactions(@Res() res: Response, @Query("type") type?: string) {
     const qb = this.transactionRepo
       .createQueryBuilder("t")
       .leftJoinAndSelect("t.user", "user")
@@ -3360,7 +3353,9 @@ export class AdminController {
   // auto-creates these once the season is underway; both share the same builder
   // (epl-stat-markets.ts). The Stats tab overlays betting via the subcategory.
   @Get("epl/stat-market/preview")
-  @ApiOperation({ summary: "Live EPL leaderboards + which stat markets already exist" })
+  @ApiOperation({
+    summary: "Live EPL leaderboards + which stat markets already exist",
+  })
   async previewEplStatMarkets() {
     const [stats, season] = await Promise.all([
       this.eplService.getStats(),
@@ -3382,7 +3377,9 @@ export class AdminController {
   }
 
   @Post("epl/stat-market")
-  @ApiOperation({ summary: "Create a season stat market from the live leaderboard" })
+  @ApiOperation({
+    summary: "Create a season stat market from the live leaderboard",
+  })
   async createEplStatMarket(
     @Body() body: { stat?: string; closesAt?: string; topN?: number },
     @Request() req: any,
@@ -3390,7 +3387,9 @@ export class AdminController {
     const stat = body?.stat as EplStatKey;
     const meta = EPL_STAT_MARKET_META[stat];
     if (!meta) {
-      throw new BadRequestException("stat must be one of: goals, assists, yellow, red");
+      throw new BadRequestException(
+        "stat must be one of: goals, assists, yellow, red",
+      );
     }
 
     // Safety: during the summer gap the boards show LAST season's data via the
@@ -3437,7 +3436,12 @@ export class AdminController {
       action: AuditAction.MARKET_CREATE,
       entityType: "market",
       entityId: market.id,
-      after: { title: market.title, subcategory: meta.subcategory, outcomes: players.length, closesAt: dto.closesAt },
+      after: {
+        title: market.title,
+        subcategory: meta.subcategory,
+        outcomes: players.length,
+        closesAt: dto.closesAt,
+      },
       ipAddress: req.ip,
     });
     return market;
@@ -3449,7 +3453,9 @@ export class AdminController {
   // have a free-tier CL data source, so the yellow/red boards come back empty and
   // their buttons stay disabled until a data source exists.
   @Get("ucl/stat-market/preview")
-  @ApiOperation({ summary: "Live UCL leaderboards + which stat markets already exist" })
+  @ApiOperation({
+    summary: "Live UCL leaderboards + which stat markets already exist",
+  })
   async previewUclStatMarkets() {
     const [stats, season] = await Promise.all([
       this.uclService.getStats(),
@@ -3471,7 +3477,9 @@ export class AdminController {
   }
 
   @Post("ucl/stat-market")
-  @ApiOperation({ summary: "Create a season stat market from the live leaderboard" })
+  @ApiOperation({
+    summary: "Create a season stat market from the live leaderboard",
+  })
   async createUclStatMarket(
     @Body() body: { stat?: string; closesAt?: string; topN?: number },
     @Request() req: any,
@@ -3479,7 +3487,9 @@ export class AdminController {
     const stat = body?.stat as UclStatKey;
     const meta = UCL_STAT_MARKET_META[stat];
     if (!meta) {
-      throw new BadRequestException("stat must be one of: goals, assists, yellow, red");
+      throw new BadRequestException(
+        "stat must be one of: goals, assists, yellow, red",
+      );
     }
 
     // Safety: outside the season the boards show LAST season's data via the
@@ -3525,7 +3535,12 @@ export class AdminController {
       action: AuditAction.MARKET_CREATE,
       entityType: "market",
       entityId: market.id,
-      after: { title: market.title, subcategory: meta.subcategory, outcomes: players.length, closesAt: dto.closesAt },
+      after: {
+        title: market.title,
+        subcategory: meta.subcategory,
+        outcomes: players.length,
+        closesAt: dto.closesAt,
+      },
       ipAddress: req.ip,
     });
     return market;
@@ -3664,7 +3679,12 @@ export class AdminController {
       action: AuditAction.MARKET_TRANSITION,
       entityType: "stat_board_override",
       entityId: id,
-      before: { league: row.league, board: row.board, player: row.player, value: row.value },
+      before: {
+        league: row.league,
+        board: row.board,
+        player: row.player,
+        value: row.value,
+      },
       ipAddress: req.ip,
     });
     return { deleted: true };
@@ -3779,7 +3799,9 @@ export class AdminController {
   }
 
   @Patch("markets/books/:bookId")
-  @ApiOperation({ summary: "Change a book's terms — refused once it has stakes" })
+  @ApiOperation({
+    summary: "Change a book's terms — refused once it has stakes",
+  })
   async updateMarketBook(
     @Request() req: any,
     @Param("bookId") bookId: string,
