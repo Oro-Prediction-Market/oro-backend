@@ -353,6 +353,29 @@ export class User {
   emailVerifiedAt: Date | null;
 
   /**
+   * When this user accepted the platform consent.
+   *
+   * Null means they have never accepted — either they are new, or they
+   * declined — and the apps block them behind the consent form until it is
+   * set. Nothing recorded consent before this column existed: the Telegram
+   * signup wizard asked for it in component state and discarded it, and the
+   * PWA never asked at all.
+   */
+  @Column({ type: "timestamptz", nullable: true })
+  consentedAt: Date | null;
+
+  /**
+   * Which version of the consent text was accepted.
+   *
+   * "0" marks a row grandfathered by the migration that introduced these
+   * columns — those users were treated as consented without having read
+   * anything, and must stay distinguishable from someone who actually pressed
+   * the button.
+   */
+  @Column({ type: "varchar", length: 16, nullable: true })
+  consentVersion: string | null;
+
+  /**
    * Running total of bonus (free-credit) balance still in play.
    * Incremented when FREE_CREDIT is granted; decremented when bonus bets settle.
    * Used to enforce the Nu 50 withdrawable cap on bonus winnings.

@@ -663,6 +663,10 @@ export class UsersController {
         "dkPhoneHash",
         "telegramPhoneHash",
         "dkLinkVerifiedAt",
+        // platform consent — the apps block on a null consentedAt, so this
+        // must be selected or every user is gated out of the app
+        "consentedAt",
+        "consentVersion",
       ],
     });
 
@@ -757,6 +761,35 @@ export class UsersController {
     if (unique.length > 3) throw new BadRequestException("Choose up to three achievements");
     await this.userRepo.update(req.user.userId, { featuredAchievementIds: unique });
     return { featuredAchievementIds: unique };
+  }
+
+  /**
+   * Record that this user accepted the platform consent.
+   *
+   * The version is stored alongside the timestamp so a later change to the
+   * consent text can tell who agreed to what. Writing it again simply moves the
+   * timestamp — re-accepting is not an error.
+   */
+  @Post("me/consent")
+  @HttpCode(200)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Record the caller's acceptance of the platform consent" })
+  async recordConsent(@Request() req: any, @Body() body: { version?: unknown }) {
+    const version =
+      typeof body?.version === "string" ? body.version.trim().slice(0, 16) : "";
+    if (!version) throw new BadRequestException("A consent version is required");
+    // "0" is reserved for rows the migration grandfathered in; a client must
+    // never be able to claim it, or a real acceptance becomes indistinguishable
+    // from one that was assumed.
+    if (version === "0") throw new BadRequestException("Invalid consent version");
+
+    const consentedAt = new Date();
+    await this.userRepo.update(req.user.userId, {
+      consentedAt,
+      consentVersion: version,
+    });
+    return { consentedAt: consentedAt.toISOString(), consentVersion: version };
   }
 
   @Get("profiles/:id")
