@@ -17,15 +17,28 @@
  */
 
 /**
- * Numeric id of the PRODUCTION Oro bot — the part of TELEGRAM_BOT_TOKEN before
- * the colon. This is the bot's public user id, not a secret; the secret is
- * everything after the colon and never appears here.
+ * Numeric ids of bots that are known NOT to be production — the part of
+ * TELEGRAM_BOT_TOKEN before the colon, which is the bot's public user id and
+ * not a secret.
+ *
+ * An allowlist of development bots rather than a denylist naming the production
+ * one, because the two fail in opposite directions. A denylist has to recognise
+ * the production token to stop it, so an UNKNOWN token — which is what the real
+ * production token looks like on a machine that was never meant to have it —
+ * sails through as "probably a test bot". This list fails the other way: a token
+ * nobody registered here is refused, and the cost of being wrong is a developer
+ * adding one line, not 2,199 people getting a DM.
  *
  * Hardcoded in source on purpose. Every environment-variable guard in this repo
- * can be defeated by a stale line in someone's `.env` — which is precisely the
- * shape of the September incident. Source cannot.
+ * can be defeated by a stale line in someone's `.env` — precisely the shape of
+ * the September incident. Source cannot.
+ *
+ * To add a bot: get its token from BotFather, take the digits before the colon,
+ * add it here with the @username in the comment.
  */
-const PROD_BOT_ID = "8924901746";
+const NON_PRODUCTION_BOT_IDS = new Set<string>([
+  "8924901746", // @betmahind_bot — "Bet machine", shared development bot
+]);
 
 export type FanOutVerdict =
   /** The production cluster. Send to everyone. */
@@ -75,16 +88,18 @@ export function evaluateFanOut(
     return { allowed: true, mode: "live" };
   }
 
-  if (botId && botId !== PROD_BOT_ID) {
+  if (botId && NON_PRODUCTION_BOT_IDS.has(botId)) {
     return { allowed: true, mode: "test", maxRecipients: TEST_MODE_MAX_RECIPIENTS };
   }
 
   return {
     allowed: false,
     reason:
-      "Broadcast fan-out is disabled outside the production cluster while the " +
-      "production bot token is configured. To exercise this locally, put a " +
-      "BotFather test-bot token in TELEGRAM_BOT_TOKEN.",
+      "Broadcast fan-out is disabled outside the production cluster unless the " +
+      "configured bot is a known development bot. Either this is the production " +
+      "token on a machine that should not send to real users, or it is a new " +
+      "test bot that needs adding to NON_PRODUCTION_BOT_IDS in " +
+      "broadcast-guard.util.ts.",
   };
 }
 

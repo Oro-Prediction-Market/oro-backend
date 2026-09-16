@@ -18,47 +18,59 @@ import {
 } from "../shared/utils/broadcast-guard.util";
 import { isPermanentDeliveryFailure } from "../shared/utils/announcement-stats.util";
 
-const PROD_BOT = "8924901746";
-const TEST_BOT = "1234567890";
+/** A registered development bot: @betmahind_bot, in NON_PRODUCTION_BOT_IDS. */
+const DEV_BOT = "8924901746";
+/**
+ * An id the allowlist has never heard of.
+ *
+ * This is what the REAL production token looks like to the guard on a machine
+ * that should not have it — and the case an earlier version of this guard got
+ * backwards, waving it through as "probably a test bot".
+ */
+const UNKNOWN_BOT = "1234567890";
 
 describe("evaluateFanOut — the dev-laptop guard", () => {
   it("allows the production cluster", () => {
     expect(
       evaluateFanOut({
-        TELEGRAM_BOT_TOKEN: `${PROD_BOT}:secret`,
+        TELEGRAM_BOT_TOKEN: `${UNKNOWN_BOT}:secret`,
         NODE_ENV: "production",
         KUBERNETES_SERVICE_HOST: "10.0.0.1",
       } as any),
     ).toEqual({ allowed: true, mode: "live" });
   });
 
-  it("REFUSES a laptop running the prod image with the prod token", () => {
-    // The case that matters. NODE_ENV=production is baked into Dockerfile:36, so
-    // it is true for anyone running that image locally — which is exactly what a
-    // developer does when chasing a production bug. Without the cluster check
-    // this would have been allowed.
-    const v = evaluateFanOut({
-      TELEGRAM_BOT_TOKEN: `${PROD_BOT}:secret`,
-      NODE_ENV: "production",
-    } as any);
-    expect(v.allowed).toBe(false);
-  });
-
-  it("refuses a plain dev machine holding the prod token", () => {
+  it("REFUSES an unrecognised token outside the cluster", () => {
+    // The case the guard exists for, and the one an earlier version got exactly
+    // backwards. An unknown bot id is what the real production token looks like
+    // on a machine that should not have it, so unknown must mean refuse. A
+    // denylist naming the production bot fails open here.
     expect(
       evaluateFanOut({
-        TELEGRAM_BOT_TOKEN: `${PROD_BOT}:secret`,
+        TELEGRAM_BOT_TOKEN: `${UNKNOWN_BOT}:secret`,
         NODE_ENV: "development",
       } as any).allowed,
     ).toBe(false);
   });
 
-  it("allows a test bot, capped — Telegram bounds the rest", () => {
-    // A bot cannot open a conversation with someone who never started it, so the
-    // real audience is the developer themselves.
+  it("REFUSES an unrecognised token even when NODE_ENV says production", () => {
+    // NODE_ENV=production is baked into the image at Dockerfile:36, so it is
+    // true for anyone running that image locally — which is what a developer
+    // does when chasing a production bug. Only the cluster check separates them.
     expect(
       evaluateFanOut({
-        TELEGRAM_BOT_TOKEN: `${TEST_BOT}:secret`,
+        TELEGRAM_BOT_TOKEN: `${UNKNOWN_BOT}:secret`,
+        NODE_ENV: "production",
+      } as any).allowed,
+    ).toBe(false);
+  });
+
+  it("allows a registered development bot, capped", () => {
+    // Telegram will not let a bot open a conversation with someone who never
+    // started it, so the real audience is the developer themselves.
+    expect(
+      evaluateFanOut({
+        TELEGRAM_BOT_TOKEN: `${DEV_BOT}:secret`,
         NODE_ENV: "development",
       } as any),
     ).toEqual({
@@ -72,12 +84,18 @@ describe("evaluateFanOut — the dev-laptop guard", () => {
     expect(evaluateFanOut({ NODE_ENV: "development" } as any).allowed).toBe(false);
   });
 
+  it("refuses a malformed token rather than reading a blank id as known", () => {
+    expect(
+      evaluateFanOut({ TELEGRAM_BOT_TOKEN: ":secret", NODE_ENV: "dev" } as any).allowed,
+    ).toBe(false);
+  });
+
   it("is not defeated by an env flag, because there isn't one", () => {
     // Guarding the guard: a future ALLOW_BROADCAST left set in someone's .env is
     // the same failure that caused the September incident.
     expect(
       evaluateFanOut({
-        TELEGRAM_BOT_TOKEN: `${PROD_BOT}:secret`,
+        TELEGRAM_BOT_TOKEN: `${UNKNOWN_BOT}:secret`,
         NODE_ENV: "development",
         ALLOW_BROADCAST: "true",
         BROADCAST_ENABLED: "1",
@@ -223,7 +241,7 @@ function makeService(opts: {
   const redis = { redis: {} };
 
   const env = {
-    TELEGRAM_BOT_TOKEN: `${TEST_BOT}:secret`,
+    TELEGRAM_BOT_TOKEN: `${DEV_BOT}:secret`,
     NODE_ENV: "development",
     ...(opts.env ?? {}),
   };
@@ -267,7 +285,7 @@ describe("AnnouncementsService.send", () => {
 
   it("refuses and records the attempt when the guard says no", async () => {
     const h = makeService({
-      env: { TELEGRAM_BOT_TOKEN: `${PROD_BOT}:s`, NODE_ENV: "development" },
+      env: { TELEGRAM_BOT_TOKEN: `${UNKNOWN_BOT}:s`, NODE_ENV: "development" },
     });
     restore = h.restoreEnv;
 
@@ -410,7 +428,7 @@ describe("AnnouncementsService.send", () => {
 
   it("caps the audience in test mode", async () => {
     const h = makeService({
-      env: { TELEGRAM_BOT_TOKEN: `${TEST_BOT}:s`, NODE_ENV: "development" },
+      env: { TELEGRAM_BOT_TOKEN: `${DEV_BOT}:s`, NODE_ENV: "development" },
     });
     restore = h.restoreEnv;
     await h.svc.send({ ...BASE });
