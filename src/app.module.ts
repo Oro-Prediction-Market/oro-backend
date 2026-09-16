@@ -59,6 +59,7 @@ import { FreeCall } from "./entities/free-call.entity";
 import { MarketSuggestion } from "./entities/market-suggestion.entity";
 import { MarketSuggestionVote } from "./entities/market-suggestion-vote.entity";
 import { CommentsModule } from "./comments/comments.module";
+import { ShareModule } from "./share/share.module";
 import { MarketComment } from "./entities/market-comment.entity";
 import { MarketCommentFlag } from "./entities/market-comment-flag.entity";
 import { MarketCommentLike } from "./entities/market-comment-like.entity";
@@ -198,6 +199,7 @@ import { FriendlyThrottlerGuard } from "./shared/guards/friendly-throttler.guard
     AmlModule,
     SuggestionsModule,
     CommentsModule,
+    ShareModule,
     EplModule,
     UclModule,
     FeedbackModule,
