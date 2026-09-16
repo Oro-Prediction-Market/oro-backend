@@ -30,6 +30,13 @@ export enum AuditAction {
   PAYMENT_VIEW = "payment.view",
   DUEL_VOID = "duel.void", // call a stuck duel off and refund both wagers
 
+  // Admin broadcasts. BLOCKED is logged as well as the send: the guard refusing
+  // means a non-production machine holding the production bot token tried to
+  // message every user, and that is worth a permanent record.
+  ANNOUNCEMENT_BROADCAST = "announcement.broadcast",
+  ANNOUNCEMENT_BLOCKED = "announcement.blocked",
+  ANNOUNCEMENT_RETRACT = "announcement.retract",
+
   // User management
   USER_ADMIN_TOGGLE = "user.admin_toggle",
   USER_VIEW = "user.view",

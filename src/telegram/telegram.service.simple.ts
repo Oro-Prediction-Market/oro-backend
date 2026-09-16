@@ -19,6 +19,22 @@ export interface InlineButton {
   callbackData?: string;
 }
 
+/**
+ * The outcome of a send, for callers that have to count deliveries.
+ *
+ * `code` is Telegram's `error_code` when it gave one. Its absence means the call
+ * never reached Telegram (a network error), which is retryable — whereas a 403
+ * is Telegram telling you this user has blocked the bot, and never will not be.
+ */
+export interface SendResult {
+  ok: boolean;
+  status?: number;
+  code?: number;
+  description?: string;
+  /** Seconds Telegram asked us to wait, on a 429. */
+  retryAfter?: number;
+}
+
 @Injectable()
 export class TelegramSimpleService {
   private readonly logger = new Logger(TelegramSimpleService.name);
@@ -154,6 +170,71 @@ export class TelegramSimpleService {
       this.logger.error(
         `Failed to send message to chat ${chatId}: ${error.message}`,
       );
+    }
+  }
+
+  /**
+   * Like {@link sendMessage}, but REPORTS what happened.
+   *
+   * `sendMessage` returns void on every outcome, which is right for the ~15
+   * fire-and-forget callers that must not fail because Telegram hiccuped — and
+   * useless for a broadcast, where "1,809 delivered, 31 failed" is the whole
+   * point. Rather than change a contract that much of the codebase relies on,
+   * this is a sibling.
+   *
+   * Still does not throw. The caller decides what is terminal and what is worth
+   * retrying, because that decision differs: a 403 means the user blocked the
+   * bot and no amount of retrying will help, while a 429 just means slow down.
+   */
+  async sendMessageChecked(
+    chatId: number | string,
+    text: string,
+    buttons?: InlineButton[][],
+  ): Promise<SendResult> {
+    try {
+      const url = `https://api.telegram.org/bot${this.botToken}/sendMessage`;
+      const payload: Record<string, unknown> = {
+        chat_id: chatId,
+        text,
+        parse_mode: "HTML",
+        disable_web_page_preview: false,
+      };
+      if (buttons?.length) {
+        payload.reply_markup = {
+          inline_keyboard: buttons.map((row) =>
+            row.map((btn) => ({
+              text: btn.text,
+              ...(btn.url ? { url: btn.url } : {}),
+              ...(btn.callbackData ? { callback_data: btn.callbackData } : {}),
+            })),
+          ),
+        };
+      }
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const body: any = await res.json().catch(() => null);
+      if (!res.ok || !body?.ok) {
+        return {
+          ok: false,
+          status: res.status,
+          // Telegram's own machine-readable code, e.g. 403 for "bot was blocked
+          // by the user". More reliable than the HTTP status for classification.
+          code: typeof body?.error_code === "number" ? body.error_code : res.status,
+          description:
+            typeof body?.description === "string" ? body.description : undefined,
+          retryAfter:
+            typeof body?.parameters?.retry_after === "number"
+              ? body.parameters.retry_after
+              : undefined,
+        };
+      }
+      return { ok: true };
+    } catch (error: any) {
+      // A network error, not a Telegram verdict — worth retrying, so no code.
+      return { ok: false, description: error?.message ?? "network error" };
     }
   }
 

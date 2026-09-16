@@ -17,6 +17,7 @@ import { Challenge } from "../entities/challenge.entity";
 import { Settlement } from "../entities/settlement.entity";
 import { Position } from "../entities/position.entity";
 import { AuthMethod } from "../entities/auth-method.entity";
+import { Announcement } from "../entities/announcement.entity";
 import { MarketsModule } from "../markets/markets.module";
 import { RedisModule } from "../redis/redis.module";
 import { UsersModule } from "../users/users.module";
@@ -34,6 +35,7 @@ import { UsersModule } from "../users/users.module";
       Settlement,
       Position,
       AuthMethod,
+      Announcement,
     ]),
     forwardRef(() => MarketsModule),
     RedisModule,

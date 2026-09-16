@@ -1,5 +1,12 @@
 import { Module } from "@nestjs/common";
+import { BullModule } from "@nestjs/bullmq";
 import { TypeOrmModule } from "@nestjs/typeorm";
+import { Announcement } from "../entities/announcement.entity";
+import { NOTIFICATION_QUEUE } from "../jobs/notification.queue";
+import { RedisModule } from "../redis/redis.module";
+import { UsersModule } from "../users/users.module";
+import { AnnouncementsController } from "./announcements.controller";
+import { AnnouncementsService } from "./announcements.service";
 import { Settlement } from "../entities/settlement.entity";
 import { Dispute } from "../entities/dispute.entity";
 import { Position } from "../entities/position.entity";
@@ -29,9 +36,16 @@ import { InsightsModule } from "../insights/insights.module";
       Payment,
       Transaction,
       AuditLog,
+      Announcement,
     ]),
+    // Announcement DMs ride the same rate-limited queue as settlement DMs, so
+    // the two share Telegram's ~30/s budget instead of competing for it.
+    BullModule.registerQueue({ name: NOTIFICATION_QUEUE }),
+    RedisModule,
     MarketsModule,
     TelegramModule,
+    // For UserNotificationService — announcements write the in-app bell rows.
+    UsersModule,
     EplModule,
     UclModule,
     StatOverridesModule,
@@ -43,8 +57,8 @@ import { InsightsModule } from "../insights/insights.module";
     // numbers rather than keeping its own copy of the query.
     InsightsModule,
   ],
-  controllers: [AdminController],
-  providers: [FixturesService, AuditService],
+  controllers: [AdminController, AnnouncementsController],
+  providers: [FixturesService, AuditService, AnnouncementsService],
   exports: [AuditService],
 })
 export class AdminModule {}

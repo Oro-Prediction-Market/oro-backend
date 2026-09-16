@@ -25,6 +25,10 @@ describe("NotificationProcessor", () => {
     processor = new NotificationProcessor(
       mockTelegram as any,
       mockBhutanApp as any,
+      // Announcement jobs need Redis counters and the announcements row; the
+      // job types tested here touch neither.
+      { redis: {} } as any,
+      { update: jest.fn() } as any,
     );
   });
 

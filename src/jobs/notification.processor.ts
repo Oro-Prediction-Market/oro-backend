@@ -11,9 +11,21 @@ import {
   DailyCreditJobData,
   SettlementNotifyJobData,
   BhutanAppNotifyJobData,
+  AnnouncementDmJobData,
+  AnnouncementFinalizeJobData,
 } from "./notification.queue";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import { BhutanAppNotificationService } from "../shared/services/bhutanapp-notification.service";
+import { InjectRepository } from "@nestjs/typeorm";
+import { Repository } from "typeorm";
+import { Announcement } from "../entities/announcement.entity";
+import { RedisService } from "../redis/redis.service";
+import {
+  isPermanentDeliveryFailure,
+  readCounters,
+  readErrorSamples,
+  recordOutcome,
+} from "../shared/utils/announcement-stats.util";
 
 @Processor(NOTIFICATION_QUEUE, {
   // Drain jobs in parallel (was default 1 → hours of settlement-DM backlog at a
@@ -30,6 +42,9 @@ export class NotificationProcessor extends WorkerHost {
   constructor(
     private readonly telegram: TelegramSimpleService,
     private readonly bhutanApp: BhutanAppNotificationService,
+    private readonly redis: RedisService,
+    @InjectRepository(Announcement)
+    private readonly announcementRepo: Repository<Announcement>,
   ) {
     super();
   }
@@ -132,8 +147,147 @@ export class NotificationProcessor extends WorkerHost {
         break;
       }
 
+      case JobName.ANNOUNCEMENT_DM: {
+        const data = job.data as AnnouncementDmJobData;
+        // sendMessageChecked rather than sendMessage: a broadcast has to be able
+        // to report "1,809 delivered, 31 failed", and sendMessage returns void
+        // on every outcome.
+        const res = await this.telegram.sendMessageChecked(
+          data.telegramChatId,
+          data.message,
+        );
+
+        if (res.ok) {
+          await this.afterOutcome(job, data.announcementId, "sent");
+          break;
+        }
+
+        if (isPermanentDeliveryFailure(res)) {
+          // The user blocked the bot or never started it. Retrying spends the
+          // shared rate limit that reachable users are queued behind.
+          await this.afterOutcome(job, data.announcementId, "blocked", {
+            code: res.code,
+            description: res.description,
+          });
+          break;
+        }
+
+        // Retryable (429, 5xx, network). Throw so BullMQ backs off — but on the
+        // final attempt record it instead, or the `done` counter never reaches
+        // the total and the broadcast never finalises.
+        const attempts = job.opts?.attempts ?? 1;
+        if (job.attemptsMade + 1 >= attempts) {
+          await this.afterOutcome(job, data.announcementId, "failed", {
+            code: res.code,
+            description: res.description,
+          });
+          break;
+        }
+        throw new Error(
+          `announcement DM failed (code=${res.code ?? "?"}): ${res.description ?? "unknown"}`,
+        );
+      }
+
+      case JobName.ANNOUNCEMENT_FINALIZE: {
+        const data = job.data as AnnouncementFinalizeJobData;
+        await this.finalizeAnnouncement(data.announcementId, data.adminChatId);
+        break;
+      }
+
       default:
         this.logger.warn(`Unknown job name: ${job.name}`);
+    }
+  }
+
+  /**
+   * Record one DM's terminal outcome, and finalise if it was the last.
+   *
+   * "Last one out turns off the lights": HINCRBY is atomic, so exactly one of
+   * the concurrent jobs sees `done === total`. A delayed backstop job also
+   * exists in case a worker dies mid-flight and that moment never arrives.
+   */
+  private async afterOutcome(
+    job: Job,
+    announcementId: string,
+    field: "sent" | "blocked" | "failed",
+    sample?: { code?: number; description?: string },
+  ): Promise<void> {
+    const data = job.data as AnnouncementDmJobData & {
+      total?: number;
+      adminChatId?: number | null;
+    };
+    const done = await recordOutcome(
+      this.redis.redis,
+      announcementId,
+      field,
+      sample,
+    );
+    if (data.total && done >= data.total) {
+      await this.finalizeAnnouncement(announcementId, data.adminChatId ?? null);
+    }
+  }
+
+  /**
+   * Fold the Redis counters onto the row and tell the admin how it went.
+   *
+   * Idempotent by the same compare-and-swap the fan-out uses: only a row still
+   * in `sending` is moved on, so the backstop job and the last DM racing each
+   * other cannot both send the summary.
+   */
+  private async finalizeAnnouncement(
+    announcementId: string,
+    adminChatId: number | null,
+  ): Promise<void> {
+    const counters = await readCounters(this.redis.redis, announcementId);
+    const samples = await readErrorSamples(this.redis.redis, announcementId);
+
+    const byCode: Record<string, number> = {};
+    for (const s of samples) {
+      const k = String(s.code ?? "network");
+      byCode[k] = (byCode[k] ?? 0) + 1;
+    }
+
+    const status =
+      counters.failed > 0 ? "completed_with_failures" : "completed";
+
+    // Criteria include the current status, so this is a compare-and-swap: only a
+    // row still `sending` moves on. That is what stops the last DM and the
+    // backstop job — which can run at the same moment — both sending a summary.
+    const claimed = await this.announcementRepo.update(
+      { id: announcementId, status: "sending" },
+      {
+        status,
+        sentCount: counters.sent,
+        blockedCount: counters.blocked,
+        failedCount: counters.failed,
+        // Cast: TypeORM's partial-update typing rejects a plain object for a
+        // jsonb column — the same limitation noted on createOrRefresh in
+        // user-notification.service.ts, which works around it with save().
+        // Here the compare-and-swap needs update(), so the cast is the way out.
+        failureSummary: { byCode, samples: samples.slice(0, 10) } as any,
+        finishedAt: new Date(),
+      },
+    );
+
+    if (claimed.affected !== 1) return; // already finalised by the other racer
+
+    this.logger.log(
+      `[announcement.finalize] ${announcementId} sent=${counters.sent} blocked=${counters.blocked} failed=${counters.failed}`,
+    );
+
+    if (adminChatId) {
+      // The summary has to reach a human. A jsonb column nobody opens is not
+      // how anyone finds out half a broadcast failed.
+      const blockedNote = counters.blocked
+        ? ` ${counters.blocked} could not be reached (blocked the bot or never started it).`
+        : "";
+      const failedNote = counters.failed
+        ? ` <b>${counters.failed} genuinely failed.</b>`
+        : "";
+      await this.telegram.sendMessage(
+        adminChatId,
+        `Broadcast finished — <b>${counters.sent} delivered</b>.${blockedNote}${failedNote}`,
+      );
     }
   }
 }

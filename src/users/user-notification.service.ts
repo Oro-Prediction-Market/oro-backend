@@ -1,6 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { In, IsNull, Repository } from "typeorm";
+import { EntityManager, In, IsNull, Repository } from "typeorm";
 import { UserNotification } from "../entities/user-notification.entity";
 import { User } from "../entities/user.entity";
 
@@ -48,6 +48,65 @@ export class UserNotificationService {
         `Failed to create notification for ${userId}: ${err.message}`,
       );
     }
+  }
+
+  /**
+   * Insert one notification per user, in chunks.
+   *
+   * **Unlike every other method on this service, this one THROWS.** The rest
+   * swallow errors because a failed notification must not break the write that
+   * triggered it. Here the caller is a transaction that has to roll back: a
+   * broadcast which silently wrote half its rows would leave `audienceCount`
+   * claiming a number that never happened, and no way to tell which users were
+   * missed.
+   *
+   * Pass the transaction's `EntityManager` so the inserts join it. 500 rows per
+   * statement matches TX_CHUNK in parimutuel.engine.ts; at ~7 parameters a row
+   * that is roughly 19x under Postgres's 65,535-parameter ceiling, so the size
+   * is conservative by choice rather than by necessity. `insert()` does not
+   * chunk on its own (only `save()` takes a `chunk` option), hence the loop.
+   */
+  async createBulk(
+    manager: EntityManager,
+    rows: Array<{
+      userId: string;
+      type: string;
+      title: string;
+      body: string;
+      metadata?: Record<string, any> | null;
+    }>,
+  ): Promise<number> {
+    if (!rows.length) return 0;
+    const repo = manager.getRepository(UserNotification);
+    const CHUNK = 500;
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      await repo.insert(
+        rows.slice(i, i + CHUNK).map((r) => ({
+          userId: r.userId,
+          type: r.type,
+          title: r.title,
+          body: r.body,
+          metadata: r.metadata ?? null,
+        })),
+      );
+    }
+    return rows.length;
+  }
+
+  /**
+   * Delete every notification belonging to one broadcast.
+   *
+   * The only undo a broadcast has. The DMs are gone the moment they land, but
+   * the in-app half can still be taken back.
+   */
+  async removeByAnnouncement(announcementId: string): Promise<number> {
+    const res = await this.repo
+      .createQueryBuilder()
+      .delete()
+      .from(UserNotification)
+      .where("metadata->>'announcementId' = :id", { id: announcementId })
+      .execute();
+    return res.affected ?? 0;
   }
 
   /**

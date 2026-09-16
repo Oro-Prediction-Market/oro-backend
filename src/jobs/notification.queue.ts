@@ -8,6 +8,8 @@ export const JobName = {
   DAILY_CREDIT: "daily.credit",
   SETTLEMENT_NOTIFY: "settlement.notify",
   BHUTANAPP_NOTIFY: "bhutanapp.notify",
+  ANNOUNCEMENT_DM: "announcement.dm",
+  ANNOUNCEMENT_FINALIZE: "announcement.finalize",
 } as const;
 
 export interface PaymentSuccessJobData {
@@ -64,4 +66,27 @@ export interface BhutanAppNotifyJobData {
   externalUserId: string;
   title: string;
   body: string;
+}
+
+/**
+ * One DM of an admin broadcast.
+ *
+ * Enqueued with `priority: 10` so it yields to settlement and payment DMs: the
+ * 25/s limiter is shared by the whole queue, so 2,199 announcement jobs would
+ * otherwise sit in front of any market settling in the next ~88 seconds.
+ */
+export interface AnnouncementDmJobData {
+  announcementId: string;
+  telegramChatId: number;
+  message: string;
+}
+
+/**
+ * Written once after the DMs drain: folds the Redis counters onto the row so
+ * the admin history survives the counters expiring.
+ */
+export interface AnnouncementFinalizeJobData {
+  announcementId: string;
+  /** Chat id of the admin who sent it, for the summary DM. */
+  adminChatId: number | null;
 }
