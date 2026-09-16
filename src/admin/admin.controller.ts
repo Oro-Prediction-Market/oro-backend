@@ -2487,7 +2487,18 @@ export class AdminController {
     const payoutPool = Number(settlementRow.payoutPool);
     const totalPaidOut = Number(settlementRow.totalPaidOut);
     const settlementCount = Number(settlementRow.count);
-    const breakage = payoutPool - totalPaidOut;
+    // Unaccounted pool money: what went in, minus what went to winners, minus
+    // what the house booked. Zero by construction — the engine derives house
+    // revenue as exactly `totalPool - totalPaidOut` (see parimutuel.engine.ts),
+    // so anything non-zero here is a real leak.
+    //
+    // This was `payoutPool - totalPaidOut`, which only agrees when the 1.05x
+    // winner floor does not bind. `payoutPool` is the THEORETICAL post-rake
+    // figure, written before any edge is waived to fund that floor, so on a
+    // waived settlement totalPaidOut exceeds it and breakage went negative by
+    // the whole waived edge — inflating `expectedUserBalances` below and
+    // reporting `isBalanced: false` on a platform that balances exactly.
+    const breakage = totalPool - totalPaidOut - houseEarnings;
     const pendingBetsAmount = Number(pendingBetsRow.total);
     const pendingBetsCount = Number(pendingBetsRow.count);
     // Real-money pending bets (used in expected formula — matches totalRealBalance deduction)

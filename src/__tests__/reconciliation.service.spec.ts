@@ -171,6 +171,54 @@ describe("ReconciliationService.reconcileSettlement", () => {
     );
   });
 
+  it("MATCHES a scaled-down payout on an extremely concentrated market", async () => {
+    // The winning side holds 99% of the pool, so even a fully waived house edge
+    // cannot fund the 1.05x floor and the engine scales payouts down to the
+    // money actually in the pool: 990 × 1000/990 = 1000.
+    //
+    // The reconciler used to expect max(raw, stake × 1.05) = 1039.50 with no
+    // scale term, which would have marked this — and every other winner on such
+    // a market — as a MISMATCH. Every existing fixture sits at a 50% split, so
+    // nothing caught it.
+    const settlement = {
+      id: "s1",
+      marketId: "m1",
+      winningOutcomeId: "o1",
+      totalPool: 1000,
+      houseAmount: 0,
+      payoutPool: 920, // theoretical, pre-waiver (8% edge)
+      currency: "BTN",
+    };
+    const winningOutcome = { id: "o1", label: "Yes", totalBetAmount: 990 };
+    const position = { id: "pos-1", userId: "u1", amount: 990 };
+    const payoutTxn = { id: "tx-1", amount: 1000, balanceBefore: 0, balanceAfter: 1000 };
+
+    const settlementRepo = makeRepo([], settlement);
+    const marketRepo = makeRepo([], { id: "m1", title: "Concentrated", houseEdgePct: 8 });
+    const outcomeRepo = makeRepo([], winningOutcome);
+    const positionRepo = makeRepo([position]);
+    const userRepo = makeRepo([], { id: "u1", bonusBalance: 0 });
+    const transactionRepo = makeRepo([payoutTxn]);
+    transactionRepo.find
+      .mockResolvedValueOnce([payoutTxn])
+      .mockResolvedValueOnce([]);
+    const reconciliationRepo = makeRepo();
+    reconciliationRepo.save.mockImplementation((data: any) =>
+      Promise.resolve({ id: "recon-new", ...data }),
+    );
+
+    const svc = makeService({
+      settlementRepo, marketRepo, outcomeRepo, positionRepo,
+      userRepo, transactionRepo, reconciliationRepo,
+    });
+
+    await svc.reconcileSettlement("s1");
+
+    expect(reconciliationRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({ status: ReconciliationStatus.MATCHED }),
+    );
+  });
+
   it("creates MISMATCH reconciliation record when payout differs from expected", async () => {
     const settlement = {
       id: "s1",

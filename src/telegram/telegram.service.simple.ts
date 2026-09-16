@@ -277,12 +277,12 @@ export class TelegramSimpleService {
         `📊 <b>${marketTitle}</b>\n\n` +
         `This market didn't get enough participation to settle fairly. ` +
         `Your <b>Nu ${amount.toLocaleString()}</b> is back in your wallet.`;
-    } else if (reason === "payout_floor_underfunded") {
-      text =
-        `⚠️ <b>Market Refunded</b>\n\n` +
-        `📊 <b>${marketTitle}</b>\n\n` +
-        `The pool could not fund Oro's 1.05× minimum winning payout for every winner. ` +
-        `No house edge was deducted, and your <b>Nu ${amount.toLocaleString()}</b> is back in your wallet.`;
+      // NOTE: there is no `payout_floor_underfunded` branch any more. That
+      // refund no longer happens — when the pool cannot fund the 1.05× floor,
+      // settlement waives the house edge and pays the winners instead of
+      // refunding everyone. The reason string is kept on the union and on
+      // `Settlement.cancelReason` for the rows already written under the old
+      // behaviour, so historical data still reads correctly.
     } else {
       text =
         `⚠️ <b>Market Refunded</b>\n\n` +

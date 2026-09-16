@@ -175,7 +175,7 @@ All markets use the **Parimutuel** mechanism. LMSR is used only for real-time pr
 
 1. Compute total pool after house edge deduction: `payoutPool = totalPool × (1 − houseEdgePct/100)`.
 2. For each winning position, compute pro-rata share: `payout = (stake / winOutcomeTotalBet) × payoutPool`.
-3. Enforce the 1.05x floor only when it is funded by the post-rake payout pool. If `sum(winning stakes × 1.05) > payoutPool`, refund every position, deduct no house edge, and write `cancelReason: "payout_floor_underfunded"`.
+3. Raise each payout to the 1.05x floor where the pool allows, waiving house edge to fund it: the budget for winners is the whole pool, not just `payoutPool`. If `sum(winning stakes × 1.05)` exceeds even that, scale every payout down pro-rata so the total never exceeds the money in the pool. House revenue is then the residual, `totalPool − totalPaidOut`. See `markets/winner-payouts.ts`, which `ReconciliationService` shares so the checker cannot drift from the engine.
 4. Write a `PAYOUT` transaction (positive amount) per winner.
 5. Write a `Settlement` record linking market, position, and payout amount.
 6. Update `Position.status` → `won` or `lost`.

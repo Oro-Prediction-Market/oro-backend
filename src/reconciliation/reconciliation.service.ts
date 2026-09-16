@@ -12,6 +12,7 @@ import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { Market } from "../entities/market.entity";
 import { Outcome } from "../entities/outcome.entity";
 import { User } from "../entities/user.entity";
+import { computeWinnerPayouts } from "../markets/winner-payouts";
 import {
   accountCurrency,
   ledgerBalance,
@@ -90,15 +91,21 @@ export class ReconciliationService {
     const payoutPool = Number(settlement.payoutPool);
     const winnerPool = Number(winningOutcome?.totalBetAmount ?? 0);
 
-    for (const position of winningPositions) {
-      const expectedShare =
-        winnerPool > 0 ? Number(position.amount) / winnerPool : 0;
-      const rawExpectedPayout = parseFloat(
-        (payoutPool * expectedShare).toFixed(2),
-      );
-      const expectedPayout = parseFloat(
-        Math.max(rawExpectedPayout, Number(position.amount) * 1.05).toFixed(2),
-      );
+    // The expected payouts come from the same function the engine settles with,
+    // rather than being re-derived here. This used to apply the 1.05x floor but
+    // not the pro-rata scale-down, so on a market concentrated enough to need
+    // scaling the reconciler expected the unscaled figure and would have
+    // reported every winning position as a MISMATCH — silently, since every
+    // test fixture sits far below that threshold.
+    const expectedPayouts = computeWinnerPayouts({
+      stakes: winningPositions.map((p) => Number(p.amount)),
+      payoutPool,
+      totalPool,
+      currency: settlement.currency ?? "BTN",
+    }).payouts;
+
+    for (const [index, position] of winningPositions.entries()) {
+      const expectedPayout = expectedPayouts[index];
 
       // Check if bet was bonus-funded and apply cap
       const user = await this.userRepo.findOne({
@@ -185,7 +192,8 @@ export class ReconciliationService {
         betAmount: Number(position.amount),
         odds: payoutPool > 0 ? expectedPayout / Number(position.amount) : 0,
         houseEdge: Number(market?.houseEdgePct ?? 0),
-        winnerPoolShare: expectedShare,
+        winnerPoolShare:
+          winnerPool > 0 ? Number(position.amount) / winnerPool : 0,
         bonusCapped: betIsBonusFunded && expectedBonus > 0,
         transactionIds: [...payoutTxns, ...bonusTxns].map((t) => t.id),
       };

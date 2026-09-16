@@ -340,40 +340,6 @@ describe("ParimutuelEngine — thin-pool guard (settleMarket)", () => {
     expect(telegramSimple.sendMessage).not.toHaveBeenCalled();
   });
 
-  it("refunds when the 1.05x floor exceeds the post-rake payout pool", async () => {
-    const positions = [
-      mkPos("p1", "u1", "o-yes", 900),
-      mkPos("p2", "u2", "o-no", 100),
-    ];
-    const em = makeEm(positions);
-    const { engine, telegramSimple } = makeEngine(em);
-    const market = { ...mkMarket(1000), houseEdgePct: "8" };
-    const winner = { ...YES, totalBetAmount: "900" };
-
-    const [settlement] = await (engine as any).settleMarket(market, winner, new Map());
-
-    expect(settlement.cancelReason).toBe("payout_floor_underfunded");
-    expect(settlement.houseAmount).toBe(0);
-    expect(settlement.payoutPool).toBe(0);
-    expect(settlement.totalPaidOut).toBe(0);
-
-    const refundTxs = em._saved.filter(
-      ([, d]: any) => d?.type === TransactionType.REFUND,
-    );
-    expect(refundTxs).toHaveLength(2);
-    expect(refundTxs.map(([, d]: any) => d.amount).sort()).toEqual([100, 900]);
-
-    const payoutTxs = em._saved.filter(
-      ([, d]: any) => d?.type === TransactionType.POSITION_PAYOUT,
-    );
-    expect(payoutTxs).toHaveLength(0);
-    expect(telegramSimple.sendRefundNotification).toHaveBeenCalledWith(
-      111,
-      "Test Market",
-      900,
-      "payout_floor_underfunded",
-    );
-  });
 });
 
 // ─── Happy-path regression ────────────────────────────────────────────────────
@@ -419,6 +385,92 @@ describe("ParimutuelEngine — payout-floor funding guard (settleMarket)", () =>
     em._saved
       .filter(([, d]: any) => d?.type === TransactionType.POSITION_PAYOUT)
       .reduce((s: number, [, d]: any) => s + Number(d.amount), 0);
+
+  it("replays a real refunded market: every winner beats their stake, nobody is refunded", async () => {
+    // Market 0d032d11 from production, which the old guard refunded: Nu 360
+    // pool at a 10% edge with Nu 350 across three winners. Even a zero edge
+    // cannot fund 1.05x (that wants Nu 367.50), so payouts scale down — the
+    // one case where the floor is not met.
+    //
+    // The property that matters is not the exact multiple but that being right
+    // still beats being wrong: each winner must come out ABOVE their stake.
+    const positions = [
+      mkPos("p1", "u1", "o-yes", 200),
+      mkPos("p2", "u2", "o-yes", 100),
+      mkPos("p3", "u3", "o-yes", 50),
+      mkPos("p4", "u4", "o-no", 10),
+    ];
+    const em = makeEm(positions);
+    const { engine, telegramSimple } = makeEngine(em);
+    const market = { ...mkMarket(360), houseEdgePct: "10" };
+    const winner = { ...YES, totalBetAmount: "350" };
+
+    const [settlement] = await (engine as any).settleMarket(market, winner, new Map());
+
+    expect(settlement.cancelReason).toBeUndefined();
+    expect(telegramSimple.sendRefundNotification).not.toHaveBeenCalled();
+
+    const payouts = em._saved
+      .filter(([, d]: any) => d?.type === TransactionType.POSITION_PAYOUT)
+      .map(([, d]: any) => [d.userId, Number(d.amount)] as [string, number]);
+    expect(payouts).toHaveLength(3);
+
+    // stake * 360/350 = stake * 1.02857…
+    const staked: Record<string, number> = { u1: 200, u2: 100, u3: 50 };
+    for (const [userId, amount] of payouts) {
+      expect(amount).toBeGreaterThan(staked[userId]);
+      expect(amount).toBeCloseTo(staked[userId] * (360 / 350), 1);
+    }
+
+    // The whole pool goes to the winners; Oro takes nothing.
+    expect(Number(settlement.totalPaidOut)).toBeCloseTo(360, 0);
+    expect(Number(settlement.houseAmount)).toBeCloseTo(0, 2);
+    // The losing stake is lost, not handed back.
+    expect(
+      em._saved.filter(([, d]: any) => d?.type === TransactionType.REFUND),
+    ).toHaveLength(0);
+  });
+
+  it("waives only as much edge as the floor needs — the rest is still booked", async () => {
+    // Nu 1,000 pool, 8% edge, Nu 900 on the winning side. payoutPool = 920, the
+    // 1.05x floor wants 945. This used to refund the whole market; the edge is
+    // now cut from 80 to 55 — partially waived, not zeroed — and the winner is
+    // paid. The losing Nu 100 is lost, where it used to be handed back.
+    const positions = [
+      mkPos("p1", "u1", "o-yes", 900),
+      mkPos("p2", "u2", "o-no", 100),
+    ];
+    const em = makeEm(positions);
+    const { engine, telegramSimple } = makeEngine(em);
+    const market = { ...mkMarket(1000), houseEdgePct: "8" };
+    const winner = { ...YES, totalBetAmount: "900" };
+
+    const [settlement] = await (engine as any).settleMarket(market, winner, new Map());
+
+    expect(settlement.cancelReason).toBeUndefined();
+    expect(Number(settlement.totalPaidOut)).toBeCloseTo(945, 2);
+    expect(Number(settlement.houseAmount)).toBeCloseTo(55, 2);
+    // `payoutPool` stays the THEORETICAL post-rake figure, so a waived
+    // settlement has totalPaidOut > payoutPool. Anything treating it as a
+    // budget will be wrong.
+    expect(Number(settlement.payoutPool)).toBeCloseTo(920, 2);
+    expect(
+      Number(settlement.totalPaidOut) + Number(settlement.houseAmount),
+    ).toBeCloseTo(1000, 2);
+
+    const refundTxs = em._saved.filter(
+      ([, d]: any) => d?.type === TransactionType.REFUND,
+    );
+    expect(refundTxs).toHaveLength(0);
+
+    const payoutTxs = em._saved.filter(
+      ([, d]: any) => d?.type === TransactionType.POSITION_PAYOUT,
+    );
+    expect(payoutTxs).toHaveLength(1);
+    expect(payoutTxs[0][1].userId).toBe("u1");
+    expect(Number(payoutTxs[0][1].amount)).toBeCloseTo(945, 2);
+    expect(telegramSimple.sendRefundNotification).not.toHaveBeenCalled();
+  });
 
   it("heavy winning side: floor is funded by reducing the house edge, books balance", async () => {
     // Boss's example: Nu 1,000 pool, 8% edge, Nu 950 on the winning side.

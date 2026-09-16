@@ -41,6 +41,7 @@ import {
 } from "../shared/utils/ledger.util";
 import { BTN_CURRENCY } from "../entities/transaction.entity";
 import { roundMoney, floorMoney, formatMoney } from "../shared/utils/money.util";
+import { computeWinnerPayouts } from "./winner-payouts";
 import { MarketBook } from "../entities/market-book.entity";
 import { OutcomeBook } from "../entities/outcome-book.entity";
 import { resolveWalletCurrency } from "../shared/utils/wallet.util";
@@ -1518,28 +1519,22 @@ export class ParimutuelEngine implements OnModuleInit {
         );
       }
 
-      const payoutFloorTotal = winningBets.reduce(
-        (sum, bet) => sum + roundMoney(Number(bet.amount) * 1.05, currency),
-        0,
-      );
-      const floorShortfall = roundMoney(payoutFloorTotal - payoutPool, currency);
-      if (floorShortfall > 0) {
-        this.logger.warn(
-          `[Settlement] Market ${market.id} refunded: 1.05x floor requires Nu ${payoutFloorTotal}, ` +
-            `but post-rake payout pool is Nu ${payoutPool}. Shortfall Nu ${floorShortfall}.`,
-        );
-        return this.refundAndRecordSettlement(
-          em,
-          market,
-          winner,
-          bets,
-          totalPool,
-          "payout_floor_underfunded",
-          "Payout floor could not be funded — market refunded",
-          "payout_floor_underfunded",
-          currency,
-        );
-      }
+      // NOTE: there is deliberately no "the floor is underfunded, refund the
+      // market" guard here any more.
+      //
+      // There used to be one, and it fired whenever `1.05 × winnerPool` exceeded
+      // the post-rake pool — roughly, whenever the winning side held more than
+      // 86% of the money at a 10% edge. It refunded everyone: winners got their
+      // stake back, losers got their stake back, and Oro earned nothing.
+      //
+      // It also sat in front of the funding logic written to handle exactly that
+      // case (see `maxBudget` / `payoutScale` below), making it unreachable. The
+      // house edge is now waived as far as it takes to pay the floor, and only
+      // if a zero edge still cannot fund it are payouts scaled down — in which
+      // case winners split the whole pool and each still receives more than
+      // their stake. Being right never pays less than being wrong.
+      //
+      // The thin-pool guard above is a different condition and still refunds.
 
       // ── BULK settlement — O(bets) queries replaced with O(1) queries ─────────
       //
@@ -1591,22 +1586,28 @@ export class ParimutuelEngine implements OnModuleInit {
       //   2. If even a 0% edge can't cover the floor (winning side > ~95% of the
       //      pool), scale every winner's payout down pro-rata so the total never
       //      exceeds the money actually in the pool.
-      // maxBudget is all the money available to winners if the edge is fully
-      // waived: the pool plus any dispute-bond bonus (= payoutPool + houseAmount).
-      const maxBudget = payoutPool + houseAmount;
-      let desiredWinnerTotal = 0;
-      for (const bet of bets) {
-        if (bet.outcomeId !== winner.id) continue;
-        const share = winnerPool > 0 ? Number(bet.amount) / winnerPool : 0;
-        const raw = roundMoney(payoutPool * share, currency);
-        const floor = roundMoney(Number(bet.amount) * 1.05, currency);
-        desiredWinnerTotal += Math.max(raw, floor);
-      }
-      // Only scale down when the floor can't be funded even with a zero edge.
-      // (A bound floor simply raises totalPaidOut; house revenue is derived from
-      // the actual residual below, so no explicit subsidy figure is needed here.)
-      const payoutScale =
-        desiredWinnerTotal > maxBudget ? maxBudget / desiredWinnerTotal : 1;
+      //
+      // The arithmetic lives in `computeWinnerPayouts` because the
+      // reconciliation service recomputes these same figures to check us, and
+      // the two had already drifted — it applied the floor but not the scale.
+      // A bound floor simply raises totalPaidOut; house revenue is derived from
+      // the actual residual below, so no explicit subsidy figure is needed here.
+      const { payouts: floorAwarePayouts, scale: payoutScale } =
+        computeWinnerPayouts({
+          stakes: bets
+            .filter((b) => b.outcomeId === winner.id)
+            .map((b) => Number(b.amount)),
+          payoutPool,
+          // All the money available to winners once the edge is fully waived.
+          totalPool,
+          currency,
+        });
+      // Keyed by position id so the per-bet loop below can look its payout up
+      // without depending on iteration order matching.
+      const payoutByPositionId = new Map<string, number>();
+      bets
+        .filter((b) => b.outcomeId === winner.id)
+        .forEach((b, i) => payoutByPositionId.set(b.id, floorAwarePayouts[i]));
 
       let totalPaidOut = 0;
       let winningPositions = 0;
@@ -1626,15 +1627,11 @@ export class ParimutuelEngine implements OnModuleInit {
 
       for (const bet of bets) {
         if (bet.outcomeId === winner.id) {
-          const share = winnerPool > 0 ? Number(bet.amount) / winnerPool : 0;
-          const rawPayout = roundMoney(payoutPool * share, currency);
           const stake = Number(bet.amount);
-          // Guaranteed floor, scaled down only in the extreme case where even a
-          // waived house edge can't fund it (payoutScale < 1).
-          const effectivePayout = roundMoney(
-            Math.max(rawPayout, stake * 1.05) * payoutScale,
-            currency,
-          );
+          // Pro-rata share, raised to the 1.05x floor where the pool can fund
+          // it (by waiving house edge), scaled down only where even a zero edge
+          // cannot. Computed once, above, so the reconciler can reuse it.
+          const effectivePayout = payoutByPositionId.get(bet.id) ?? 0;
 
           const user = userMap.get(bet.userId);
           const userBonusBalance = Number(user?.bonusBalance ?? 0);
