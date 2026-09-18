@@ -28,6 +28,7 @@ import {
   CryptoWithdrawalDestination,
 } from "../entities/crypto-withdrawal.entity";
 import { Pay21WebhookGuard } from "./guards/pay21-webhook.guard";
+import { DkMigrationFreezeGuard } from "./guards/dk-migration-freeze.guard";
 import { CryptoWebhookEvent } from "../entities/crypto-webhook-event.entity";
 import { CryptoPaymentIntent } from "../entities/crypto-payment-intent.entity";
 
@@ -65,6 +66,7 @@ import { CryptoPaymentIntent } from "../entities/crypto-payment-intent.entity";
     CryptoWithdrawalService,
     DKWithdrawalReconciler,
     Pay21WebhookGuard,
+    DkMigrationFreezeGuard,
   ],
   exports: [DKGatewayService, BankLinkService, TwentyOnePayClient, CryptoDepositService, CryptoSettlementService],
 })

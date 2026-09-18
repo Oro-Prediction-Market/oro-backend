@@ -42,6 +42,7 @@ import { CryptoWebhookService } from "./crypto-webhook.service";
 import { CryptoSettlementService } from "./crypto-settlement.service";
 import { CryptoWithdrawalService } from "./crypto-withdrawal.service";
 import { Pay21WebhookGuard } from "./guards/pay21-webhook.guard";
+import { DkMigrationFreezeGuard } from "./guards/dk-migration-freeze.guard";
 
 class InitiateWithdrawalDto {
   @Prop({ description: "Amount to withdraw in BTN", example: 200 })
@@ -122,7 +123,7 @@ export class PaymentController {
   }
 
   @Post("dkbank/initiate")
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, DkMigrationFreezeGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: "Step 1: Initiate DK Bank payment (sends OTP to customer phone)",
@@ -148,7 +149,7 @@ export class PaymentController {
   }
 
   @Post("dkbank/confirm")
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, DkMigrationFreezeGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Step 2: Confirm DK Bank payment with OTP" })
   @ApiBody({ type: ConfirmPaymentDto })
@@ -167,7 +168,7 @@ export class PaymentController {
   }
 
   @Post("dkbank/withdraw/initiate")
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, DkMigrationFreezeGuard)
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -193,7 +194,7 @@ export class PaymentController {
   }
 
   @Post("dkbank/withdraw/confirm")
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, DkMigrationFreezeGuard)
   @UsePipes(new ValidationPipe({ whitelist: true }))
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Step 2: Confirm withdrawal with Telegram OTP" })
