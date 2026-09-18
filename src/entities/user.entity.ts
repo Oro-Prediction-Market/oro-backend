@@ -236,6 +236,20 @@ export class User {
   @Column({ type: "int", nullable: true })
   reengagementStage: number | null;
 
+  /**
+   * When this user was last sent a win-back nudge, by any rung of any ladder.
+   *
+   * A hard floor on how often one person can be messaged, and deliberately NOT
+   * reset when they predict — which is exactly how it differs from
+   * `reengagementStage` above. That field resets on every bet, so on its own it
+   * only prevents repeats within a single quiet spell: a user whose rhythm was
+   * slower than the lowest rung got the same "you have gone quiet" DM every
+   * cycle, forever, while predicting the whole time. This column is what makes
+   * that impossible regardless of how the ladder is tuned.
+   */
+  @Column({ type: "timestamptz", nullable: true })
+  lastNudgedAt: Date | null;
+
   // ── Free calls (no-stake predictions) ──────────────────────────────────────
 
   /**

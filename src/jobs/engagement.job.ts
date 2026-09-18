@@ -76,8 +76,29 @@ export class EngagementJob {
   /** Days-quiet ladder for users who have never placed a prediction. */
   private static readonly FIRST_CALL_MILESTONES = [7, 3, 1];
 
-  /** Days-quiet ladder for users who predicted before and then went quiet. */
-  private static readonly LAPSED_MILESTONES = [30, 14, 7, 3];
+  /**
+   * Days-quiet ladder for users who predicted before and then went quiet.
+   *
+   * There is deliberately no 3-day rung. Three days without a prediction is not
+   * someone slipping away, it is most people's normal week — and because
+   * placePosition clears `reengagementStage` on every bet, a 3-day rung DMed
+   * anyone with a slower-than-3-day rhythm on a permanent loop: predict, get
+   * told they had gone cold, predict again, get told again. Seven days is the
+   * earliest point at which going quiet is a signal rather than a weekend.
+   */
+  private static readonly LAPSED_MILESTONES = [30, 14, 7];
+
+  /**
+   * No user gets more than one win-back nudge in this window, whatever the
+   * ladder says.
+   *
+   * The ladder's own guard (`reengagementStage`) resets to null the moment
+   * someone predicts, so on its own it only ever prevents repeats WITHIN one
+   * quiet spell — it does nothing across cycles. This is the backstop that
+   * bounds the total: get the calibration wrong again and the cost is one extra
+   * DM a fortnight, not one a week forever.
+   */
+  private static readonly NUDGE_COOLDOWN_DAYS = 14;
 
   /**
    * Users messaged per milestone per run. A backlog drains over several days
@@ -235,6 +256,9 @@ export class EngagementJob {
     const now = Date.now();
     const cutoff = new Date(now - daysQuiet * DAY_MS);
     const horizon = new Date(now - EngagementJob.STALE_HORIZON_DAYS * DAY_MS);
+    const nudgeCutoff = new Date(
+      now - EngagementJob.NUDGE_COOLDOWN_DAYS * DAY_MS,
+    );
     const anchor = cohort === "no_first_call" ? "u.createdAt" : "u.lastActiveAt";
 
     const qb = this.userRepo
@@ -251,6 +275,12 @@ export class EngagementJob {
       .andWhere(`${anchor} IS NOT NULL`)
       .andWhere(`${anchor} <= :cutoff`, { cutoff })
       .andWhere(`${anchor} > :horizon`, { horizon })
+      // The cross-cycle cooldown. Independent of reengagementStage, which the
+      // user clears every time they predict.
+      .andWhere(
+        `(u.lastNudgedAt IS NULL OR u.lastNudgedAt <= :nudgeCutoff)`,
+        { nudgeCutoff },
+      )
       .orderBy(anchor, "DESC")
       .take(EngagementJob.MAX_PER_MILESTONE_PER_RUN);
 
@@ -275,12 +305,20 @@ export class EngagementJob {
     const claim = await this.userRepo
       .createQueryBuilder()
       .update(User)
-      .set({ reengagementStage: daysQuiet })
+      .set({ reengagementStage: daysQuiet, lastNudgedAt: () => "now()" })
       .whereInIds(candidates.map((u) => u.id))
       .andWhere(
         `("reengagementStage" IS NULL OR "reengagementStage" < :daysQuiet)`,
         { daysQuiet },
       )
+      // Repeated here, not just in the SELECT above. The claim is what decides
+      // who is actually messaged, and the two run as separate statements — a
+      // user could be stamped by the previous milestone in this same run
+      // between them. Enforcing the cooldown only in the SELECT would let the
+      // ladder send two DMs in one pass.
+      .andWhere(`("lastNudgedAt" IS NULL OR "lastNudgedAt" <= :nudgeCutoff)`, {
+        nudgeCutoff,
+      })
       .returning(["id"])
       .execute();
 

@@ -33,6 +33,9 @@ describe("EngagementJob re-engagement ladder", () => {
   ) {
     const seen: { cohort: string; daysQuiet: number; where: string[] }[] = [];
     const claims: { ids: string[]; stage: number }[] = [];
+    /** Columns each claim UPDATE wrote. Kept apart from `claims` so the deep
+     *  equality assertions on that array stay about ids and stages. */
+    const claimSets: string[][] = [];
 
     const selectBuilder = () => {
       const where: string[] = [];
@@ -66,10 +69,12 @@ describe("EngagementJob re-engagement ladder", () => {
     const updateBuilder = () => {
       let stage = 0;
       let ids: string[] = [];
+      let setFields: string[] = [];
       const qb: any = {
         update: () => qb,
-        set: (v: { reengagementStage: number }) => {
-          stage = v.reengagementStage;
+        set: (v: Record<string, unknown>) => {
+          stage = v.reengagementStage as number;
+          setFields = Object.keys(v);
           return qb;
         },
         whereInIds: (v: string[]) => {
@@ -80,6 +85,7 @@ describe("EngagementJob re-engagement ladder", () => {
         returning: () => qb,
         execute: async () => {
           claims.push({ ids, stage });
+          if (ids.length) claimSets.push(setFields);
           return {
             raw: opts.claimNothing ? [] : ids.map((id) => ({ id })),
             affected: opts.claimNothing ? 0 : ids.length,
@@ -161,6 +167,7 @@ describe("EngagementJob re-engagement ladder", () => {
       telegram,
       seen,
       claims,
+      claimSets,
       redis,
       userNotifications,
       queue,
@@ -201,7 +208,7 @@ describe("EngagementJob re-engagement ladder", () => {
     }
   });
 
-  it("walks the no-first-call ladder at 1, 3 and 7 days and the lapsed ladder at 3, 7, 14 and 30", async () => {
+  it("walks the no-first-call ladder at 1, 3 and 7 days and the lapsed ladder at 7, 14 and 30", async () => {
     const { job, seen } = build({});
 
     await job.reEngageLapsedUsers();
@@ -211,7 +218,61 @@ describe("EngagementJob re-engagement ladder", () => {
     ).toEqual([7, 3, 1]);
     expect(
       seen.filter((q) => q.cohort === "lapsed").map((q) => q.daysQuiet),
-    ).toEqual([30, 14, 7, 3]);
+    ).toEqual([30, 14, 7]);
+  });
+
+  it("has NO 3-day rung for users who have predicted before", async () => {
+    // Three days without a prediction is most people's normal week, not someone
+    // slipping away. Because placePosition clears reengagementStage on every
+    // bet, a 3-day rung DMed anyone with a slower rhythm on a permanent loop:
+    // predict, get told they had gone cold, predict again, get told again.
+    // Reported from production on 2026-09-18.
+    const { job, seen } = build({});
+
+    await job.reEngageLapsedUsers();
+
+    expect(
+      seen.filter((q) => q.cohort === "lapsed").map((q) => q.daysQuiet),
+    ).not.toContain(3);
+    // Still correct for the never-predicted cohort: those users are not active
+    // by definition, so three days is a real signal there.
+    expect(
+      seen.filter((q) => q.cohort === "no_first_call").map((q) => q.daysQuiet),
+    ).toContain(3);
+  });
+
+  it("stamps lastNudgedAt when it claims a user, or the cooldown never engages", async () => {
+    // The filter and the stamp are two halves of one mechanism. Filtering on a
+    // column nothing ever writes is a cooldown that silently does nothing.
+    const { job, claimSets } = build({ "lapsed:30": [user("u1")] });
+
+    await job.reEngageLapsedUsers();
+
+    expect(claimSets.length).toBeGreaterThan(0);
+    for (const fields of claimSets) {
+      expect(fields).toContain("reengagementStage");
+      expect(fields).toContain("lastNudgedAt");
+    }
+  });
+
+  it("filters every milestone on the cross-cycle nudge cooldown", async () => {
+    // reengagementStage resets whenever the user predicts, so it only prevents
+    // repeats WITHIN one quiet spell. lastNudgedAt is what bounds the total,
+    // and it must be on every rung of both ladders or the gap is the whole bug.
+    const { job, seen } = build({});
+
+    await job.reEngageLapsedUsers();
+
+    expect(seen.length).toBeGreaterThan(0);
+    for (const q of seen) {
+      expect(
+        q.where.some(
+          (w) =>
+            w.includes("u.lastNudgedAt IS NULL") &&
+            w.includes("u.lastNudgedAt <= :nudgeCutoff"),
+        ),
+      ).toBe(true);
+    }
   });
 
   it("guards every milestone query on the stored stage so a missed run is picked up later", async () => {
