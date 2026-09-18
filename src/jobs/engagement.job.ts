@@ -95,7 +95,14 @@ export class EngagementJob {
   private static readonly STALE_HORIZON_DAYS = 90;
 
   /**
-   * Re-engagement cron — runs 3:00 AM UTC daily.
+   * Re-engagement cron — every day at 9:00 AM Bhutan time.
+   *
+   * The timeZone is pinned rather than left to the ambient process TZ. This used
+   * to read `@Cron("0 3 * * *")` with a comment claiming "3:00 AM UTC" — but
+   * main.ts sets `process.env.TZ = "Asia/Thimphu"` before bootstrap, so the cron
+   * library read 3 AM as *Bhutan* time and real users were DMed at three in the
+   * morning, six hours early. Exactly the mistake weekly-report.job.ts already
+   * made and documented; this job never got the same fix.
    *
    * Walks both win-back ladders and DMs each user at most once per milestone.
    *
@@ -108,7 +115,7 @@ export class EngagementJob {
    * or a cron that missed several days) gets the single most relevant message
    * instead of a burst of every milestone they passed.
    */
-  @Cron("0 3 * * *")
+  @Cron("0 9 * * *", { timeZone: "Asia/Thimphu" })
   async reEngageLapsedUsers(): Promise<void> {
     const lock = await this.redis.acquireLock("cron:reengagement", 300);
     if (!lock) return;
@@ -129,10 +136,16 @@ export class EngagementJob {
   }
 
   /**
-   * Streak at-risk cron — runs 3:00 PM UTC daily (≈ 9 PM Bhutan time).
-   * Warns users whose bet streak will break at midnight if they don't predict today.
+   * Streak at-risk cron — every day at 9:00 PM Bhutan time.
+   *
+   * Warns users whose bet streak will break at midnight if they don't predict
+   * today, so it has to land with enough of the evening left to act on. The
+   * timeZone is pinned for the same reason as the job above: this read
+   * `@Cron("0 15 * * *")` with a comment claiming 3 PM UTC ≈ 9 PM Bhutan, and
+   * the ambient TZ meant it actually fired at 3 PM local — nine hours early,
+   * warning people about a deadline most of a day away.
    */
-  @Cron("0 15 * * *")
+  @Cron("0 21 * * *", { timeZone: "Asia/Thimphu" })
   async warnStreakAtRisk(): Promise<void> {
     const lock = await this.redis.acquireLock("cron:streak-at-risk", 300);
     if (!lock) return;
