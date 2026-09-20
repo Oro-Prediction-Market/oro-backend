@@ -50,7 +50,7 @@ export const DK_MIGRATION_FREEZE_DEFAULT_START = "2026-09-19T23:00:00+06:00";
  *
  * Deposits are no longer behind this guard at all; see `payment.controller.ts`.
  */
-export const DK_MIGRATION_FREEZE_DEFAULT_END = "2026-09-20T21:45:00+06:00";
+export const DK_MIGRATION_FREEZE_DEFAULT_END = "2026-09-21T20:00:00+06:00";
 
 export interface DkMigrationFreezeWindow {
   start: Date;
