@@ -76,6 +76,28 @@ describe("DkMigrationFreezeGuard", () => {
     expect(body.windowEnd).toBe(DEFAULT_END.toISOString());
   });
 
+  // Deposits came off this guard once it was clear they fail harmlessly, while
+  // a withdrawal strands the user's balance. The message must not go on naming
+  // a restriction that no longer exists — that sends people to support over a
+  // Top Up screen that works.
+  it("names only cash outs, since deposits are no longer frozen", () => {
+    const guard = guardWith({});
+    clockAt("2026-09-20T02:00:00+06:00");
+
+    let thrown: ServiceUnavailableException | undefined;
+    try {
+      guard.canActivate();
+    } catch (e) {
+      thrown = e as ServiceUnavailableException;
+    }
+
+    const msg = String(
+      (thrown!.getResponse() as Record<string, unknown>).message,
+    );
+    expect(msg).toMatch(/Cash outs are paused/);
+    expect(msg).not.toMatch(/Top up/i);
+  });
+
   // The morning the rail used to reopen. It no longer does: DK was still
   // broken at 08:00 on 20 Sep and four users were debited with nothing sent.
   it("stays shut past the original 20 Sep end", () => {

@@ -122,8 +122,21 @@ export class PaymentController {
     }
   }
 
+  // Deposits are deliberately NOT behind DkMigrationFreezeGuard.
+  //
+  // The freeze exists because a withdrawal that fails mid-flight strands the
+  // user's balance: the debit is written before the bank call, so an
+  // indeterminate answer leaves the money held with nothing sent — which is
+  // exactly what happened to four users on 20 September 2026. A deposit has no
+  // such failure mode. It moves nothing until DK confirms, so a failure costs
+  // the user an error message and nothing else.
+  //
+  // So the two directions are gated separately: withdrawals stay shut while DK
+  // is unreliable, deposits stay open and simply fail loudly if DK is still
+  // broken. Put the guard back here the moment a deposit can leave a user's
+  // bank account debited without their Oro balance moving.
   @Post("dkbank/initiate")
-  @UseGuards(JwtAuthGuard, DkMigrationFreezeGuard)
+  @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: "Step 1: Initiate DK Bank payment (sends OTP to customer phone)",
@@ -148,8 +161,9 @@ export class PaymentController {
     });
   }
 
+  /** Deposit side — open while withdrawals are frozen. See `dkbank/initiate`. */
   @Post("dkbank/confirm")
-  @UseGuards(JwtAuthGuard, DkMigrationFreezeGuard)
+  @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Step 2: Confirm DK Bank payment with OTP" })
   @ApiBody({ type: ConfirmPaymentDto })

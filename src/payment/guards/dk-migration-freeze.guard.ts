@@ -34,7 +34,7 @@ export class DkMigrationFreezeGuard implements CanActivate {
 
     if (window) {
       this.logger.log(
-        `DK Bank deposits and withdrawals are frozen ${describeDkMigrationFreeze(window)}`,
+        `DK Bank withdrawals are frozen ${describeDkMigrationFreeze(window)} (deposits remain open)`,
       );
     } else {
       this.logger.log("DK Bank migration freeze is switched off");
@@ -45,12 +45,17 @@ export class DkMigrationFreezeGuard implements CanActivate {
     if (!isDkMigrationFreezeActive(this.window, new Date())) return true;
 
     // 503 rather than 403: this is temporary and the caller did nothing wrong.
+    //
+    // Says "cash outs", not "top ups and cash outs": deposits were taken off
+    // this guard once it was clear they fail harmlessly, and a message naming a
+    // restriction that no longer exists sends users to support over a screen
+    // that is working.
     throw new ServiceUnavailableException({
       statusCode: 503,
       error: "DK_MIGRATION_FREEZE",
       message:
-        `Top ups and cash outs are paused while DK Bank completes a system ` +
-        `migration (${describeDkMigrationFreeze(this.window!)}). Your balance ` +
+        `Cash outs are paused while DK Bank completes a system migration ` +
+        `(${describeDkMigrationFreeze(this.window!)}). Your balance ` +
         `and open predictions are unaffected — please try again after the migration.`,
       windowStart: this.window!.start.toISOString(),
       windowEnd: this.window!.end.toISOString(),
