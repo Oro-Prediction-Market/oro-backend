@@ -634,7 +634,7 @@ describe("KeeperService resolveOutcome logic", () => {
       ok: true,
       json: async () => ({
         status: "FINISHED",
-        score: { fullTime: { home: 3, away: 1 } },
+        score: { winner: "HOME_TEAM", fullTime: { home: 3, away: 1 } },
         homeTeam: { name: "Manchester City" },
         awayTeam: { name: "Arsenal" },
       }),
@@ -675,7 +675,7 @@ describe("KeeperService resolveOutcome logic", () => {
       ok: true,
       json: async () => ({
         status: "FINISHED",
-        score: { fullTime: { home: 1, away: 1 } },
+        score: { winner: "DRAW", fullTime: { home: 1, away: 1 } },
         homeTeam: { name: "TeamA" },
         awayTeam: { name: "TeamB" },
       }),
@@ -714,7 +714,7 @@ describe("KeeperService resolveOutcome logic", () => {
       ok: true,
       json: async () => ({
         status: "FINISHED",
-        score: { fullTime: { home: 2, away: 2 } }, // 4 total > 2.5
+        score: { winner: "DRAW", fullTime: { home: 2, away: 2 } }, // 4 total > 2.5
         homeTeam: { name: "A" },
         awayTeam: { name: "B" },
       }),
@@ -753,7 +753,7 @@ describe("KeeperService resolveOutcome logic", () => {
       ok: true,
       json: async () => ({
         status: "FINISHED",
-        score: { fullTime: { home: 1, away: 1 } }, // 2 total < 2.5
+        score: { winner: "DRAW", fullTime: { home: 1, away: 1 } }, // 2 total < 2.5
         homeTeam: { name: "A" },
         awayTeam: { name: "B" },
       }),
@@ -785,7 +785,7 @@ describe("KeeperService resolveOutcome logic", () => {
 
     (global.fetch as jest.Mock).mockResolvedValue({
       ok: true,
-      json: async () => ({ status: "IN_PLAY", score: { fullTime: { home: 1, away: 0 } }, homeTeam: { name: "A" }, awayTeam: { name: "B" } }),
+      json: async () => ({ status: "IN_PLAY", score: { winner: "HOME_TEAM", fullTime: { home: 1, away: 0 } }, homeTeam: { name: "A" }, awayTeam: { name: "B" } }),
     });
 
     const marketsService = makeMarketsService();
@@ -847,7 +847,7 @@ describe("KeeperService resolveOutcome logic", () => {
       ok: true,
       json: async () => ({
         status: "FINISHED",
-        score: { fullTime: { home: 2, away: 0 } },
+        score: { winner: "HOME_TEAM", fullTime: { home: 2, away: 0 } },
         homeTeam: { name: "Manchester City" }, // API returns full name
         awayTeam: { name: "Arsenal" },
       }),

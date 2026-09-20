@@ -1,7 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { Cron, CronExpression } from "@nestjs/schedule";
 import { InjectRepository } from "@nestjs/typeorm";
-import { In, Repository } from "typeorm";
+import { In, MoreThan, Repository } from "typeorm";
 import { ConfigService } from "@nestjs/config";
 import { MarketsService } from "./markets.service";
 import { Market, MarketStatus } from "../entities/market.entity";
@@ -22,6 +22,15 @@ import {
 } from "../ucl/ucl-stat-markets";
 import { CreateMarketDto } from "./dto/create-market.dto";
 import { statNamesMatch } from "./stat-outcome-match.util";
+import { fetchFixture, readFixtureResult } from "./fixture-result.util";
+
+/**
+ * How far back the settlement audit re-checks.
+ *
+ * Long enough to cover a provider correcting a result days late, short enough
+ * that a daily run stays well inside football-data's rate limit.
+ */
+const AUDIT_LOOKBACK_DAYS = 7;
 
 export interface KeeperLogEntry {
   id: number;
@@ -405,6 +414,28 @@ export class KeeperService {
           this.addLog(
             "info",
             `Skipping auto-settle for "${market.title}" — ${objectionCount} objection(s) awaiting admin review.`,
+          );
+          continue;
+        }
+
+        // ── Re-read the fixture before the money moves ────────────────────
+        // The proposal was made from a single API read taken minutes after the
+        // final whistle, and football-data revises results afterwards. Between
+        // that read and here sits the dispute window — during which the old
+        // code never asked again, so a correction landing in it was invisible
+        // and got paid out anyway. One more call closes that gap. A market that
+        // now disagrees is left RESOLVING for a human rather than settled on
+        // either answer.
+        const recheck = await this.recheckProposal(market);
+        if (recheck.verdict === "disagrees") {
+          this.addLog(
+            "warn",
+            `Auto-settle BLOCKED for "${market.title}" — ${recheck.reason}`,
+          );
+          await this.notifyAdmin(
+            `🛑 <b>Keeper: Auto-Settle Blocked</b>\n\n` +
+              `📊 <b>${market.title}</b>\n${recheck.reason}\n\n` +
+              `Left RESOLVING — please resolve manually in the admin panel.`,
           );
           continue;
         }
@@ -1084,45 +1115,32 @@ export class KeeperService {
     }
 
     for (const [matchId, markets] of byMatchId) {
-      let matchData: any;
-      try {
-        const res = await fetch(
-          `https://api.football-data.org/v4/matches/${matchId}`,
-          {
-            headers: { "X-Auth-Token": apiKey },
-            signal: AbortSignal.timeout(10_000),
-          },
+      const matchData = await fetchFixture(matchId, apiKey);
+      if (!matchData) {
+        this.addLog("warn", `Auto-Proposal: could not fetch match ${matchId}`);
+        continue;
+      }
+
+      const readout = readFixtureResult(matchData);
+      if (!readout.ok) {
+        // Not ready is the normal case and clears itself on a later tick. A
+        // provider contradicting itself does not, and is worth waking someone.
+        this.addLog(
+          readout.contradiction ? "warn" : "info",
+          `Auto-Proposal: match ${matchId} not payable — ${readout.reason}`,
         );
-        if (!res.ok) {
-          this.addLog(
-            "warn",
-            `Auto-Proposal: HTTP ${res.status} for match ${matchId}`,
+        if (readout.contradiction) {
+          await this.notifyAdmin(
+            `⚠️ <b>Keeper: Fixture data inconsistent</b>\n\n` +
+              `Match <code>${matchId}</code>\n${readout.reason}\n\n` +
+              `No outcome proposed. Will retry, or resolve manually.`,
           );
-          continue;
         }
-        matchData = await res.json();
-      } catch (err: any) {
-        this.addLog(
-          "error",
-          `Auto-Proposal: fetch failed for match ${matchId}: ${err.message}`,
-        );
         continue;
       }
 
-      const status: string = matchData.status ?? "";
-      if (!["FINISHED", "AWARDED"].includes(status)) {
-        this.addLog(
-          "info",
-          `Auto-Proposal: match ${matchId} not finished yet (${status})`,
-        );
-        continue;
-      }
-
-      const homeScore: number = matchData.score?.fullTime?.home ?? 0;
-      const awayScore: number = matchData.score?.fullTime?.away ?? 0;
-      const homeTeam: string = matchData.homeTeam?.name ?? "";
-      const awayTeam: string = matchData.awayTeam?.name ?? "";
-      const totalGoals = homeScore + awayScore;
+      const { homeTeam, awayTeam, homeScore, awayScore, totalGoals } =
+        readout.result;
 
       for (const market of markets) {
         try {
@@ -1167,6 +1185,164 @@ export class KeeperService {
         }
       }
     }
+  }
+
+  // ── Cron: re-verify recently settled fixtures (daily, 09:30 Bhutan) ───────
+
+  /**
+   * Re-check every fixture-linked market settled in the last week against the
+   * provider, and shout if any of them no longer match.
+   *
+   * This is the only layer that actually guarantees a wrong settlement is
+   * found. The two checks before it — refusing half-written records, and
+   * re-reading before payout — narrow the window in which a correction can slip
+   * through. They cannot close it: if football-data revises a result after the
+   * dispute window has already expired, the money is gone and neither check
+   * ever runs again.
+   *
+   * It does not prevent the bad payout. It turns "nobody ever noticed" into
+   * "noticed within a day", which is the difference that matters here:
+   * Nottingham Forest v Tottenham settled against the wrong team on 5 September
+   * 2026 and went unspotted for fifteen days, then only because someone
+   * happened to look at an unrelated match.
+   *
+   * Read-only by design. It never re-settles anything — reversing a payout is a
+   * decision with real money on both sides and belongs to a human.
+   */
+  @Cron("30 9 * * *", { timeZone: "Asia/Thimphu" })
+  async auditRecentSettlements() {
+    if (!this.isActive) return;
+    await this.withClusterLock("keeper:settlement-audit", 300, () =>
+      this.auditRecentSettlementsImpl(),
+    );
+  }
+
+  private async auditRecentSettlementsImpl() {
+    const apiKey = this.config.get<string>("FOOTBALL_DATA_API_KEY");
+    if (!apiKey) return;
+
+    const since = new Date(Date.now() - AUDIT_LOOKBACK_DAYS * 86_400_000);
+    const settled = await this.marketRepo.find({
+      where: {
+        status: MarketStatus.SETTLED,
+        externalSource: "football-data.org",
+        resolvedAt: MoreThan(since),
+      },
+      relations: ["outcomes"],
+    });
+    if (!settled.length) return;
+
+    const mismatches: string[] = [];
+    let checked = 0;
+
+    for (const market of settled) {
+      if (!market.externalMatchId || !market.resolvedOutcomeId) continue;
+
+      const matchData = await fetchFixture(market.externalMatchId, apiKey);
+      if (!matchData) continue;
+      const readout = readFixtureResult(matchData);
+      // Still not final days later is odd, but it is not a mismatch — the
+      // audit only reports what it can positively contradict.
+      if (!readout.ok) continue;
+
+      checked++;
+      const { homeTeam, awayTeam, homeScore, awayScore, totalGoals } =
+        readout.result;
+      const shouldBe = this.resolveOutcome(
+        market,
+        homeTeam,
+        awayTeam,
+        homeScore,
+        awayScore,
+        totalGoals,
+      );
+      if (!shouldBe || shouldBe === market.resolvedOutcomeId) continue;
+
+      const label = (id: string) =>
+        market.outcomes.find((o) => o.id === id)?.label ?? id;
+      mismatches.push(
+        `📊 <b>${market.title}</b>\n` +
+          `   settled as: <b>${label(market.resolvedOutcomeId)}</b>\n` +
+          `   now reads:  <b>${label(shouldBe)}</b> ` +
+          `(${homeScore}-${awayScore})\n` +
+          `   market <code>${market.id}</code>`,
+      );
+    }
+
+    if (!mismatches.length) {
+      this.addLog(
+        "success",
+        `Settlement Audit: ${checked} settled fixture(s) re-verified, all correct.`,
+      );
+      return;
+    }
+
+    this.addLog(
+      "error",
+      `Settlement Audit: ${mismatches.length} of ${checked} settled market(s) DISAGREE with the provider.`,
+    );
+    await this.notifyAdmin(
+      `🚨 <b>Keeper: Wrong Settlement Detected</b>\n\n` +
+        `${mismatches.length} of ${checked} market(s) settled in the last ` +
+        `${AUDIT_LOOKBACK_DAYS} days no longer match football-data.\n\n` +
+        `${mismatches.join("\n\n")}\n\n` +
+        `<b>Payouts have already been made.</b> Review and correct manually.`,
+    );
+  }
+
+  /**
+   * Ask the provider again, just before settling, whether the proposal still
+   * holds.
+   *
+   * Only `"disagrees"` blocks a settlement. `"unverified"` — football-data
+   * unreachable, or still not carrying a final verdict — deliberately does not:
+   * blocking there would freeze every settlement behind someone else's outage
+   * and hand a pile of manual work to an admin, while settling is no worse than
+   * what we did before this check existed. The proposal already passed the
+   * readiness checks in `readFixtureResult` when it was made, so it is stale at
+   * worst, never unchecked. The daily audit is what covers the remainder.
+   */
+  private async recheckProposal(
+    market: Market,
+  ): Promise<{ verdict: "agrees" | "disagrees" | "unverified"; reason: string }> {
+    if (!market.externalMatchId || market.externalSource !== "football-data.org")
+      return { verdict: "agrees", reason: "not a fixture-linked market" };
+
+    const apiKey = this.config.get<string>("FOOTBALL_DATA_API_KEY");
+    if (!apiKey) return { verdict: "unverified", reason: "no API key" };
+
+    const matchData = await fetchFixture(market.externalMatchId, apiKey);
+    if (!matchData)
+      return { verdict: "unverified", reason: "fixture fetch failed" };
+
+    const readout = readFixtureResult(matchData);
+    if (!readout.ok)
+      return { verdict: "unverified", reason: readout.reason };
+
+    const { homeTeam, awayTeam, homeScore, awayScore, totalGoals } =
+      readout.result;
+    const nowWins = this.resolveOutcome(
+      market,
+      homeTeam,
+      awayTeam,
+      homeScore,
+      awayScore,
+      totalGoals,
+    );
+    if (!nowWins)
+      return { verdict: "unverified", reason: "could not map result to an outcome" };
+    if (nowWins === market.proposedOutcomeId)
+      return { verdict: "agrees", reason: "confirmed" };
+
+    const label = (id: string) =>
+      market.outcomes.find((o) => o.id === id)?.label ?? id;
+    return {
+      verdict: "disagrees",
+      reason:
+        `proposed <b>${label(market.proposedOutcomeId)}</b> but the fixture ` +
+        `now reads <b>${label(nowWins)}</b> ` +
+        `(full-time ${homeScore}-${awayScore}, winner ${readout.result.winner})`,
+    };
   }
 
   /**
