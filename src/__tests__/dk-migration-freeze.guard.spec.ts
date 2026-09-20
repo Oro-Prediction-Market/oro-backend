@@ -1,5 +1,13 @@
 import { ServiceUnavailableException } from "@nestjs/common";
 import { DkMigrationFreezeGuard } from "../payment/guards/dk-migration-freeze.guard";
+import { DK_MIGRATION_FREEZE_DEFAULT_END } from "../payment/dk-migration-window";
+
+/**
+ * Derived, not hardcoded: the end date is policy and has already moved once.
+ * Tests that pinned it to "20 Sep 08:00" all broke when the freeze had to be
+ * extended, which told us nothing except that a date had changed.
+ */
+const DEFAULT_END = new Date(DK_MIGRATION_FREEZE_DEFAULT_END);
 
 /**
  * The guard resolves its window in the constructor, so each case builds a guard
@@ -65,19 +73,27 @@ describe("DkMigrationFreezeGuard", () => {
     expect(String(body.message)).toMatch(/DK Bank/);
     // Says the money is safe — the first thing anyone hitting this will wonder.
     expect(String(body.message)).toMatch(/balance and open predictions are unaffected/);
-    expect(body.windowEnd).toBe("2026-09-20T02:00:00.000Z");
+    expect(body.windowEnd).toBe(DEFAULT_END.toISOString());
+  });
+
+  // The morning the rail used to reopen. It no longer does: DK was still
+  // broken at 08:00 on 20 Sep and four users were debited with nothing sent.
+  it("stays shut past the original 20 Sep end", () => {
+    const guard = guardWith({});
+    clockAt("2026-09-20T08:00:00+06:00");
+    expect(() => guard.canActivate()).toThrow(ServiceUnavailableException);
   });
 
   it("lets them through again the moment the window ends", () => {
     const guard = guardWith({});
-    clockAt("2026-09-20T08:00:00+06:00");
+    clockAt(new Date(DEFAULT_END.getTime()).toISOString());
     expect(guard.canActivate()).toBe(true);
   });
 
   // The whole point of a one-off window: no nightly repeat.
   it("stays open on later nights", () => {
     const guard = guardWith({});
-    clockAt("2026-09-25T02:00:00+06:00");
+    clockAt(new Date(DEFAULT_END.getTime() + 5 * 86_400_000).toISOString());
     expect(guard.canActivate()).toBe(true);
   });
 

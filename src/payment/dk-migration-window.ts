@@ -24,7 +24,27 @@
  */
 
 export const DK_MIGRATION_FREEZE_DEFAULT_START = "2026-09-19T23:00:00+06:00";
-export const DK_MIGRATION_FREEZE_DEFAULT_END = "2026-09-20T08:00:00+06:00";
+
+/**
+ * Extended from 20 Sep 08:00 after the migration went wrong.
+ *
+ * The rail reopened on schedule at 08:00 on 20 September into a DK that was
+ * still broken, and every withdrawal after that failed: four users, Nu 2,374,
+ * debited with nothing sent. DK returns `2001` ("no response") carrying the
+ * text "Fail due to rejection" on `/v1/initiate/transaction`, and
+ * `/v1/transaction/status` — which both withdrawals and deposits rely on —
+ * crashes with a Python `NameError` (`name 'requests_id' is not defined`).
+ * Still failing identically eight hours later, so this does not clear itself.
+ *
+ * The date below is a BACKSTOP, not a prediction. Do not wait for it. The
+ * whole reason four people lost access to their money is that the previous
+ * end instant arrived while nobody had checked whether DK worked — a window
+ * that reopens on a clock reopens into whatever state the bank happens to be
+ * in. Reopen deliberately instead: set `DK_MIGRATION_FREEZE_START=off` once
+ * DK has confirmed a fix AND one small real withdrawal has been watched all
+ * the way into a bank account.
+ */
+export const DK_MIGRATION_FREEZE_DEFAULT_END = "2026-09-21T08:00:00+06:00";
 
 export interface DkMigrationFreezeWindow {
   start: Date;

@@ -11,6 +11,19 @@ const DEFAULTS = {
   end: new Date(DK_MIGRATION_FREEZE_DEFAULT_END),
 };
 
+/**
+ * Instants relative to whatever the configured end happens to be.
+ *
+ * The end date is policy — it moved once already, when DK's migration went
+ * wrong and the rail had to stay shut — and every test that hardcoded
+ * "20 Sep 08:00" broke the moment it did. What these tests actually care
+ * about is the shape of the window (half-open, one-off, instant-based), not
+ * the date, so they derive from the constant and survive the next extension.
+ */
+const MINUTE = 60_000;
+const DAY = 24 * 60 * MINUTE;
+const fromEnd = (ms: number) => new Date(DEFAULTS.end.getTime() + ms);
+
 describe("DK migration freeze window", () => {
   describe("resolveDkMigrationFreezeWindow", () => {
     it("uses the cutover dates when nothing is configured", () => {
@@ -87,18 +100,22 @@ describe("DK migration freeze window", () => {
     it("closes on the start instant and stays closed through the window", () => {
       expect(at("2026-09-19T23:00:00+06:00")).toBe(true);
       expect(at("2026-09-20T03:30:00+06:00")).toBe(true);
-      expect(at("2026-09-20T07:59:59+06:00")).toBe(true);
+      // The morning the rail used to reopen — now still inside the window,
+      // which is the whole point of the extension.
+      expect(at("2026-09-20T08:00:00+06:00")).toBe(true);
+      expect(isDkMigrationFreezeActive(DEFAULTS, fromEnd(-1))).toBe(true);
     });
 
     it("reopens exactly on the end instant, not a tick later", () => {
-      expect(at("2026-09-20T08:00:00+06:00")).toBe(false);
+      expect(isDkMigrationFreezeActive(DEFAULTS, fromEnd(0))).toBe(false);
+      expect(isDkMigrationFreezeActive(DEFAULTS, fromEnd(1))).toBe(false);
     });
 
     // The window is two fixed instants, not a nightly 11pm-8am schedule.
     it("never fires again on later nights", () => {
-      expect(at("2026-09-21T02:00:00+06:00")).toBe(false);
-      expect(at("2026-10-19T23:30:00+06:00")).toBe(false);
-      expect(at("2027-09-20T01:00:00+06:00")).toBe(false);
+      expect(isDkMigrationFreezeActive(DEFAULTS, fromEnd(DAY))).toBe(false);
+      expect(isDkMigrationFreezeActive(DEFAULTS, fromEnd(30 * DAY))).toBe(false);
+      expect(isDkMigrationFreezeActive(DEFAULTS, fromEnd(365 * DAY))).toBe(false);
     });
 
     it("was not already active before the cutover", () => {
@@ -114,22 +131,27 @@ describe("DK migration freeze window", () => {
 
     // A phone in Kolkata reads the same instant as a server in Thimphu.
     it("keys off the instant, not the local wall clock", () => {
+      // 23:30 BTT on the cutover night, written as UTC.
       expect(isDkMigrationFreezeActive(DEFAULTS, new Date("2026-09-19T17:30:00Z"))).toBe(
         true,
       );
-      expect(isDkMigrationFreezeActive(DEFAULTS, new Date("2026-09-20T02:30:00Z"))).toBe(
-        false,
-      );
+      expect(isDkMigrationFreezeActive(DEFAULTS, fromEnd(30 * MINUTE))).toBe(false);
     });
   });
 
   describe("describeDkMigrationFreeze", () => {
+    // A fixed window of its own, not DEFAULTS: this tests the formatter, and
+    // it must not fail every time the freeze is extended.
     it("renders the window in Bhutan time whatever the process TZ", () => {
-      const text = describeDkMigrationFreeze(DEFAULTS);
+      const text = describeDkMigrationFreeze({
+        start: new Date("2026-09-19T23:00:00+06:00"),
+        end: new Date("2026-09-20T08:00:00+06:00"),
+      });
       expect(text).toContain("19 Sep");
       expect(text).toContain("20 Sep");
       expect(text).toContain("11:00 pm");
       expect(text).toContain("8:00 am");
+      expect(text).toContain("BTT");
     });
   });
 });
