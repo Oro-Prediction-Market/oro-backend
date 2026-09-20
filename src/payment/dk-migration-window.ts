@@ -26,25 +26,31 @@
 export const DK_MIGRATION_FREEZE_DEFAULT_START = "2026-09-19T23:00:00+06:00";
 
 /**
- * Extended from 20 Sep 08:00 after the migration went wrong.
+ * Reopened by hand at 21:45 on 20 September, on the call of whoever owns this
+ * decision. Everything below is the record of why it was shut, and what is
+ * still true at the moment it was lifted.
  *
- * The rail reopened on schedule at 08:00 on 20 September into a DK that was
- * still broken, and every withdrawal after that failed: four users, Nu 2,374,
- * debited with nothing sent. DK returns `2001` ("no response") carrying the
- * text "Fail due to rejection" on `/v1/initiate/transaction`, and
- * `/v1/transaction/status` — which both withdrawals and deposits rely on —
- * crashes with a Python `NameError` (`name 'requests_id' is not defined`).
- * Still failing identically eight hours later, so this does not clear itself.
+ * The rail first reopened on schedule at 08:00 on 20 September into a DK that
+ * was still broken, and every withdrawal after that failed: four users,
+ * Nu 2,374, debited with nothing sent. DK returns `2001` ("no response")
+ * carrying the text "Fail due to rejection" on `/v1/initiate/transaction`, and
+ * `/v1/transaction/status` — the endpoint the reconciler needs to resolve
+ * exactly that ambiguity — crashes with a Python `NameError`
+ * (`name 'requests_id' is not defined`). It was still failing identically at
+ * 15:50, and was not re-verified before this reopening.
  *
- * The date below is a BACKSTOP, not a prediction. Do not wait for it. The
- * whole reason four people lost access to their money is that the previous
- * end instant arrived while nobody had checked whether DK worked — a window
- * that reopens on a clock reopens into whatever state the bank happens to be
- * in. Reopen deliberately instead: set `DK_MIGRATION_FREEZE_START=off` once
- * DK has confirmed a fix AND one small real withdrawal has been watched all
- * the way into a bank account.
+ * So: while DK's status endpoint stays broken, a withdrawal that DK answers
+ * ambiguously cannot be resolved by us at all. It parks in PROCESSING with the
+ * debit intact and waits for a human with DK's statement. That is the risk
+ * being carried here, deliberately.
+ *
+ * Re-freezing is a one-line change to the date below, or
+ * `DK_MIGRATION_FREEZE_END` in the environment — the guard is still wired to
+ * every withdrawal route, so nothing needs rebuilding to shut it again.
+ *
+ * Deposits are no longer behind this guard at all; see `payment.controller.ts`.
  */
-export const DK_MIGRATION_FREEZE_DEFAULT_END = "2026-09-21T08:00:00+06:00";
+export const DK_MIGRATION_FREEZE_DEFAULT_END = "2026-09-20T21:45:00+06:00";
 
 export interface DkMigrationFreezeWindow {
   start: Date;
