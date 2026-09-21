@@ -26,31 +26,35 @@
 export const DK_MIGRATION_FREEZE_DEFAULT_START = "2026-09-19T23:00:00+06:00";
 
 /**
- * Reopened by hand at 21:45 on 20 September, on the call of whoever owns this
- * decision. Everything below is the record of why it was shut, and what is
- * still true at the moment it was lifted.
+ * Withdrawals stay shut until 23 September. DK's payout rail is still broken,
+ * and has now failed in two distinct ways in one day.
  *
  * The rail first reopened on schedule at 08:00 on 20 September into a DK that
- * was still broken, and every withdrawal after that failed: four users,
- * Nu 2,374, debited with nothing sent. DK returns `2001` ("no response")
- * carrying the text "Fail due to rejection" on `/v1/initiate/transaction`, and
- * `/v1/transaction/status` — the endpoint the reconciler needs to resolve
- * exactly that ambiguity — crashes with a Python `NameError`
- * (`name 'requests_id' is not defined`). It was still failing identically at
- * 15:50, and was not re-verified before this reopening.
+ * was still broken. Every withdrawal after that returned `2001` ("no response")
+ * carrying the text "Fail due to rejection" — an indeterminate code on what
+ * DK's own words call a rejection — so the money could not be refunded without
+ * risking a double payment. Four users, Nu 2,374, are still parked that way.
+ * `/v1/transaction/status`, the endpoint the reconciler needs to resolve
+ * exactly that ambiguity, crashes with a Python `NameError`
+ * (`name 'requests_id' is not defined`), so nothing can settle them but a human
+ * holding DK's statement.
  *
- * So: while DK's status endpoint stays broken, a withdrawal that DK answers
- * ambiguously cannot be resolved by us at all. It parks in PROCESSING with the
- * debit intact and waits for a human with DK's statement. That is the risk
- * being carried here, deliberately.
+ * It was reopened again at 21:45 that evening and shut within the hour, because
+ * the failure had changed shape into something worse: DK now returns a
+ * *definite* rejection — which correctly triggers our refund — **while actually
+ * executing the transfer.** Two payouts landed in the user's bank at 21:47 and
+ * 21:52, both refunded in Oro, Nu 100 gone. While that is true, every
+ * withdrawal attempt costs real money, and the refund branch cannot be trusted
+ * at all: DK's "failed" is not a failure.
  *
- * Re-freezing is a one-line change to the date below, or
- * `DK_MIGRATION_FREEZE_END` in the environment — the guard is still wired to
- * every withdrawal route, so nothing needs rebuilding to shut it again.
+ * Do not reopen on this date arriving. Reopen once DK confirms a fix AND one
+ * small real withdrawal has been watched all the way into a bank account —
+ * every reopening so far has been a clock expiring rather than anyone checking.
  *
- * Deposits are no longer behind this guard at all; see `payment.controller.ts`.
+ * Deposits are not behind this guard; see `payment.controller.ts`. One
+ * confirmed at 21:39 on 20 September, so that side of the rail works.
  */
-export const DK_MIGRATION_FREEZE_DEFAULT_END = "2026-09-21T20:00:00+06:00";
+export const DK_MIGRATION_FREEZE_DEFAULT_END = "2026-09-23T20:00:00+06:00";
 
 export interface DkMigrationFreezeWindow {
   start: Date;
