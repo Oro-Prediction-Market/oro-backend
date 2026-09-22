@@ -57,7 +57,19 @@ export type FixtureReadout =
    */
   | { ok: false; reason: string; contradiction: boolean };
 
-const FINAL_STATUSES = ["FINISHED", "AWARDED"];
+export const FINAL_STATUSES = ["FINISHED", "AWARDED"];
+
+/**
+ * Exported for callers that need the status gate without the rest of the read.
+ *
+ * The UCL final is one: a tie settled on penalties carries `score.winner` beside
+ * a level `fullTime`, so the goals-versus-verdict cross-check below would call a
+ * perfectly good shootout result a contradiction. That path wants "has the
+ * provider committed to a result" and nothing else.
+ */
+export function isFinalStatus(status: unknown): boolean {
+  return typeof status === "string" && FINAL_STATUSES.includes(status);
+}
 
 /** Only a match whose provider has committed to a result is payable. */
 export function readFixtureResult(matchData: any): FixtureReadout {

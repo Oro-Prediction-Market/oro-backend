@@ -55,6 +55,114 @@ function describeWindow(market: { windowMinutes?: number | null }): string {
   return mins >= 60 ? `${mins / 60}h` : `${mins}min`;
 }
 
+// ── UCL bracket matching ────────────────────────────────────────────────────
+//
+// A "who advances" market names two clubs and the bracket names two clubs, and
+// nothing links them but the text. Propose, re-check and audit all have to
+// arrive at the same pairing or they will disagree with each other rather than
+// with the provider — a re-check that matches a different tie than the proposal
+// did is not a check, it is a coin toss. So the matching lives here once.
+
+interface DecidedTie {
+  /** Every name and short name of both clubs, normalised. */
+  names: string[];
+  winner: string;
+  lastUpdated: string | null;
+  decidedLegKickoff: string | null;
+}
+
+/**
+ * Club name → comparable text.
+ *
+ * The combining marks left by NFD are dropped rather than replaced with a
+ * space. Replacing them splits the letter they sit on — "München" became
+ * "mu nchen" — which happened to work only because both sides of every
+ * comparison were mangled the same way, market labels being generated from the
+ * bracket. A hand-typed "Bayern Munchen" would never have matched, and would
+ * have failed by quietly not resolving rather than by erroring.
+ */
+const normTeam = (s: string) =>
+  (s ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+/**
+ * Loose club-name comparison. Substring either way, because the bracket says
+ * "Real Madrid CF" where an outcome may say "Real Madrid".
+ *
+ * The `length > 2` floor stops two-letter noise matching everything. It is
+ * still loose in a competition full of shared city names, which is exactly why
+ * {@link matchMarketToTie} requires *both* of a market's clubs to match the
+ * same tie rather than trusting any single name.
+ */
+const likeTeam = (x: string, y: string) =>
+  x === y || (x.length > 2 && (x.includes(y) || y.includes(x)));
+
+/** Every tie the bracket considers settled, with its provenance attached. */
+export function decidedTiesFrom(bracket: {
+  rounds: {
+    matches: {
+      a: { name: string; short: string } | null;
+      b: { name: string; short: string } | null;
+      winner: "a" | "b" | null;
+      lastUpdated?: string | null;
+      decidedLegKickoff?: string | null;
+    }[];
+  }[];
+}): DecidedTie[] {
+  const out: DecidedTie[] = [];
+  for (const round of bracket.rounds ?? []) {
+    for (const mt of round.matches ?? []) {
+      if (!mt.a || !mt.b || !mt.winner) continue;
+      const winnerTeam = mt.winner === "a" ? mt.a : mt.b;
+      out.push({
+        names: [
+          normTeam(mt.a.name),
+          normTeam(mt.a.short),
+          normTeam(mt.b.name),
+          normTeam(mt.b.short),
+        ],
+        winner: winnerTeam.name,
+        lastUpdated: mt.lastUpdated ?? null,
+        decidedLegKickoff: mt.decidedLegKickoff ?? null,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Find the tie a market is asking about, and which of its outcomes advanced.
+ *
+ * Returns null when the market's clubs do not pin down exactly one tie, or when
+ * the advancing club cannot be tied back to exactly one outcome. Ambiguity is
+ * refused rather than resolved — a market matching two ties means the names are
+ * too loose to bet money on, and picking the first would be picking at random.
+ */
+export function matchMarketToTie(
+  outcomes: { id: string; label: string }[],
+  ties: DecidedTie[],
+): { tie: DecidedTie; winningOutcomeId: string } | null {
+  if (outcomes.length < 2) return null;
+  const labels = outcomes.map((o) => normTeam(o.label));
+
+  const candidates = ties.filter((t) =>
+    labels.every((l) => t.names.some((n) => likeTeam(n, l))),
+  );
+  if (candidates.length !== 1) return null;
+
+  const tie = candidates[0];
+  const winNorm = normTeam(tie.winner);
+  const winners = outcomes.filter((o) => likeTeam(normTeam(o.label), winNorm));
+  if (winners.length !== 1) return null;
+
+  return { tie, winningOutcomeId: winners[0].id };
+}
+
 export interface KeeperLogEntry {
   id: number;
   time: string;
@@ -1028,45 +1136,36 @@ export class KeeperService {
     }
     if (!bracket?.hasData) return;
 
-    const norm = (s: string) =>
-      (s ?? "")
-        .toLowerCase()
-        .normalize("NFD")
-        .replace(/[^a-z ]/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-    const like = (x: string, y: string) =>
-      x === y || (x.length > 2 && (x.includes(y) || y.includes(x)));
-
-    // Decided ties: the set of name/short tokens for the two clubs → winner name.
-    const decided: { names: string[]; winner: string }[] = [];
-    for (const round of bracket.rounds) {
-      for (const mt of round.matches) {
-        if (mt.a && mt.b && mt.winner) {
-          const winnerTeam = mt.winner === "a" ? mt.a : mt.b;
-          decided.push({
-            names: [norm(mt.a.name), norm(mt.a.short), norm(mt.b.name), norm(mt.b.short)],
-            winner: winnerTeam.name,
-          });
-        }
-      }
-    }
+    const decided = decidedTiesFrom(bracket);
 
     for (const market of todo) {
       const outs = market.outcomes ?? [];
-      if (outs.length < 2) continue;
-      const labels = outs.map((o) => norm(o.label));
-      const tie = decided.find((t) =>
-        labels.every((l) => t.names.some((n) => like(n, l))),
-      );
-      if (!tie) continue;
-      const winNorm = norm(tie.winner);
-      const winningOutcome = outs.find((o) => like(norm(o.label), winNorm));
-      if (!winningOutcome) continue;
+      const hit = matchMarketToTie(outs, decided);
+      if (!hit) continue;
+      const { tie, winningOutcomeId } = hit;
+      const winningOutcome = outs.find((o) => o.id === winningOutcomeId)!;
+
+      // ── Has UEFA stopped revising this tie? ───────────────────────────────
+      // Same gate as a league fixture, same reason: a record that is complete
+      // is not necessarily finished. The final is the exposed one — it reads a
+      // single match's verdict, exactly the shape that settled Forest v
+      // Tottenham wrong. Skipping is free; the next half-hourly tick retries.
+      const stability = isFixtureStable({
+        lastUpdated: tie.lastUpdated,
+        utcDate: tie.decidedLegKickoff,
+      });
+      if (!stability.stable) {
+        this.addLog(
+          "info",
+          `UCL bracket: "${market.title}" not settled down yet — ${stability.reason}`,
+        );
+        continue;
+      }
+
       try {
         const proposed = await this.marketsService.proposeResolution(
           market.id,
-          winningOutcome.id,
+          winningOutcomeId,
         );
         this.disputeWindowsOpened++;
         this.addLog(
@@ -1259,10 +1358,43 @@ export class KeeperService {
   }
 
   private async auditRecentSettlementsImpl() {
-    const apiKey = this.config.get<string>("FOOTBALL_DATA_API_KEY");
-    if (!apiKey) return;
-
     const since = new Date(Date.now() - AUDIT_LOOKBACK_DAYS * 86_400_000);
+
+    // Two sources, one report. A split report is one a reader learns to skim.
+    const league = await this.auditFootballSettlements(since);
+    const ucl = await this.auditUclSettlements(since);
+
+    const checked = league.checked + ucl.checked;
+    const mismatches = [...league.mismatches, ...ucl.mismatches];
+    if (!checked && !mismatches.length) return;
+
+    if (!mismatches.length) {
+      this.addLog(
+        "success",
+        `Settlement Audit: ${checked} settled market(s) re-verified, all correct.`,
+      );
+      return;
+    }
+
+    this.addLog(
+      "error",
+      `Settlement Audit: ${mismatches.length} of ${checked} settled market(s) DISAGREE with the provider.`,
+    );
+    await this.notifyAdmin(
+      `🚨 <b>Keeper: Wrong Settlement Detected</b>\n\n` +
+        `${mismatches.length} of ${checked} market(s) settled in the last ` +
+        `${AUDIT_LOOKBACK_DAYS} days no longer match the provider.\n\n` +
+        `${mismatches.join("\n\n")}\n\n` +
+        `<b>Payouts have already been made.</b> Review and correct manually.`,
+    );
+  }
+
+  private async auditFootballSettlements(
+    since: Date,
+  ): Promise<{ checked: number; mismatches: string[] }> {
+    const apiKey = this.config.get<string>("FOOTBALL_DATA_API_KEY");
+    if (!apiKey) return { checked: 0, mismatches: [] };
+
     const settled = await this.marketRepo.find({
       where: {
         status: MarketStatus.SETTLED,
@@ -1271,7 +1403,6 @@ export class KeeperService {
       },
       relations: ["outcomes"],
     });
-    if (!settled.length) return;
 
     const mismatches: string[] = [];
     let checked = 0;
@@ -1310,25 +1441,69 @@ export class KeeperService {
       );
     }
 
-    if (!mismatches.length) {
+    return { checked, mismatches };
+  }
+
+  /**
+   * The same sweep for "who advances" markets.
+   *
+   * These had no audit at all until now, which meant a wrong bracket settlement
+   * had no way of being found except by a user complaining — the position the
+   * league markets were in before September.
+   *
+   * One `fresh` bracket read covers every market: the whole tree comes back in
+   * a single call, so this costs one request regardless of how many ties
+   * settled that week.
+   */
+  private async auditUclSettlements(
+    since: Date,
+  ): Promise<{ checked: number; mismatches: string[] }> {
+    const settled = await this.marketRepo.find({
+      where: {
+        status: MarketStatus.SETTLED,
+        externalSource: "ucl-bracket",
+        resolvedAt: MoreThan(since),
+      },
+      relations: ["outcomes"],
+    });
+    if (!settled.length) return { checked: 0, mismatches: [] };
+
+    let bracket: Awaited<ReturnType<UclService["getBracket"]>>;
+    try {
+      bracket = await this.ucl.getBracket({ fresh: true });
+    } catch (e) {
       this.addLog(
-        "success",
-        `Settlement Audit: ${checked} settled fixture(s) re-verified, all correct.`,
+        "warn",
+        `Settlement Audit: UCL bracket unavailable — ${(e as Error).message}`,
       );
-      return;
+      return { checked: 0, mismatches: [] };
+    }
+    if (!bracket?.hasData) return { checked: 0, mismatches: [] };
+
+    const ties = decidedTiesFrom(bracket);
+    const mismatches: string[] = [];
+    let checked = 0;
+
+    for (const market of settled) {
+      if (!market.resolvedOutcomeId) continue;
+      const hit = matchMarketToTie(market.outcomes ?? [], ties);
+      // No single decided tie matches: cannot contradict it, so say nothing.
+      if (!hit) continue;
+
+      checked++;
+      if (hit.winningOutcomeId === market.resolvedOutcomeId) continue;
+
+      const label = (id: string) =>
+        market.outcomes.find((o) => o.id === id)?.label ?? id;
+      mismatches.push(
+        `📊 <b>${market.title}</b>\n` +
+          `   settled as: <b>${label(market.resolvedOutcomeId)}</b>\n` +
+          `   bracket has: <b>${label(hit.winningOutcomeId)}</b> advancing\n` +
+          `   market <code>${market.id}</code>`,
+      );
     }
 
-    this.addLog(
-      "error",
-      `Settlement Audit: ${mismatches.length} of ${checked} settled market(s) DISAGREE with the provider.`,
-    );
-    await this.notifyAdmin(
-      `🚨 <b>Keeper: Wrong Settlement Detected</b>\n\n` +
-        `${mismatches.length} of ${checked} market(s) settled in the last ` +
-        `${AUDIT_LOOKBACK_DAYS} days no longer match football-data.\n\n` +
-        `${mismatches.join("\n\n")}\n\n` +
-        `<b>Payouts have already been made.</b> Review and correct manually.`,
-    );
+    return { checked, mismatches };
   }
 
   /**
@@ -1346,6 +1521,9 @@ export class KeeperService {
   private async recheckProposal(
     market: Market,
   ): Promise<{ verdict: "agrees" | "disagrees" | "unverified"; reason: string }> {
+    if (market.externalSource === "ucl-bracket")
+      return this.recheckUclProposal(market);
+
     if (!market.externalMatchId || market.externalSource !== "football-data.org")
       return { verdict: "agrees", reason: "not a fixture-linked market" };
 
@@ -1383,6 +1561,53 @@ export class KeeperService {
         `proposed <b>${label(market.proposedOutcomeId)}</b> but the fixture ` +
         `now reads <b>${label(nowWins)}</b> ` +
         `(full-time ${homeScore}-${awayScore}, winner ${readout.result.winner})`,
+    };
+  }
+
+  /**
+   * The same question for a "who advances" market, against the bracket.
+   *
+   * Reads the bracket `fresh`, bypassing the cache. The cache lives an hour and
+   * so does the objection window, so a cached read would usually hand back the
+   * object the proposal was built from — the check would agree with itself and
+   * report success no matter what UEFA had since published.
+   *
+   * Fails open on an unreachable or unmatchable bracket for the same reason the
+   * league path does: blocking there parks every settlement behind someone
+   * else's outage, and the daily audit covers what slips past.
+   */
+  private async recheckUclProposal(
+    market: Market,
+  ): Promise<{ verdict: "agrees" | "disagrees" | "unverified"; reason: string }> {
+    let bracket: Awaited<ReturnType<UclService["getBracket"]>>;
+    try {
+      bracket = await this.ucl.getBracket({ fresh: true });
+    } catch (e) {
+      return {
+        verdict: "unverified",
+        reason: `bracket fetch failed: ${(e as Error).message}`,
+      };
+    }
+    if (!bracket?.hasData)
+      return { verdict: "unverified", reason: "bracket has no data" };
+
+    const hit = matchMarketToTie(market.outcomes ?? [], decidedTiesFrom(bracket));
+    if (!hit)
+      return {
+        verdict: "unverified",
+        reason: "no single decided tie matches this market",
+      };
+
+    if (hit.winningOutcomeId === market.proposedOutcomeId)
+      return { verdict: "agrees", reason: "confirmed" };
+
+    const label = (id: string) =>
+      market.outcomes.find((o) => o.id === id)?.label ?? id;
+    return {
+      verdict: "disagrees",
+      reason:
+        `proposed <b>${label(market.proposedOutcomeId)}</b> but the bracket ` +
+        `now has <b>${label(hit.winningOutcomeId)}</b> advancing`,
     };
   }
 

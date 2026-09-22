@@ -3,6 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import { RedisService } from "../redis/redis.service";
 import { StatOverridesService } from "../stat-overrides/stat-overrides.service";
 import { StatBoardOverride } from "../entities/stat-board-override.entity";
+import { isFinalStatus } from "../markets/fixture-result.util";
 
 // UEFA Champions League live data — football-data.org (free tier includes CL).
 //  • standings  → league-phase table (36-team single table in the 2024+ format)
@@ -59,6 +60,18 @@ export interface UclBracketMatch {
   a: UclBracketTeam | null;
   b: UclBracketTeam | null;
   winner: "a" | "b" | null;
+  /**
+   * When the provider last touched any leg of this tie, and when the deciding
+   * leg kicked off. Both ISO, both null when the tie has no matches yet.
+   *
+   * The keeper needs them to answer "has the provider stopped revising this"
+   * before it proposes — the same question `isFixtureStable` asks of a league
+   * fixture. `updatedAt` on the bracket as a whole cannot answer it: that is
+   * stamped when we build the object, so it says when we looked, not when the
+   * data changed.
+   */
+  lastUpdated: string | null;
+  decidedLegKickoff: string | null;
 }
 export interface UclBracketRound {
   key: string;
@@ -297,10 +310,23 @@ export class UclService {
    *  slot, so we group two-legged ties by team pair, then reconstruct the tree by
    *  advancement: the winner of a tie is whichever team turns up in the next
    *  round (robust to extra-time/penalties); the final uses `score.winner`. */
-  async getBracket(): Promise<UclBracket> {
+  /**
+   * @param opts.fresh Skip the cache read and go to the provider.
+   *
+   * The cache lives an hour and the objection window is an hour, so a
+   * verification pass that read the cache would routinely be handed the very
+   * object the proposal was made from and agree with itself. A check that can
+   * only confirm is worse than no check: it reports success either way. Every
+   * caller whose job is to *disagree* with an earlier read passes `fresh`.
+   *
+   * Still writes the cache, so a fresh read also refreshes it for everyone.
+   */
+  async getBracket(opts?: { fresh?: boolean }): Promise<UclBracket> {
     const cacheKey = "oro:ucl:bracket";
-    const cached = await this.redis.getJson<UclBracket>(cacheKey);
-    if (cached) return cached;
+    if (!opts?.fresh) {
+      const cached = await this.redis.getJson<UclBracket>(cacheKey);
+      if (cached) return cached;
+    }
 
     const override = this.config.get<string>("UCL_SEASON");
     const data = await this.footballData<any>(
@@ -368,23 +394,58 @@ export class UclService {
     }
 
     const pub = (t: Team): UclBracketTeam => ({ name: t.name, short: t.short, crest: t.crest });
+
+    /** Latest of a set of ISO-ish values, or null when none parse. */
+    const latest = (raw: unknown[]): string | null => {
+      const times = raw
+        .map((v) => (typeof v === "string" ? new Date(v).getTime() : NaN))
+        .filter((n) => Number.isFinite(n));
+      return times.length ? new Date(Math.max(...times)).toISOString() : null;
+    };
+
     const toMatch = (
       tie: Tie | null,
       nextTies: Tie[],
       isFinal: boolean,
     ): UclBracketMatch => {
-      if (!tie) return { a: null, b: null, winner: null };
+      if (!tie)
+        return {
+          a: null,
+          b: null,
+          winner: null,
+          lastUpdated: null,
+          decidedLegKickoff: null,
+        };
       let winner: "a" | "b" | null = null;
       if (isFinal) {
         const m = tie.matches[0];
-        const w = m?.score?.winner;
-        if (w === "HOME_TEAM") winner = tie.a.id === m.homeTeam?.id ? "a" : "b";
-        else if (w === "AWAY_TEAM") winner = tie.a.id === m.awayTeam?.id ? "a" : "b";
+        // Require a committed status before reading the verdict. The old code
+        // trusted `score.winner` on its own, which is the same mistake that
+        // settled a league market against the wrong team — a field can be
+        // populated before it is final.
+        //
+        // Deliberately not `readFixtureResult`: a final won on penalties
+        // carries a verdict beside a level full-time score, which that function
+        // would (correctly, for a league) call a self-contradiction.
+        if (isFinalStatus(m?.status)) {
+          const w = m?.score?.winner;
+          if (w === "HOME_TEAM") winner = tie.a.id === m.homeTeam?.id ? "a" : "b";
+          else if (w === "AWAY_TEAM") winner = tie.a.id === m.awayTeam?.id ? "a" : "b";
+        }
       } else {
+        // A two-legged tie is decided by who turns up in the next round, which
+        // is sturdier than any score: it survives extra time and penalties, and
+        // the next round's fixtures only exist once the tie is actually over.
         const nextIds = new Set(nextTies.flatMap((t) => [t.a.id, t.b.id]));
         winner = nextIds.has(tie.a.id) ? "a" : nextIds.has(tie.b.id) ? "b" : null;
       }
-      return { a: pub(tie.a), b: pub(tie.b), winner };
+      return {
+        a: pub(tie.a),
+        b: pub(tie.b),
+        winner,
+        lastUpdated: latest(tie.matches.map((m) => m?.lastUpdated)),
+        decidedLegKickoff: latest(tie.matches.map((m) => m?.utcDate)),
+      };
     };
 
     const rounds: UclBracketRound[] = STAGES.map((s, idx) => ({
