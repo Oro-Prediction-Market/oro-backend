@@ -26,11 +26,24 @@ import { ledgerBalance } from "../shared/utils/ledger.util";
 /**
  * A withdrawal is only reconciled once it has had time to settle. Anything
  * younger than this is still legitimately in flight.
+ *
+ * Two tiers, because the two rails answer at different speeds. A new-core
+ * transfer settles in seconds and its status endpoint replies at once, so ten
+ * minutes there is latency we impose, not latency DK does. The legacy route
+ * keeps the original grace — it was chosen against that rail's behaviour and
+ * nothing here has learned anything new about it.
  */
-const SETTLE_GRACE_MS = 10 * 60 * 1000;
+const NEW_CORE_SETTLE_GRACE_MS = 2 * 60 * 1000;
+const LEGACY_SETTLE_GRACE_MS = 10 * 60 * 1000;
 
-/** Never re-ask DK about the same payment more often than this. */
-const RECHECK_INTERVAL_MS = 30 * 60 * 1000;
+/**
+ * Never re-ask DK about the same payment more often than this. Same split and
+ * the same reasoning: a new-core row that is still validating is worth another
+ * question in minutes, and waiting half an hour would leave a transfer that
+ * settled seconds after the first check looking stuck for the rest of the hour.
+ */
+const NEW_CORE_RECHECK_MS = 5 * 60 * 1000;
+const LEGACY_RECHECK_MS = 30 * 60 * 1000;
 
 /**
  * Closes out withdrawals left in PROCESSING.
@@ -98,7 +111,9 @@ export class DKWithdrawalReconciler {
           type: PaymentType.WITHDRAWAL,
           method: PaymentMethod.DK_BANK,
           status: PaymentStatus.PROCESSING,
-          createdAt: LessThan(new Date(Date.now() - SETTLE_GRACE_MS)),
+          // The wider of the two nets. A legacy row caught early is held back
+          // in reconcileOne rather than asked about before its own grace.
+          createdAt: LessThan(new Date(Date.now() - NEW_CORE_SETTLE_GRACE_MS)),
         },
         order: { createdAt: "ASC" },
         take: 50,
@@ -123,17 +138,41 @@ export class DKWithdrawalReconciler {
   }
 
   private async reconcileOne(payment: Payment) {
-    const txnId =
+    // DK's new core answers an initiate call with `0001` and a payment_number,
+    // and the legacy status route cannot say anything about those transfers.
+    // The handle the payment carries is what picks the route, so rows written
+    // before the migration keep reconciling exactly as they did.
+    const pendingHandle =
+      (payment.metadata?.dkTransfer?.paymentNumber as string | undefined) ||
+      (payment.metadata?.dkTransfer?.requestId as string | undefined);
+    // A payout credits the USER's account, so that is the account the status
+    // lookup must be scoped to. The legacy route hardcodes the merchant vault,
+    // which is the wrong side of the transfer.
+    const destinationAccount = payment.metadata?.dkAccountNumber as
+      | string
+      | undefined;
+    const useNewCore = !!pendingHandle && !!destinationAccount;
+
+    const legacyTxnId =
       payment.externalPaymentId ||
       payment.dkTxnStatusId ||
       (payment.metadata?.dkTransfer?.txnId as string | undefined);
+
+    const txnId = useNewCore ? pendingHandle : legacyTxnId;
+
+    // The sweep selects on the shorter of the two graces, so a legacy row can
+    // arrive here before it has had its ten minutes. Let it finish settling.
+    const ageMs = payment.createdAt
+      ? Date.now() - new Date(payment.createdAt).getTime()
+      : Number.NaN;
+    if (!useNewCore && ageMs < LEGACY_SETTLE_GRACE_MS) return;
 
     if (!txnId) {
       // DK never gave us a handle — most often the call threw before any reply.
       // There is nothing to query, so this needs a human with DK's statement.
       // Logged at a fixed interval so it stays visible without flooding.
       const lastWarn = Number(payment.metadata?.dkReconcileWarnedAt ?? 0);
-      if (Date.now() - lastWarn < RECHECK_INTERVAL_MS) return;
+      if (Date.now() - lastWarn < LEGACY_RECHECK_MS) return;
       this.logger.error(
         `[Reconcile] payment ${payment.id} (user ${payment.userId}, Nu ` +
           `${payment.amount}) has no DK transaction id — MANUAL reconciliation ` +
@@ -143,14 +182,30 @@ export class DKWithdrawalReconciler {
       return;
     }
 
+    const recheckMs = useNewCore ? NEW_CORE_RECHECK_MS : LEGACY_RECHECK_MS;
     const lastCheck = Number(payment.metadata?.dkReconcileCheckedAt ?? 0);
-    if (Date.now() - lastCheck < RECHECK_INTERVAL_MS) return;
+    if (Date.now() - lastCheck < recheckMs) return;
 
-    let result: Awaited<
-      ReturnType<DKGatewayService["checkTransactionStatus"]>
-    >;
+    let result: { status: string; statusDesc?: string; raw?: unknown };
+    let verdict: "success" | "failed" | "pending";
     try {
-      result = await this.dkGateway.checkTransactionStatus(txnId);
+      if (useNewCore) {
+        const answer = await this.dkGateway.checkTransferStatus({
+          referenceNo: pendingHandle!,
+          beneAccountNumber: destinationAccount!,
+        });
+        verdict = answer.verdict;
+        // Keep DK's own word where it sent one, so the row records what the
+        // bank said rather than how we classified it.
+        result = {
+          status: answer.status ?? answer.responseCode,
+          statusDesc: answer.statusDesc,
+          raw: answer.raw,
+        };
+      } else {
+        result = await this.dkGateway.checkTransactionStatus(txnId);
+        verdict = classifyDkStatus(result.status);
+      }
     } catch (e: any) {
       // Stamp the attempt before rethrowing, or a status check that always
       // errors would re-ask DK on every tick instead of every 30 minutes.
@@ -160,8 +215,6 @@ export class DKWithdrawalReconciler {
       });
       throw e;
     }
-
-    const verdict = classifyDkStatus(result.status);
 
     if (verdict === "pending") {
       await this.stampMetadata(payment, {

@@ -1251,6 +1251,59 @@ describe("Merchant vault → user DK account (withdrawal flow)", () => {
       // Left PROCESSING for reconciliation — never SUCCESS, never FAILED.
       expect(withdrawal.status).toBe(PaymentStatus.PROCESSING);
     });
+
+    it("keeps the new-core pending handles so the reconciler can resolve it", async () => {
+      // A 0001 payout carries no txn_status_id and no inquiry_id — only a
+      // payment_number and the echoed request id. Without persisting them the
+      // reconciler has nothing to ask DK about and escalates to a human
+      // holding DK's statement, which is what stranded four withdrawals.
+      const withdrawal = makeWithdrawalPayment({
+        status: PaymentStatus.PENDING,
+      });
+      const paymentRepo = makePaymentRepo(withdrawal);
+      const redis = makeRedis({ otp: "123456", userId: "user-1" });
+      const dkGateway = makeDkGateway();
+      dkGateway.transferToAccount = jest.fn().mockResolvedValue({
+        txnId: "PN-123",
+        txnStatusId: null,
+        inquiryId: null,
+        paymentNumber: "PN-123",
+        requestId: "REQ-9",
+        status: "AMBIGUOUS",
+        statusDesc: "Transfer status indeterminate",
+      });
+
+      const dataSource = makeDataSource();
+      const em = dataSource._em;
+      em.getRepository.mockReturnValue({
+        createQueryBuilder: jest.fn().mockReturnValue({
+          setLock: jest.fn().mockReturnThis(),
+          select: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          getOne: jest.fn().mockResolvedValue(withdrawal),
+          getRawOne: jest.fn().mockResolvedValue({ balance: 1000 }),
+        }),
+      });
+
+      const { service } = makeService({
+        payment: withdrawal,
+        redis,
+        dkGateway,
+        dataSource,
+        configService: makeProductionConfigService(),
+      });
+      (service as any).paymentRepo = paymentRepo;
+
+      await (service as any).confirmWithdrawal(
+        "user-1",
+        "withdrawal-1",
+        "123456",
+      );
+
+      expect(withdrawal.metadata?.dkTransfer?.paymentNumber).toBe("PN-123");
+      expect(withdrawal.metadata?.dkTransfer?.requestId).toBe("REQ-9");
+    });
   });
 
   // ── Solvency invariant ────────────────────────────────────────────────────

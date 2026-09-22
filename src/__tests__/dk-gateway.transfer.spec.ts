@@ -1,11 +1,18 @@
 /**
  * DKGatewayService.transferToAccount — response-code classification.
  *
- * The withdrawal money-safety flow depends on this mapping: only a DEFINITE
- * rejection (no money moved) may be reported as FAILED (→ caller refunds).
- * An INDETERMINATE outcome (timeout / no-response / internal error — the money
- * may have moved) must be reported as AMBIGUOUS (→ caller leaves PROCESSING,
- * never refunds), so a settled transfer can never be double-paid by a refund.
+ * The withdrawal money-safety flow depends on this mapping. FAILED refunds the
+ * user, so it is stated as an allowlist: a code reaches it only by being a
+ * rejection DK documents as final, where the request was turned down and no
+ * money moved. Everything else — a timeout, an internal error, the new core's
+ * pending `0001`, or a code DK has never sent us before — is AMBIGUOUS, which
+ * parks the withdrawal in PROCESSING with the debit intact for the reconciler
+ * to resolve against /v1/intra-transaction/status.
+ *
+ * The allowlist is the whole design. An inverted list, where anything
+ * unrecognised falls through to FAILED, is what refunded four withdrawals DK
+ * had accepted: `0001` was in neither list. An unknown code is not a rejection,
+ * it is the absence of an answer, and the safe reading of no answer is "wait".
  */
 import { DKGatewayService } from "../payment/services/dk-gateway/dk-gateway.service";
 
@@ -42,6 +49,7 @@ describe("DKGatewayService.transferToAccount — status classification", () => {
   });
 
   it.each([
+    ["0001", "accepted by the new core, still validating"],
     ["2002", "timeout"],
     ["2001", "no-response"],
     ["2004", "internal failure"],
@@ -63,6 +71,29 @@ describe("DKGatewayService.transferToAccount — status classification", () => {
     dkPost.mockResolvedValue({ response_code: code });
     const res = await transfer(dkPost, gateway);
     expect(res.status).toBe("FAILED");
+  });
+
+  // 2011 carries its real reason in response_data — invalid OTP, account
+  // closed, insufficient funds — so the code alone does not establish that no
+  // money moved. It stays off the allowlist until one of us has read one.
+  it("maps 2011 (third-party rejection) to AMBIGUOUS, not FAILED", async () => {
+    const { gateway, dkPost } = makeGateway();
+    dkPost.mockResolvedValue({ response_code: "2011" });
+    const res = await transfer(dkPost, gateway);
+    expect(res.status).toBe("AMBIGUOUS");
+  });
+
+  // The regression the allowlist exists to prevent: 0001 was in neither list
+  // and fell through to FAILED, refunding transfers DK went on to settle.
+  it.each([
+    ["9999", "a code DK has never sent us"],
+    ["4008", "permission denied"],
+    ["0002", "a plausible future new-core code"],
+  ])("maps unrecognised code %s (%s) to AMBIGUOUS, never FAILED", async (code) => {
+    const { gateway, dkPost } = makeGateway();
+    dkPost.mockResolvedValue({ response_code: code });
+    const res = await transfer(dkPost, gateway);
+    expect(res.status).toBe("AMBIGUOUS");
   });
 
   it("still throws (transport error) when the HTTP call itself fails", async () => {
@@ -138,5 +169,65 @@ describe("DKGatewayService.transferToAccount — message must not override the c
     const res = await transfer(dkPost, gateway);
     expect(res.status).toBe("SUCCESS");
     expect(res.txnId).toBe("T2");
+  });
+});
+
+/**
+ * DK's new core system (source accounts starting with 8) answers an initiate
+ * call with `0001` and a different response_data shape: `payment_number` is the
+ * handle its status API wants, and `external_id` echoes the request id. Neither
+ * is `transaction_id`, so without capturing them a pending payout reaches the
+ * reconciler with no reference at all and needs a human holding DK's statement.
+ */
+describe("DKGatewayService.transferToAccount — new-core pending handles", () => {
+  it("captures payment_number from a 0001 response", async () => {
+    const { gateway, dkPost } = makeGateway();
+    dkPost.mockResolvedValue({
+      response_code: "0001",
+      response_data: { payment_number: "PN-123", external_id: "REQ-9" },
+    });
+    const res = await transfer(dkPost, gateway);
+    expect(res.paymentNumber).toBe("PN-123");
+  });
+
+  it("captures external_id as the request id from a 0001 response", async () => {
+    const { gateway, dkPost } = makeGateway();
+    dkPost.mockResolvedValue({
+      response_code: "0001",
+      response_data: { payment_number: "PN-123", external_id: "REQ-9" },
+    });
+    const res = await transfer(dkPost, gateway);
+    expect(res.requestId).toBe("REQ-9");
+  });
+
+  it("uses payment_number as the reconcilable handle when it is the only one", async () => {
+    const { gateway, dkPost } = makeGateway();
+    dkPost.mockResolvedValue({
+      response_code: "0001",
+      response_data: { payment_number: "PN-123" },
+    });
+    const res = await transfer(dkPost, gateway);
+    expect(res.txnId).toBe("PN-123");
+  });
+
+  it("falls back to external_id when DK sends no payment_number", async () => {
+    const { gateway, dkPost } = makeGateway();
+    dkPost.mockResolvedValue({
+      response_code: "0001",
+      response_data: { external_id: "REQ-9" },
+    });
+    const res = await transfer(dkPost, gateway);
+    expect(res.txnId).toBe("REQ-9");
+  });
+
+  it("leaves the pending handles null on a settled response", async () => {
+    const { gateway, dkPost } = makeGateway();
+    dkPost.mockResolvedValue({
+      response_code: "0000",
+      response_data: { transaction_id: "T1" },
+    });
+    const res = await transfer(dkPost, gateway);
+    expect(res.paymentNumber).toBeNull();
+    expect(res.requestId).toBeNull();
   });
 });

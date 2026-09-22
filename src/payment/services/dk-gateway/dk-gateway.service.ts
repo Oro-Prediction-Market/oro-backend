@@ -14,9 +14,20 @@ import { Repository } from "typeorm";
 import { createHmac, randomUUID, randomBytes, timingSafeEqual } from "crypto";
 
 import { DKGatewayAuthToken } from "../../../entities/dk-gateway-auth-token.entity";
+import { classifyDkStatus } from "../../dk-status.util";
 
 const DK_RESPONSE_CODES = {
   SUCCESS: "0000",
+  /**
+   * `/v1/initiate/transaction` only: DK's new core system accepted the transfer
+   * but has not settled it. Resolve it through the status API with the
+   * `payment_number` it returns, and never resend it.
+   *
+   * The same four digits mean something else on `/v1/client_inquiry`, where
+   * they report that a CID has no DK account (see `lookupAccountByCID`). The
+   * code is endpoint-scoped, so do not test for it outside a transfer.
+   */
+  PENDING: "0001",
   TIMEOUT: "2002",
   INTERNAL_FAILURE: "2004",
   RESTRICTION: "2008",
@@ -26,6 +37,20 @@ const DK_RESPONSE_CODES = {
   DB_ERROR: "5002",
   INTERNAL_NO_RESPONSE: "2001",
 } as const;
+
+/**
+ * New-core status words that mean the transfer is done and the money moved.
+ *
+ * Kept separate from {@link classifyDkStatus}, which only knows "SUCCESS": the
+ * new rail says "settled" or "posted" instead, and its in-flight words
+ * ("validating", "initiated", "approved") must not be read as an outcome.
+ */
+const SETTLED_STATUS_WORDS = [
+  "SETTLED",
+  "POSTED",
+  "COMPLETED",
+  "SUCCESS",
+] as const;
 
 /** DK-side failures — retryable, and never caused by what the caller sent. */
 const UPSTREAM_FAILURE_CODES: ReadonlySet<string> = new Set([
@@ -649,6 +674,102 @@ export class DKGatewayService {
     };
   }
 
+  /**
+   * Ask DK where a transfer stands, on the new core system's status endpoint.
+   *
+   * `referenceNo` is whichever handle the transfer left us: the
+   * `payment_number` from a pending (0001) initiate response, the
+   * `txn_status_id` from a settled one, or our own request id.
+   * `beneAccountNumber` is the account that was CREDITED — for a withdrawal
+   * that is the user's account, never the merchant vault.
+   *
+   * The verdict is deliberately hard to move to `failed`, because `failed` is
+   * what refunds a user:
+   *
+   * - a settlement timestamp means the money moved, whatever DK calls the row;
+   * - a rejection word with no settlement timestamp is a refusal;
+   * - `0000` with a settled word, or with no word at all, is a settlement;
+   * - everything else is `pending`, including `2001`, `3001`, `4002`, `4008`
+   *   and any code DK invents later.
+   *
+   * That last line is the whole point. `3001` means the reference is not
+   * indexed yet, `4002` that the query was malformed, `4008` that our key
+   * lacks the scope — each is a fact about the lookup, not about the transfer.
+   * Reading one as a refusal refunds a payout that is still on its way.
+   */
+  async checkTransferStatus(params: {
+    referenceNo: string;
+    beneAccountNumber: string;
+  }): Promise<{
+    verdict: "success" | "failed" | "pending";
+    status: string | null;
+    settledAt: string | null;
+    paymentNumber: string | null;
+    responseCode: string;
+    statusDesc?: string;
+    raw?: unknown;
+  }> {
+    const res = await this.dkPost<{
+      response_code?: string;
+      response_message?: string;
+      response_description?: string;
+      response_data?: {
+        payment_number?: string;
+        external_id?: string;
+        status?: string;
+        settled_at?: string | null;
+        statement_date?: string | null;
+        amount?: number;
+        currency?: string;
+      };
+    }>(
+      "/v1/intra-transaction/status",
+      {
+        reference_no: params.referenceNo,
+        bene_account_number: params.beneAccountNumber,
+      },
+      true,
+    );
+
+    const data = res?.response_data;
+    const code = res?.response_code ?? "";
+    const statusWord = data?.status ?? null;
+    const settledAt = data?.settled_at ?? null;
+    const refused = classifyDkStatus(statusWord) === "failed";
+    // Matched whole, never as a substring: "not settled" contains "settled",
+    // and reading it as a settlement is the one mistake here that pays twice.
+    // A word we do not recognise falls through to pending, which is safe.
+    const settledWord =
+      !!statusWord &&
+      (SETTLED_STATUS_WORDS as readonly string[]).includes(
+        statusWord.trim().toUpperCase(),
+      );
+
+    let verdict: "success" | "failed" | "pending";
+    if (settledAt) {
+      // Checked before the rejection word on purpose: a row DK both stamps as
+      // settled and calls rejected is the one case where refunding is certain
+      // to double-pay, because the money is already in the user's account.
+      verdict = "success";
+    } else if (refused) {
+      verdict = "failed";
+    } else if (code === DK_RESPONSE_CODES.SUCCESS && (settledWord || !statusWord)) {
+      verdict = "success";
+    } else {
+      verdict = "pending";
+    }
+
+    return {
+      verdict,
+      status: statusWord,
+      settledAt,
+      paymentNumber: data?.payment_number ?? null,
+      responseCode: code,
+      statusDesc: res?.response_description ?? res?.response_message,
+      raw: res,
+    };
+  }
+
   /** Public client inquiry — used by the /client-inquiry controller endpoint. */
   async clientInquiry(dto: { id_type: "CID"; id_number: string }) {
     return this.dkPost<{
@@ -760,6 +881,10 @@ export class DKGatewayService {
     txnId: string | null;
     txnStatusId: string | null;
     inquiryId: string | null;
+    /** New core, pending (0001) only: DK's preferred status-API handle. */
+    paymentNumber: string | null;
+    /** New core, pending (0001) only: our request id, echoed back. */
+    requestId: string | null;
     status: string;
     statusDesc: string;
     raw?: unknown;
@@ -795,6 +920,10 @@ export class DKGatewayService {
           txn_status_id?: string;
           transaction_id?: string;
           txn_id?: string;
+          /** New core, pending (0001): the handle the status API wants. */
+          payment_number?: string;
+          /** New core, pending (0001): echoes the request id we sent. */
+          external_id?: string;
         };
       }>("/v1/initiate/transaction", body, true);
     } catch (err: any) {
@@ -811,11 +940,19 @@ export class DKGatewayService {
     // response does not necessarily carry `transaction_id`: the pull-payment
     // flow returns `txn_status_id`, and batch mode returns only `bfs_txn_id`,
     // so demanding `transaction_id` specifically would reject good transfers.
+    const paymentNumber = raw?.response_data?.payment_number ?? null;
+    const requestId = raw?.response_data?.external_id ?? null;
+
+    // Ordered by how well each handle identifies the transfer, settled handles
+    // first. A pending (0001) response carries only the last two, so without
+    // them a payout reaches the reconciler with nothing to ask DK about.
     const anyReference =
       txnId ??
       raw?.response_data?.txn_status_id ??
       raw?.response_data?.inquiry_id ??
       (raw?.response_data as { bfs_txn_id?: string } | undefined)?.bfs_txn_id ??
+      paymentNumber ??
+      requestId ??
       null;
 
     // The response CODE is the only success signal. `response_message` is free
@@ -834,22 +971,41 @@ export class DKGatewayService {
     const missingTxnId = codeSaysSuccess && !anyReference;
     const success = codeSaysSuccess;
 
-    // Indeterminate outcomes: DK timed out, gave no response, or hit an internal
-    // error — so it may or may NOT have moved the money. These must be surfaced
-    // as AMBIGUOUS (not FAILED) so the caller leaves the withdrawal PROCESSING
-    // for reconciliation. Refunding on a transfer that actually settled would
-    // double-pay the user. (A clean rejection — bad account, restriction, bad
-    // params — is a definite FAILED where no money moved, so it is safe to
-    // refund; those are NOT in this list.)
-    const AMBIGUOUS_CODES: string[] = [
-      DK_RESPONSE_CODES.TIMEOUT, // 2002 — DK timed out
-      DK_RESPONSE_CODES.INTERNAL_NO_RESPONSE, // 2001 — DK gave no response
-      DK_RESPONSE_CODES.INTERNAL_FAILURE, // 2004 — DK internal failure
-      DK_RESPONSE_CODES.EXCEPTION, // 5001 — DK exception
-      DK_RESPONSE_CODES.DB_ERROR, // 5002 — DK database error
+    // FAILED is the only verdict that refunds, so it is the only one stated as
+    // an allowlist. A code reaches it solely by being a rejection DK documents
+    // as final: the request was turned down and no money moved. Everything
+    // else — a timeout, an internal error, the new core's pending `0001`, or a
+    // code DK has never sent us before — is AMBIGUOUS, and the caller leaves
+    // the withdrawal PROCESSING with the debit intact for reconciliation
+    // against /v1/intra-transaction/status.
+    //
+    // The inverted list this replaces is what refunded four withdrawals DK had
+    // accepted. DK answered `0001` — "Payment Engine transaction is
+    // validating", still in flight — and because `0001` was in neither list it
+    // fell through to FAILED. An unknown code is not a rejection; it is the
+    // absence of an answer, and the safe reading of no answer is "wait".
+    //
+    // 2011 is deliberately absent: it carries its real reason in
+    // `response_data` (invalid OTP, account closed, insufficient funds), so
+    // the code alone does not establish that no money moved.
+    //
+    // Known limitation, and the reason the reconciler exists. On the evening
+    // of 20 Sep 2026 DK answered two payouts with a definite rejection and
+    // executed both anyway; Oro refunded them and Nu 100 left the vault. An
+    // allowlist cannot catch that — only DK reporting its own transfers
+    // honestly can. What it does catch is every code we have not classified.
+    const DEFINITE_REJECTION_CODES: string[] = [
+      DK_RESPONSE_CODES.NOT_FOUND, // 3001 — beneficiary account not found
+      DK_RESPONSE_CODES.RESTRICTION, // 2008 — restricted by DK
+      DK_RESPONSE_CODES.INVALID_PARAMS, // 4002 — request rejected as malformed
     ];
-    const ambiguous = !codeSaysSuccess && AMBIGUOUS_CODES.includes(code);
-    const status = success ? "SUCCESS" : ambiguous ? "AMBIGUOUS" : "FAILED";
+    const definitelyRejected =
+      !codeSaysSuccess && DEFINITE_REJECTION_CODES.includes(code);
+    const status = success
+      ? "SUCCESS"
+      : definitelyRejected
+        ? "FAILED"
+        : "AMBIGUOUS";
 
     if (missingTxnId) {
       this.logger.error(
@@ -865,15 +1021,17 @@ export class DKGatewayService {
       txnId: txnId ?? anyReference,
       txnStatusId: raw?.response_data?.txn_status_id ?? null,
       inquiryId: raw?.response_data?.inquiry_id ?? null,
+      paymentNumber,
+      requestId,
       status,
       statusDesc:
         raw?.response_description ??
         raw?.response_message ??
         (success
           ? "Transfer queued"
-          : ambiguous
-            ? "Transfer status indeterminate"
-            : "Transfer failed"),
+          : definitelyRejected
+            ? "Transfer failed"
+            : "Transfer status indeterminate"),
       raw,
     };
   }

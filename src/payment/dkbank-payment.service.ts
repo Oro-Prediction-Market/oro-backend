@@ -1162,6 +1162,8 @@ export class DKBankPaymentService {
       txnId: string | null;
       txnStatusId?: string | null;
       inquiryId?: string | null;
+      paymentNumber?: string | null;
+      requestId?: string | null;
       status: string;
       statusDesc: string;
       raw?: unknown;
@@ -1242,6 +1244,11 @@ export class DKBankPaymentService {
           txnId: transferResult?.txnId ?? null,
           txnStatusId: transferResult?.txnStatusId ?? null,
           inquiryId: transferResult?.inquiryId ?? null,
+          // New core (0001) only. These are the sole handles a pending payout
+          // has — it carries no txn_status_id and no inquiry_id — and the
+          // reconciler picks the status route by their presence.
+          paymentNumber: transferResult?.paymentNumber ?? null,
+          requestId: transferResult?.requestId ?? null,
           raw: transferResult?.raw ?? null,
           at: new Date().toISOString(),
         },

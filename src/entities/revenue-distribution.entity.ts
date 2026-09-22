@@ -67,6 +67,18 @@ export class RevenueDistribution {
   @Column({ type: "varchar", length: 100, nullable: true })
   paymentReference: string | null;
 
+  /**
+   * Set while a DK transfer for this row is accepted but unsettled.
+   *
+   * Both send paths skip a row that holds one, so an indeterminate transfer can
+   * never be sent a second time. `resolvePendingTransfers` clears it — to
+   * COMPLETED if DK settled, or back to a plain PENDING if DK refused, which is
+   * the only way a row becomes sendable again.
+   */
+  @Index()
+  @Column({ type: "varchar", length: 100, nullable: true })
+  pendingTransferRef: string | null;
+
 
   /**
    * Denormalised from the market's book so aggregations need no join, the same

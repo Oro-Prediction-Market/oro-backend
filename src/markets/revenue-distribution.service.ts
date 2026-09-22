@@ -1,6 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { In, Repository } from "typeorm";
+import { In, IsNull, Not, Repository } from "typeorm";
 import { ConfigService } from "@nestjs/config";
 import { Cron, CronExpression } from "@nestjs/schedule";
 import {
@@ -290,6 +290,16 @@ export class RevenueDistributionService {
     if (dist.status !== DistributionStatus.PENDING) {
       return { success: false, error: `Already ${dist.status}` };
     }
+    // PENDING now covers two things: never sent, and sent but not settled.
+    // Only the first may be sent. `resolvePendingTransfers` owns the second.
+    if (dist.pendingTransferRef) {
+      return {
+        success: false,
+        error:
+          "A transfer for this distribution is already at the bank awaiting " +
+          "settlement. It resolves on its own — sending again would pay twice.",
+      };
+    }
 
     const amount = Number(dist.amount);
     if (amount <= 0)
@@ -326,14 +336,37 @@ export class RevenueDistributionService {
           `[Revenue] Transfer OK: ${amount} Nu -> ${dist.publicAccountNo}, ref: ${ref}`,
         );
         return { success: true, paymentReference: ref };
-      } else {
+      }
+
+      if (result.status === "FAILED") {
+        // A code on the gateway's definite-rejection allowlist: DK turned the
+        // request down and no money moved, so failing the row is accurate.
         await this.distributionRepo.update(dist.id, {
           status: DistributionStatus.FAILED,
         });
         this.logger.error(`[Revenue] Transfer failed: ${result.statusDesc}`);
         return { success: false, error: result.statusDesc };
       }
+
+      // AMBIGUOUS. DK may or may not have moved the fee, so the row is held
+      // rather than failed or completed: hold it and ask DK later.
+      const heldRef = this.holdRef(result, `MANUAL-${dist.id}`);
+      await this.distributionRepo.update(dist.id, {
+        pendingTransferRef: heldRef,
+      });
+      this.logger.warn(
+        `[Revenue] Transfer indeterminate for ${dist.id} — held with ref ` +
+          `${heldRef} for reconciliation: ${result.statusDesc}`,
+      );
+      return {
+        success: false,
+        error: result.statusDesc ?? "Transfer status indeterminate",
+      };
     } catch (err: any) {
+      // The call threw, so there is no DK handle to reconcile against. FAILED
+      // is not strictly accurate — money may have moved — but it does take the
+      // row out of both send paths, which is what matters here. It shows up in
+      // the admin list for a human to settle against DK's statement.
       await this.distributionRepo.update(dist.id, {
         status: DistributionStatus.FAILED,
       });
@@ -342,16 +375,53 @@ export class RevenueDistributionService {
     }
   }
 
+  /**
+   * The handle a held row is stamped with, best first.
+   *
+   * Only handles `/v1/intra-transaction/status` accepts as `reference_no`: a
+   * payment_number, our own request id, or a txn_status_id. Deliberately NOT
+   * `txnId`, which falls back to the inquiry_id we made up ourselves — the
+   * resolver would ask DK about a reference it never issued and be told "not
+   * found" on every sweep, forever.
+   *
+   * `fallback` is used when DK gave us nothing askable. It keeps the row out of
+   * both send paths, which is the point, and the resolver reports it for a
+   * human instead of guessing.
+   */
+  private holdRef(
+    result: {
+      paymentNumber?: string | null;
+      requestId?: string | null;
+      txnStatusId?: string | null;
+    },
+    fallback: string,
+  ): string {
+    return (
+      result.paymentNumber || result.requestId || result.txnStatusId || fallback
+    );
+  }
+
+  /** A held row carrying this prefix has no DK handle and needs a human. */
+  private static readonly MANUAL_HOLD_PREFIX = "MANUAL-";
+
   /** Process all pending distributions as ONE combined transfer. Admin-triggered. */
   async processAllPending(): Promise<{
     processed: number;
     succeeded: number;
     failed: number;
+    /** Sent, but DK has not said whether it settled. Neither paid nor retryable. */
+    held?: number;
     totalAmount: number;
     paymentReference?: string;
   }> {
+    // A held row has a transfer at the bank already. Including it here is how
+    // the entire batch gets paid twice: the rows are summed into one new
+    // transfer while the first is still validating.
     const pending = await this.distributionRepo.find({
-      where: { status: DistributionStatus.PENDING },
+      where: {
+        status: DistributionStatus.PENDING,
+        pendingTransferRef: IsNull(),
+      },
       order: { createdAt: "ASC" },
     });
 
@@ -404,7 +474,11 @@ export class RevenueDistributionService {
           totalAmount,
           paymentReference: ref,
         };
-      } else {
+      }
+
+      if (result.status === "FAILED") {
+        // Definite rejection — no money moved. The rows stay PENDING and free,
+        // which is correct: the next run should send them again.
         this.logger.error(
           `[Revenue] Batch transfer failed: ${result.statusDesc}`,
         );
@@ -415,14 +489,166 @@ export class RevenueDistributionService {
           totalAmount: 0,
         };
       }
-    } catch (err: any) {
-      this.logger.error(`[Revenue] Batch transfer exception: ${err.message}`);
+
+      // AMBIGUOUS. This used to write nothing at all, which left every row
+      // PENDING and free — so the next click re-sent the whole batch while DK
+      // was still validating the first transfer.
+      const heldRef = this.holdRef(result, `MANUAL-BATCH-${Date.now()}`);
+      await this.holdBatch(pending, heldRef);
+      this.logger.warn(
+        `[Revenue] Batch transfer indeterminate (${pending.length} rows, ` +
+          `${totalAmount.toFixed(2)} Nu) — held with ref ${heldRef}: ` +
+          `${result.statusDesc}`,
+      );
       return {
         processed: pending.length,
         succeeded: 0,
-        failed: pending.length,
-        totalAmount: 0,
+        failed: 0,
+        held: pending.length,
+        totalAmount,
+        paymentReference: heldRef,
       };
+    } catch (err: any) {
+      // A thrown call is the same unknown as an indeterminate code, and here it
+      // is more dangerous: executeTransfer's catch at least takes its row out of
+      // the queue by failing it, while these rows would stay PENDING and free.
+      const heldRef = `MANUAL-BATCH-${Date.now()}`;
+      await this.holdBatch(pending, heldRef);
+      this.logger.error(
+        `[Revenue] Batch transfer exception (${pending.length} rows held as ` +
+          `${heldRef}): ${err.message}`,
+      );
+      return {
+        processed: pending.length,
+        succeeded: 0,
+        failed: 0,
+        held: pending.length,
+        totalAmount,
+        paymentReference: heldRef,
+      };
+    }
+  }
+
+  /** Take every row in a batch out of both send paths under one reference. */
+  private async holdBatch(
+    rows: RevenueDistribution[],
+    ref: string,
+  ): Promise<void> {
+    for (const dist of rows) {
+      await this.distributionRepo.update(dist.id, {
+        pendingTransferRef: ref,
+      });
+    }
+  }
+
+  /**
+   * Finish off distributions whose transfer was accepted but never settled.
+   *
+   * This is the only path that clears a hold, and it clears it in exactly two
+   * directions: COMPLETED when DK confirms the fee landed, or back to a plain
+   * PENDING when DK confirms it did not, so the next run sends it properly.
+   * Anything else — still validating, a lookup that cannot answer, a status
+   * call that throws — leaves the hold in place. Releasing a row on an unknown
+   * outcome is the one move that pays the fee twice.
+   */
+  async resolvePendingTransfers(): Promise<{
+    checked: number;
+    settled: number;
+    returned: number;
+  }> {
+    const held = await this.distributionRepo.find({
+      where: { pendingTransferRef: Not(IsNull()) },
+      order: { createdAt: "ASC" },
+      take: 50,
+    });
+
+    let settled = 0;
+    let returned = 0;
+
+    for (const dist of held) {
+      const ref = dist.pendingTransferRef;
+      if (!ref) continue;
+
+      // No DK handle was ever issued for this one, so there is nothing to ask.
+      // It stays held and visible until a human settles it against DK's
+      // statement — asking DK about a reference it never issued would answer
+      // "not found" on every sweep, forever.
+      if (ref.startsWith(RevenueDistributionService.MANUAL_HOLD_PREFIX)) {
+        this.logger.error(
+          `[Revenue] Distribution ${dist.id} (Nu ${dist.amount}) is held with ` +
+            `no DK reference — MANUAL reconciliation required against DK's ` +
+            `statement before it can be released`,
+        );
+        continue;
+      }
+
+      let answer: Awaited<
+        ReturnType<DKGatewayService["checkTransferStatus"]>
+      >;
+      try {
+        answer = await this.dkGateway.checkTransferStatus({
+          referenceNo: ref,
+          // The fee is credited to the public account, so that is the side of
+          // the transfer DK is asked about.
+          beneAccountNumber: dist.publicAccountNo,
+        });
+      } catch (err: any) {
+        // A status check that cannot complete says nothing about the transfer.
+        this.logger.warn(
+          `[Revenue] Status check failed for distribution ${dist.id} ` +
+            `(ref ${ref}), leaving it held: ${err?.message}`,
+        );
+        continue;
+      }
+
+      if (answer.verdict === "pending") continue;
+
+      if (answer.verdict === "success") {
+        await this.distributionRepo.update(dist.id, {
+          status: DistributionStatus.COMPLETED,
+          paymentReference: answer.paymentNumber ?? ref,
+          paidAt: new Date(),
+          pendingTransferRef: null,
+        });
+        settled += 1;
+        this.logger.log(
+          `[Revenue] Distribution ${dist.id} settled at DK (ref ${ref}) — COMPLETED`,
+        );
+        continue;
+      }
+
+      // Refused, and the gateway only says so on a definite answer. No money
+      // moved, so the row goes back into the queue for the next run.
+      await this.distributionRepo.update(dist.id, {
+        status: DistributionStatus.PENDING,
+        pendingTransferRef: null,
+      });
+      returned += 1;
+      this.logger.warn(
+        `[Revenue] Distribution ${dist.id} refused by the bank (ref ${ref}) — ` +
+          `returned to PENDING: ${answer.statusDesc ?? answer.status ?? ""}`,
+      );
+    }
+
+    return { checked: held.length, settled, returned };
+  }
+
+  /** Cluster-locked so exactly one pod resolves held transfers per tick. */
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async resolvePendingTransfersCron(): Promise<void> {
+    const LOCK = "oro:lock:revenue-pending-transfers";
+    const token = await this.redisService
+      .acquireLock(LOCK, 120)
+      .catch(() => null);
+    if (!token) return; // another pod owns the tick, or Redis down (safe: skip)
+    try {
+      await this.resolvePendingTransfers();
+    } catch (err) {
+      this.logger.error(
+        `[Revenue] Pending-transfer resolver failed: ${(err as Error).message}`,
+      );
+    } finally {
+      await this.redisService.releaseLock(LOCK, token).catch(() => undefined);
     }
   }
 
