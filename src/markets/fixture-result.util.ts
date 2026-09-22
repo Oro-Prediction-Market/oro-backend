@@ -27,8 +27,13 @@
  *     indistinguishable from a real draw, and paid out as one. Absent data must
  *     stop the settlement, never resolve it.
  *
- * None of this makes a late correction impossible. It narrows the window; the
- * post-settlement audit is what actually catches one.
+ * None of these three catches a record that is simply wrong while looking
+ * complete — which is the likelier explanation of Forest v Tottenham, since a
+ * missing score reads as 0-0 and would have settled as a draw, not as the home
+ * win we actually paid. That one needs {@link isFixtureStable} below, which
+ * asks a different question: not "is this record usable" but "has the provider
+ * finished changing it". The post-settlement audit remains the backstop for a
+ * correction that lands after we have already paid.
  */
 
 export type FixtureWinner = "HOME_TEAM" | "AWAY_TEAM" | "DRAW";
@@ -114,6 +119,126 @@ export function readFixtureResult(matchData: any): FixtureReadout {
       totalGoals: homeScore + awayScore,
     },
   };
+}
+
+/**
+ * How long a fixture record must sit untouched before we will propose on it.
+ *
+ * `readFixtureResult` above only asks "is this record complete and internally
+ * consistent". It cannot tell a finished record from a provisional one that
+ * happens to be well-formed — and that is what settled Nottingham Forest v
+ * Tottenham against the wrong team. The record said the home side was ahead,
+ * said so consistently, and was later corrected to 0-0. Nothing readable from a
+ * single snapshot would have caught it.
+ *
+ * So the second question is "has the provider stopped changing its mind", and
+ * football-data answers it directly: `lastUpdated` moves on every revision.
+ * Requiring an hour of quiet is strictly better than waiting a fixed hour after
+ * the whistle — a cleanly-finalised record clears the moment it has been stable
+ * long enough, and a record still being revised waits exactly as long as the
+ * revisions continue, which is the case we actually care about.
+ */
+export const PROPOSAL_MIN_STABLE_MS = 60 * 60 * 1000;
+
+/**
+ * Used only when `lastUpdated` is absent or unusable. A match runs about two
+ * hours including stoppages and half time, so this is roughly ninety minutes
+ * past a normal full-time whistle.
+ *
+ * It exists so that a provider quietly dropping the field degrades to a slower
+ * guard rather than to no guard at all — a stability check that silently
+ * disappears when its input does is worse than no check, because it still looks
+ * present in the code.
+ */
+export const PROPOSAL_FALLBACK_MIN_AGE_MS = 3.5 * 60 * 60 * 1000;
+
+export type StabilityReadout =
+  | { stable: true; reason: string }
+  | { stable: false; reason: string };
+
+/**
+ * Whether the provider has left this fixture alone long enough to pay on it.
+ *
+ * Deliberately separate from {@link readFixtureResult}: that one answers "is
+ * this record usable", this one answers "is it finished changing". A record can
+ * pass the first and fail the second, which is exactly the September failure.
+ *
+ * Returns `stable: false` when it cannot tell — a fixture carrying neither a
+ * usable `lastUpdated` nor a usable `utcDate` never proposes and waits for an
+ * admin. That parks the market, which is the safe direction: an unpaid market
+ * is visible and reversible, a wrongly paid one is neither.
+ */
+export function isFixtureStable(
+  matchData: any,
+  now: Date = new Date(),
+  minStableMs: number = PROPOSAL_MIN_STABLE_MS,
+): StabilityReadout {
+  const lastUpdated = parseInstant(matchData?.lastUpdated);
+
+  if (lastUpdated !== null) {
+    const quietFor = now.getTime() - lastUpdated.getTime();
+
+    // A timestamp in the future is clock skew or provider nonsense. A little is
+    // harmless and resolves itself as the clock catches up; a lot would park
+    // the market until the date arrived, so past that point we stop believing
+    // the field and fall through to the kickoff rule.
+    if (quietFor < -minStableMs) {
+      return fromKickoff(matchData, now, "lastUpdated is implausibly far ahead");
+    }
+
+    if (quietFor >= minStableMs) {
+      return {
+        stable: true,
+        reason: `unchanged for ${Math.floor(quietFor / 60_000)} min`,
+      };
+    }
+
+    const waitMin = Math.ceil((minStableMs - quietFor) / 60_000);
+    return {
+      stable: false,
+      reason:
+        `provider last revised this record ` +
+        `${Math.max(0, Math.floor(quietFor / 60_000))} min ago — ` +
+        `waiting another ${waitMin} min for it to settle`,
+    };
+  }
+
+  return fromKickoff(matchData, now, "no usable lastUpdated");
+}
+
+function fromKickoff(
+  matchData: any,
+  now: Date,
+  why: string,
+): StabilityReadout {
+  const kickoff = parseInstant(matchData?.utcDate);
+  if (kickoff === null) {
+    return {
+      stable: false,
+      reason: `${why}, and no usable utcDate either — cannot judge staleness`,
+    };
+  }
+
+  const sinceKickoff = now.getTime() - kickoff.getTime();
+  if (sinceKickoff >= PROPOSAL_FALLBACK_MIN_AGE_MS) {
+    return {
+      stable: true,
+      reason: `${why}; ${Math.floor(sinceKickoff / 60_000)} min past kickoff`,
+    };
+  }
+
+  const waitMin = Math.ceil((PROPOSAL_FALLBACK_MIN_AGE_MS - sinceKickoff) / 60_000);
+  return {
+    stable: false,
+    reason: `${why}; only ${Math.floor(sinceKickoff / 60_000)} min past kickoff — waiting another ${waitMin} min`,
+  };
+}
+
+/** null for absent, non-string, or unparseable — every one means "cannot use this". */
+function parseInstant(raw: unknown): Date | null {
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
 /**

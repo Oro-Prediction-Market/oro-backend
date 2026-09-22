@@ -572,6 +572,19 @@ describe("KeeperService.resolveProposeKey", () => {
 
 // ── resolveOutcome (via handleAutoProposal) ───────────────────────────────────
 
+/**
+ * A fixture the provider has left alone long enough to pay on.
+ *
+ * These mocks used to carry a score and nothing else, and auto-proposal was
+ * happy with that. It no longer is: a record the provider is still revising
+ * must not settle a market, which is what `isFixtureStable` enforces. Without
+ * this field every case below correctly refuses to propose — so it is part of
+ * the fixture now, not incidental setup.
+ */
+const PROVIDER_QUIET_SINCE = new Date(
+  Date.now() - 2 * 60 * 60 * 1000,
+).toISOString();
+
 describe("KeeperService resolveOutcome logic", () => {
   beforeEach(() => {
     // Mock global fetch for football API calls
@@ -634,6 +647,7 @@ describe("KeeperService resolveOutcome logic", () => {
       ok: true,
       json: async () => ({
         status: "FINISHED",
+        lastUpdated: PROVIDER_QUIET_SINCE,
         score: { winner: "HOME_TEAM", fullTime: { home: 3, away: 1 } },
         homeTeam: { name: "Manchester City" },
         awayTeam: { name: "Arsenal" },
@@ -675,6 +689,7 @@ describe("KeeperService resolveOutcome logic", () => {
       ok: true,
       json: async () => ({
         status: "FINISHED",
+        lastUpdated: PROVIDER_QUIET_SINCE,
         score: { winner: "DRAW", fullTime: { home: 1, away: 1 } },
         homeTeam: { name: "TeamA" },
         awayTeam: { name: "TeamB" },
@@ -714,6 +729,7 @@ describe("KeeperService resolveOutcome logic", () => {
       ok: true,
       json: async () => ({
         status: "FINISHED",
+        lastUpdated: PROVIDER_QUIET_SINCE,
         score: { winner: "DRAW", fullTime: { home: 2, away: 2 } }, // 4 total > 2.5
         homeTeam: { name: "A" },
         awayTeam: { name: "B" },
@@ -753,6 +769,7 @@ describe("KeeperService resolveOutcome logic", () => {
       ok: true,
       json: async () => ({
         status: "FINISHED",
+        lastUpdated: PROVIDER_QUIET_SINCE,
         score: { winner: "DRAW", fullTime: { home: 1, away: 1 } }, // 2 total < 2.5
         homeTeam: { name: "A" },
         awayTeam: { name: "B" },
@@ -847,6 +864,7 @@ describe("KeeperService resolveOutcome logic", () => {
       ok: true,
       json: async () => ({
         status: "FINISHED",
+        lastUpdated: PROVIDER_QUIET_SINCE,
         score: { winner: "HOME_TEAM", fullTime: { home: 2, away: 0 } },
         homeTeam: { name: "Manchester City" }, // API returns full name
         awayTeam: { name: "Arsenal" },

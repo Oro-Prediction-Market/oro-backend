@@ -22,7 +22,11 @@ import {
 } from "../ucl/ucl-stat-markets";
 import { CreateMarketDto } from "./dto/create-market.dto";
 import { statNamesMatch } from "./stat-outcome-match.util";
-import { fetchFixture, readFixtureResult } from "./fixture-result.util";
+import {
+  fetchFixture,
+  isFixtureStable,
+  readFixtureResult,
+} from "./fixture-result.util";
 
 /**
  * How far back the settlement audit re-checks.
@@ -1136,6 +1140,21 @@ export class KeeperService {
               `No outcome proposed. Will retry, or resolve manually.`,
           );
         }
+        continue;
+      }
+
+      // ── Has the provider stopped revising it? ─────────────────────────────
+      // Completeness is not finality. Forest v Tottenham read as a clean,
+      // self-consistent home win minutes after the whistle and was corrected to
+      // 0-0 afterwards — no single snapshot could have caught that. This waits
+      // for the record to go quiet before any money moves. Skipping is cheap:
+      // the next five-minute tick picks the fixture up again.
+      const stability = isFixtureStable(matchData);
+      if (!stability.stable) {
+        this.addLog(
+          "info",
+          `Auto-Proposal: match ${matchId} not settled down yet — ${stability.reason}`,
+        );
         continue;
       }
 
