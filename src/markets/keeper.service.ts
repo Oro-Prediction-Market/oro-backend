@@ -36,6 +36,25 @@ import {
  */
 const AUDIT_LOOKBACK_DAYS = 7;
 
+/**
+ * How long an admin actually has to object, read off the market rather than
+ * asserted.
+ *
+ * Both auto-proposal DMs used to say "24h dispute window now open" while
+ * `proposeResolution` was opening a 60-minute one. An admin who read the DM and
+ * planned to look at it after work had already missed it by hours — the market
+ * auto-settled while they believed they had a day.
+ *
+ * Taking the number from the saved market means it stays true if the default
+ * moves or a caller passes a different window, which is the only way a message
+ * like this stays correct. Phrasing matches the engine's own refusal text so
+ * the two never describe the same window differently.
+ */
+function describeWindow(market: { windowMinutes?: number | null }): string {
+  const mins = market?.windowMinutes ?? 60;
+  return mins >= 60 ? `${mins / 60}h` : `${mins}min`;
+}
+
 export interface KeeperLogEntry {
   id: number;
   time: string;
@@ -1045,7 +1064,10 @@ export class KeeperService {
       const winningOutcome = outs.find((o) => like(norm(o.label), winNorm));
       if (!winningOutcome) continue;
       try {
-        await this.marketsService.proposeResolution(market.id, winningOutcome.id);
+        const proposed = await this.marketsService.proposeResolution(
+          market.id,
+          winningOutcome.id,
+        );
         this.disputeWindowsOpened++;
         this.addLog(
           "success",
@@ -1055,7 +1077,7 @@ export class KeeperService {
           `🤖 <b>Keeper: UCL Bracket</b>\n\n` +
             `📊 <b>${market.title}</b>\n` +
             `🏆 Advances: <b>${winningOutcome.label}</b>\n` +
-            `⏳ 24h dispute window now open.`,
+            `⏳ ${describeWindow(proposed)} dispute window now open.`,
         );
       } catch (e) {
         this.addLog(
@@ -1178,7 +1200,7 @@ export class KeeperService {
             );
             continue;
           }
-          await this.marketsService.proposeResolution(
+          const proposed = await this.marketsService.proposeResolution(
             market.id,
             winningOutcomeId,
           );
@@ -1194,7 +1216,7 @@ export class KeeperService {
             `🤖 <b>Keeper: Auto-Proposal</b>\n\n` +
               `📊 <b>${market.title}</b>\n` +
               `🏆 Proposed Winner: <b>${label}</b>\n` +
-              `⏳ 24h dispute window now open.`,
+              `⏳ ${describeWindow(proposed)} dispute window now open.`,
           );
         } catch (err: any) {
           this.addLog(
