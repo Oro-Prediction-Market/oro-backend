@@ -19,8 +19,7 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "migration:run:prod": "node node_modules/typeorm/cli.js migration:run -d dist/data-source.js",
-    "migration:show:prod": "node node_modules/typeorm/cli.js migration:show -d dist/data-source.js",
-    "seed:unl": "TS_NODE_PROJECT=tsconfig.json npx ts-node -r tsconfig-paths/register src/seed-unl.ts"
+    "migration:show:prod": "node node_modules/typeorm/cli.js migration:show -d dist/data-source.js"
   },
   "jest": {
     "preset": "ts-jest",
