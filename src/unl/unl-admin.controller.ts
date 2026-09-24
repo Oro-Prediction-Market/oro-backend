@@ -99,6 +99,35 @@ export class UnlAdminController {
     return team;
   }
 
+  /**
+   * Create a whole draw from a pasted block.
+   *
+   * Pass `dryRun: true` for the preview the page shows before committing —
+   * this is the one action that writes fifty-odd rows at once, and the names
+   * it writes become market outcome labels that cannot be renamed later.
+   */
+  @Post("teams/bulk")
+  @ApiOperation({ summary: "Add a whole draw from pasted text" })
+  async bulkCreateTeams(
+    @Request() req: any,
+    @Body() body: { season?: string; text?: string; dryRun?: boolean },
+  ) {
+    const dryRun = body?.dryRun === true;
+    const result = await this.unl.bulkCreateTeams(
+      body?.season ?? "",
+      body?.text ?? "",
+      dryRun,
+    );
+    if (!dryRun && result.created > 0) {
+      await this.audit(req, AuditAction.MARKET_CREATE, "unl_team", "bulk", {
+        season: body?.season,
+        created: result.created,
+        skipped: result.skipped.length,
+      });
+    }
+    return result;
+  }
+
   @Patch("teams/:id")
   @ApiOperation({ summary: "Edit a nation" })
   async updateTeam(
@@ -199,6 +228,40 @@ export class UnlAdminController {
       matchday: fixture.matchday,
     });
     return fixture;
+  }
+
+  /**
+   * Generate a group's whole fixture list from its teams.
+   *
+   * The pairings follow from who is in the group, so the only input is when
+   * each matchday kicks off. Refused if the group already has fixtures.
+   */
+  @Post("fixtures/generate")
+  @ApiOperation({ summary: "Generate a group's round-robin fixture list" })
+  async generateFixtures(
+    @Request() req: any,
+    @Body()
+    body: {
+      season?: string;
+      groupKey?: string;
+      kickoffs?: string[];
+      rounds?: number;
+    },
+  ) {
+    const rounds = Number(body?.rounds) === 1 ? 1 : 2;
+    const result = await this.unl.generateFixtures(
+      body?.season ?? "",
+      body?.groupKey ?? "",
+      body?.kickoffs ?? [],
+      rounds,
+    );
+    await this.audit(req, AuditAction.MARKET_CREATE, "unl_fixture", "generated", {
+      season: body?.season,
+      groupKey: body?.groupKey,
+      rounds,
+      created: result.created,
+    });
+    return result;
   }
 
   @Patch("fixtures/:id")

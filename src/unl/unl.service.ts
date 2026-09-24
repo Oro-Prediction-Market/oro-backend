@@ -18,6 +18,12 @@ import {
   computeGroupTable,
   UnlStandingRow,
 } from "../markets/unl-standings.util";
+import {
+  ParsedTeam,
+  matchdayCount,
+  parseTeamBlock,
+  roundRobin,
+} from "./unl-bulk.util";
 
 /**
  * UEFA Nations League reference data.
@@ -354,6 +360,83 @@ export class UnlService {
     return this.teamRepo.save(team);
   }
 
+  /**
+   * Create a whole draw from a pasted block.
+   *
+   * `dryRun` returns exactly what a real run would do without writing
+   * anything, which is what the admin page previews. Worth having: this is the
+   * one action that can create fifty-odd rows at once, and the names it
+   * creates become outcome labels that cannot be renamed later.
+   *
+   * A row that clashes with one already there is reported as skipped, not
+   * failed — re-pasting a block after adding one group by hand should top up
+   * the rest rather than refuse wholesale.
+   */
+  async bulkCreateTeams(
+    season: string,
+    text: string,
+    dryRun: boolean,
+  ): Promise<{
+    parsed: ParsedTeam[];
+    errors: string[];
+    created: number;
+    skipped: { name: string; groupKey: string; reason: string }[];
+  }> {
+    const target = requireText(season, "season");
+    const { teams, errors } = parseTeamBlock(text ?? "");
+
+    const existing = await this.teamRepo.find({ where: { season: target } });
+    const taken = new Set(
+      existing.map((t) => `${t.groupKey}|${t.name.toLowerCase()}`),
+    );
+
+    const skipped: { name: string; groupKey: string; reason: string }[] = [];
+    const toCreate: ParsedTeam[] = [];
+
+    for (const t of teams) {
+      const key = `${t.groupKey}|${t.name.toLowerCase()}`;
+      if (taken.has(key)) {
+        skipped.push({
+          name: t.name,
+          groupKey: t.groupKey,
+          reason: "already in that group",
+        });
+        continue;
+      }
+      taken.add(key);
+      toCreate.push(t);
+    }
+
+    if (dryRun) {
+      return { parsed: teams, errors, created: toCreate.length, skipped };
+    }
+
+    // sortOrder continues from whatever the group already holds, so a top-up
+    // paste lands after the existing teams rather than on top of them.
+    const nextOrder = new Map<string, number>();
+    for (const t of existing) {
+      nextOrder.set(
+        t.groupKey,
+        Math.max(nextOrder.get(t.groupKey) ?? -1, t.sortOrder) + 1,
+      );
+    }
+
+    const rows = toCreate.map((t) => {
+      const order = nextOrder.get(t.groupKey) ?? 0;
+      nextOrder.set(t.groupKey, order + 1);
+      return this.teamRepo.create({
+        season: target,
+        groupKey: t.groupKey,
+        name: t.name,
+        flagUrl: t.flagUrl,
+        sortOrder: order,
+      });
+    });
+    await this.teamRepo.save(rows);
+
+    return { parsed: teams, errors, created: rows.length, skipped };
+  }
+
   async deleteTeam(id: string): Promise<void> {
     const used = await this.fixtureRepo.count({
       where: [{ homeTeamId: id }, { awayTeamId: id }],
@@ -425,6 +508,76 @@ export class UnlService {
         matchday,
       }),
     );
+  }
+
+  /**
+   * Generate a group's whole fixture list.
+   *
+   * A group's pairings are not information an admin holds — they follow from
+   * who is in the group. Four teams home and away is always the same twelve
+   * matches over six matchdays, so the only real input is when each matchday
+   * kicks off.
+   *
+   * Refuses outright if the group already has fixtures. Generating a second
+   * round-robin on top of an existing one would double every pairing, and
+   * with markets possibly attached that is not something to half-do and then
+   * ask about.
+   */
+  async generateFixtures(
+    season: string,
+    groupKey: string,
+    kickoffs: string[],
+    rounds: 1 | 2,
+  ): Promise<{ created: number; matchdays: number }> {
+    const target = requireText(season, "season");
+    const key = normaliseGroupKey(groupKey);
+
+    const teams = await this.teamRepo.find({
+      where: { season: target, groupKey: key },
+      order: { sortOrder: "ASC", name: "ASC" },
+    });
+    if (teams.length < 2) {
+      throw new BadRequestException(
+        `Group ${key} has ${teams.length} nation(s). Add at least two first.`,
+      );
+    }
+
+    const already = await this.fixtureRepo.count({
+      where: { season: target, groupKey: key },
+    });
+    if (already > 0) {
+      throw new BadRequestException(
+        `Group ${key} already has ${already} fixture(s). Delete them first — ` +
+          `generating again would create a second copy of every pairing.`,
+      );
+    }
+
+    const needed = matchdayCount(teams.length, rounds);
+    if (!Array.isArray(kickoffs) || kickoffs.length !== needed) {
+      throw new BadRequestException(
+        `Group ${key} needs ${needed} kickoff time(s) for ${teams.length} ` +
+          `teams over ${rounds} leg(s); got ${kickoffs?.length ?? 0}.`,
+      );
+    }
+    const times = kickoffs.map((k, i) => parseDate(k, `kickoff ${i + 1}`));
+
+    const pairings = roundRobin(teams.length, rounds);
+    const rows = pairings.map((p) =>
+      this.fixtureRepo.create({
+        season: target,
+        groupKey: key,
+        homeTeamId: teams[p.homeIndex].id,
+        awayTeamId: teams[p.awayIndex].id,
+        kickoffAt: times[p.matchday - 1],
+        homeScore: null,
+        awayScore: null,
+        status: UnlFixtureStatus.SCHEDULED,
+        matchday: p.matchday,
+      }),
+    );
+    await this.fixtureRepo.save(rows);
+
+    return { created: rows.length, matchdays: needed };
   }
 
   async updateFixture(
