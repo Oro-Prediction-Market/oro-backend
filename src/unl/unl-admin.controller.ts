@@ -231,36 +231,41 @@ export class UnlAdminController {
   }
 
   /**
-   * Generate a group's whole fixture list from its teams.
+   * Create fixtures from a pasted list.
    *
-   * The pairings follow from who is in the group, so the only input is when
-   * each matchday kicks off. Refused if the group already has fixtures.
+   * `tzOffsetMinutes` is the browser's own `getTimezoneOffset()`, so a bare
+   * "2026-09-04 20:45" means the same instant here as one typed into the date
+   * picker. A kickoff is also the market's betting deadline, so this is worth
+   * getting exactly right rather than assuming a server timezone.
    */
-  @Post("fixtures/generate")
-  @ApiOperation({ summary: "Generate a group's round-robin fixture list" })
-  async generateFixtures(
+  @Post("fixtures/bulk")
+  @ApiOperation({ summary: "Add fixtures from pasted text" })
+  async bulkCreateFixtures(
     @Request() req: any,
     @Body()
     body: {
       season?: string;
-      groupKey?: string;
-      kickoffs?: string[];
-      rounds?: number;
+      text?: string;
+      tzOffsetMinutes?: number;
+      dryRun?: boolean;
     },
   ) {
-    const rounds = Number(body?.rounds) === 1 ? 1 : 2;
-    const result = await this.unl.generateFixtures(
+    const dryRun = body?.dryRun === true;
+    const tz = Number.isFinite(body?.tzOffsetMinutes)
+      ? Number(body!.tzOffsetMinutes)
+      : 0;
+    const result = await this.unl.bulkCreateFixtures(
       body?.season ?? "",
-      body?.groupKey ?? "",
-      body?.kickoffs ?? [],
-      rounds,
+      body?.text ?? "",
+      tz,
+      dryRun,
     );
-    await this.audit(req, AuditAction.MARKET_CREATE, "unl_fixture", "generated", {
-      season: body?.season,
-      groupKey: body?.groupKey,
-      rounds,
-      created: result.created,
-    });
+    if (!dryRun && result.created > 0) {
+      await this.audit(req, AuditAction.MARKET_CREATE, "unl_fixture", "bulk", {
+        season: body?.season,
+        created: result.created,
+      });
+    }
     return result;
   }
 

@@ -10,13 +10,13 @@
  *
  *  - **A paste block for the draw.** One line per group, which is how the draw
  *    is published and how anyone would write it down anyway.
- *  - **A generated round-robin.** A group's fixture list is not information —
- *    it is determined by who is in the group. Four teams playing home and away
- *    is always the same twelve pairings over six matchdays, so there is
- *    nothing to type.
+ *  - **A paste block for the fixtures.** One line per match: group, the two
+ *    nations, the kickoff, and the matchday.
  *
- * Both are pure functions with no database access, so the parsing and the
- * scheduling can be tested without one.
+ * Both are pure functions with no database access, so the parsing can be
+ * tested without one. Resolving a pasted nation name to an actual team is the
+ * service's job, and it matches exactly — never by substring, because this
+ * competition fields Republic of Ireland and Northern Ireland.
  */
 
 // ── Flags ───────────────────────────────────────────────────────────────────
@@ -196,67 +196,167 @@ export function parseTeamBlock(text: string): ParseTeamsResult {
   return { teams, errors };
 }
 
-// ── Generating a group's fixtures ───────────────────────────────────────────
+// ── Parsing a pasted fixture list ───────────────────────────────────────────
 
-export interface GeneratedPairing {
-  matchday: number;
-  homeIndex: number;
-  awayIndex: number;
+export interface ParsedFixture {
+  groupKey: string;
+  homeName: string;
+  awayName: string;
+  /** Absolute instant, resolved from the admin's own timezone. */
+  kickoffAt: string;
+  matchday: number | null;
+}
+
+export interface ParseFixturesResult {
+  fixtures: ParsedFixture[];
+  errors: string[];
 }
 
 /**
- * The round-robin for `count` teams, by the circle method.
+ * `YYYY-MM-DD HH:MM`, read in the admin's timezone unless it carries its own.
  *
- * With an odd number of teams one sits out each round, which is exactly what
- * happens in a three-team group — League D has them, so this is not a
- * hypothetical.
- *
- * `rounds: 2` plays the whole thing again with home and away swapped, which is
- * the Nations League format: four teams, six matchdays, twelve matches.
- *
- * Returns indices rather than ids so it can be tested without any teams.
+ * Deliberately narrow. Accepting `04/09/2026` would mean guessing between the
+ * 4th of September and the 9th of April, and the wrong guess is a market that
+ * closes months from the match. An explicit `Z` or `+06:00` wins; otherwise
+ * `tzOffsetMinutes` (the browser's own `getTimezoneOffset()`) is applied, so a
+ * pasted time means the same thing as one typed into the date picker.
  */
-export function roundRobin(count: number, rounds: 1 | 2): GeneratedPairing[] {
-  if (count < 2) return [];
+function parseKickoff(
+  raw: string,
+  tzOffsetMinutes: number,
+): { iso: string } | { error: string } {
+  const text = raw.trim();
+  const m = text.match(
+    /^(\d{4})-(\d{2})-(\d{2})[T ](\d{1,2}):(\d{2})\s*(Z|[+-]\d{2}:?\d{2})?$/i,
+  );
+  if (!m) {
+    return {
+      error: `"${text}" is not a date I can read. Use YYYY-MM-DD HH:MM, e.g. 2026-09-04 20:45.`,
+    };
+  }
+  const [, y, mo, d, hh, mm, zone] = m;
+  const base = Date.UTC(+y, +mo - 1, +d, +hh, +mm);
 
-  // Odd counts get a bye marker, which drops back out below.
-  const BYE = -1;
-  const ids = Array.from({ length: count }, (_, i) => i);
-  if (ids.length % 2 === 1) ids.push(BYE);
-
-  const n = ids.length;
-  const halfRounds = n - 1;
-  const out: GeneratedPairing[] = [];
-
-  for (let leg = 0; leg < rounds; leg++) {
-    // Rotate all but the first entry; standard circle method.
-    const wheel = [...ids];
-    for (let r = 0; r < halfRounds; r++) {
-      const matchday = leg * halfRounds + r + 1;
-      for (let i = 0; i < n / 2; i++) {
-        const a = wheel[i];
-        const b = wheel[n - 1 - i];
-        if (a === BYE || b === BYE) continue;
-        // Alternate which side is home across the wheel so one team does not
-        // take every home fixture, then swap wholesale for the second leg.
-        const homeFirst = i % 2 === 0 ? leg === 0 : leg !== 0;
-        out.push({
-          matchday,
-          homeIndex: homeFirst ? a : b,
-          awayIndex: homeFirst ? b : a,
-        });
-      }
-      // Rotate: keep index 0 fixed, move the last into position 1.
-      wheel.splice(1, 0, wheel.pop()!);
-    }
+  // Date.UTC rolls 2026-02-31 forward into March rather than rejecting it, so
+  // check the calendar date here — before any offset shifts it legitimately.
+  const asGiven = new Date(base);
+  if (
+    asGiven.getUTCFullYear() !== +y ||
+    asGiven.getUTCMonth() !== +mo - 1 ||
+    asGiven.getUTCDate() !== +d ||
+    +hh > 23 ||
+    +mm > 59
+  ) {
+    return { error: `"${text}" is not a real date and time.` };
   }
 
-  return out;
+  let ms: number;
+  if (!zone) {
+    // No zone given: the numbers are wall-clock time where the admin is.
+    ms = base + tzOffsetMinutes * 60_000;
+  } else if (zone.toUpperCase() === "Z") {
+    ms = base;
+  } else {
+    const zm = zone.replace(":", "");
+    const sign = zm[0] === "-" ? -1 : 1;
+    const offMin = sign * (+zm.slice(1, 3) * 60 + +zm.slice(3, 5));
+    ms = base - offMin * 60_000;
+  }
+
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) {
+    return { error: `"${text}" is not a real date and time.` };
+  }
+  return { iso: date.toISOString() };
 }
 
-/** How many matchdays `count` teams need over `rounds` legs. */
-export function matchdayCount(count: number, rounds: 1 | 2): number {
-  if (count < 2) return 0;
-  const n = count % 2 === 1 ? count + 1 : count;
-  return (n - 1) * rounds;
+/**
+ * Parse a pasted fixture list.
+ *
+ * One line per match, pipe-separated, because a nation name can contain a
+ * comma far more plausibly than a pipe:
+ *
+ *     A | France | Italy | 2026-09-04 20:45 | 1
+ *     A | France vs Italy | 2026-09-04 20:45 | 1
+ *     A | France | Italy | 2026-09-04 20:45
+ *
+ * The matchday is optional. Team names are resolved against the group later,
+ * by exact (accent-folded) match — never by substring, because this
+ * competition fields Republic of Ireland and Northern Ireland.
+ */
+export function parseFixtureBlock(
+  text: string,
+  tzOffsetMinutes = 0,
+): ParseFixturesResult {
+  const fixtures: ParsedFixture[] = [];
+  const errors: string[] = [];
+
+  (text ?? "").split(/\r?\n/).forEach((raw, i) => {
+    const line = raw.trim();
+    if (!line) return;
+    const lineNo = i + 1;
+
+    let parts = line.split("|").map((s) => s.trim()).filter((s, idx) => s !== "" || idx > 0);
+
+    // "France vs Italy" in one field counts as two.
+    if (parts.length >= 3 && parts.length <= 4) {
+      const vs = parts[1]?.match(/^(.+?)\s+(?:vs?\.?|v)\s+(.+)$/i);
+      if (vs) parts = [parts[0], vs[1].trim(), vs[2].trim(), ...parts.slice(2)];
+    }
+
+    if (parts.length < 4) {
+      errors.push(
+        `Line ${lineNo}: expected group | home | away | kickoff [| matchday].`,
+      );
+      return;
+    }
+
+    const groupRaw = parts[0].replace(/^group\s*/i, "").trim();
+    if (!/^[A-Za-z]$/.test(groupRaw)) {
+      errors.push(`Line ${lineNo}: "${parts[0]}" is not a group letter.`);
+      return;
+    }
+
+    const homeName = parts[1];
+    const awayName = parts[2];
+    if (!homeName || !awayName) {
+      errors.push(`Line ${lineNo}: both nations are required.`);
+      return;
+    }
+    if (homeName.toLowerCase() === awayName.toLowerCase()) {
+      errors.push(`Line ${lineNo}: ${homeName} cannot play itself.`);
+      return;
+    }
+
+    const kickoff = parseKickoff(parts[3], tzOffsetMinutes);
+    if ("error" in kickoff) {
+      errors.push(`Line ${lineNo}: ${kickoff.error}`);
+      return;
+    }
+
+    let matchday: number | null = null;
+    if (parts[4] != null && parts[4] !== "") {
+      const n = Number(parts[4]);
+      if (!Number.isInteger(n) || n < 1 || n > 20) {
+        errors.push(`Line ${lineNo}: "${parts[4]}" is not a matchday number.`);
+        return;
+      }
+      matchday = n;
+    }
+
+    fixtures.push({
+      groupKey: groupRaw.toUpperCase(),
+      homeName,
+      awayName,
+      kickoffAt: kickoff.iso,
+      matchday,
+    });
+  });
+
+  return { fixtures, errors };
+}
+
+/** Exported so the service can resolve pasted names the same way. */
+export function nationKey(name: string): string {
+  return flagKey(name);
 }

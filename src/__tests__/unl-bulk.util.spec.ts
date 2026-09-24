@@ -1,7 +1,6 @@
 import {
   parseTeamBlock,
-  roundRobin,
-  matchdayCount,
+  parseFixtureBlock,
   flagUrlFor,
 } from "../unl/unl-bulk.util";
 
@@ -105,121 +104,156 @@ describe("parseTeamBlock", () => {
   });
 });
 
-describe("roundRobin", () => {
-  const pairKey = (p: { homeIndex: number; awayIndex: number }) =>
-    [p.homeIndex, p.awayIndex].sort().join("-");
+describe("parseFixtureBlock", () => {
+  // Bhutan time, which is what the admins' browsers report: UTC = local - 6h.
+  const BTT = -360;
 
-  describe("four teams, the ordinary group", () => {
-    it("plays six matches over three matchdays in a single round", () => {
-      const out = roundRobin(4, 1);
-      expect(out).toHaveLength(6);
-      expect(new Set(out.map((p) => p.matchday))).toEqual(new Set([1, 2, 3]));
+  it("reads the documented line format", () => {
+    const { fixtures, errors } = parseFixtureBlock(
+      "A | France | Italy | 2026-09-04 20:45 | 1",
+      BTT,
+    );
+    expect(errors).toEqual([]);
+    expect(fixtures).toHaveLength(1);
+    expect(fixtures[0]).toMatchObject({
+      groupKey: "A",
+      homeName: "France",
+      awayName: "Italy",
+      matchday: 1,
     });
+  });
 
-    it("has every pair meet exactly once", () => {
-      const out = roundRobin(4, 1);
-      expect(new Set(out.map(pairKey)).size).toBe(6);
-    });
+  it("reads a bare time as the admin's own wall clock", () => {
+    // 20:45 typed in Bhutan is 14:45 UTC. Getting this wrong would set a
+    // market's betting deadline six hours from the actual kickoff.
+    const { fixtures } = parseFixtureBlock(
+      "A | France | Italy | 2026-09-04 20:45 | 1",
+      BTT,
+    );
+    expect(fixtures[0].kickoffAt).toBe("2026-09-04T14:45:00.000Z");
+  });
 
-    it("plays twelve over six matchdays home and away", () => {
-      const out = roundRobin(4, 2);
-      expect(out).toHaveLength(12);
-      expect(new Set(out.map((p) => p.matchday))).toEqual(
-        new Set([1, 2, 3, 4, 5, 6]),
+  it("lets an explicit zone override the admin's", () => {
+    const utc = parseFixtureBlock("A | France | Italy | 2026-09-04 20:45Z", BTT);
+    expect(utc.fixtures[0].kickoffAt).toBe("2026-09-04T20:45:00.000Z");
+
+    const plusTwo = parseFixtureBlock(
+      "A | France | Italy | 2026-09-04 20:45+02:00",
+      BTT,
+    );
+    expect(plusTwo.fixtures[0].kickoffAt).toBe("2026-09-04T18:45:00.000Z");
+  });
+
+  it("accepts 'France vs Italy' in one field", () => {
+    const { fixtures, errors } = parseFixtureBlock(
+      "A | France vs Italy | 2026-09-04 20:45 | 1",
+      BTT,
+    );
+    expect(errors).toEqual([]);
+    expect(fixtures[0]).toMatchObject({ homeName: "France", awayName: "Italy" });
+  });
+
+  it("treats the matchday as optional", () => {
+    const { fixtures, errors } = parseFixtureBlock(
+      "A | France | Italy | 2026-09-04 20:45",
+      BTT,
+    );
+    expect(errors).toEqual([]);
+    expect(fixtures[0].matchday).toBeNull();
+  });
+
+  it("tolerates 'Group A' and a lower-case letter", () => {
+    const { fixtures, errors } = parseFixtureBlock(
+      "Group a | France | Italy | 2026-09-04 20:45 | 1",
+      BTT,
+    );
+    expect(errors).toEqual([]);
+    expect(fixtures[0].groupKey).toBe("A");
+  });
+
+  it("skips blank lines and reports the right line numbers", () => {
+    const { fixtures, errors } = parseFixtureBlock(
+      ["", "A | France | Italy | 2026-09-04 20:45 | 1", "", "nonsense"].join("\n"),
+      BTT,
+    );
+    expect(fixtures).toHaveLength(1);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/line 4/i);
+  });
+
+  describe("refuses rather than guesses", () => {
+    it("rejects an ambiguous date format", () => {
+      // 04/09/2026 is the 4th of September or the 9th of April depending on
+      // who wrote it, and the wrong reading is a market closing months out.
+      const { fixtures, errors } = parseFixtureBlock(
+        "A | France | Italy | 04/09/2026 20:45 | 1",
+        BTT,
       );
+      expect(fixtures).toHaveLength(0);
+      expect(errors[0]).toMatch(/YYYY-MM-DD/);
     });
 
-    it("reverses home and away in the second leg", () => {
-      const out = roundRobin(4, 2);
-      for (const first of out.filter((p) => p.matchday <= 3)) {
-        const reverse = out.find(
-          (p) =>
-            p.matchday > 3 &&
-            p.homeIndex === first.awayIndex &&
-            p.awayIndex === first.homeIndex,
-        );
-        expect(reverse).toBeDefined();
-      }
+    it("rejects a date that does not exist", () => {
+      const { errors } = parseFixtureBlock(
+        "A | France | Italy | 2026-02-31 20:45 | 1",
+        BTT,
+      );
+      expect(errors[0]).toMatch(/not a real date/i);
     });
 
-    it("never has a team playing twice on the same matchday", () => {
-      const out = roundRobin(4, 2);
-      for (const md of [1, 2, 3, 4, 5, 6]) {
-        const playing = out
-          .filter((p) => p.matchday === md)
-          .flatMap((p) => [p.homeIndex, p.awayIndex]);
-        expect(new Set(playing).size).toBe(playing.length);
-      }
+    it("rejects an impossible time", () => {
+      const { errors } = parseFixtureBlock(
+        "A | France | Italy | 2026-09-04 25:00 | 1",
+        BTT,
+      );
+      expect(errors).toHaveLength(1);
     });
 
-    it("never pairs a team with itself", () => {
-      for (const p of roundRobin(4, 2)) {
-        expect(p.homeIndex).not.toBe(p.awayIndex);
-      }
-    });
-  });
-
-  describe("three teams, which League D actually has", () => {
-    it("plays three matches, one team resting each matchday", () => {
-      const out = roundRobin(3, 1);
-      expect(out).toHaveLength(3);
-      expect(new Set(out.map(pairKey)).size).toBe(3);
-      for (const md of [1, 2, 3]) {
-        expect(out.filter((p) => p.matchday === md)).toHaveLength(1);
-      }
+    it("rejects a line with too few fields", () => {
+      const { errors } = parseFixtureBlock("A | France | Italy", BTT);
+      expect(errors[0]).toMatch(/group \| home \| away \| kickoff/i);
     });
 
-    it("plays six home and away", () => {
-      const out = roundRobin(3, 2);
-      expect(out).toHaveLength(6);
-      expect(new Set(out.map((p) => p.matchday)).size).toBe(6);
+    it("rejects a team playing itself", () => {
+      const { errors } = parseFixtureBlock(
+        "A | France | france | 2026-09-04 20:45 | 1",
+        BTT,
+      );
+      expect(errors[0]).toMatch(/cannot play itself/i);
     });
 
-    it("gives every team the same number of matches", () => {
-      const counts = new Map<number, number>();
-      for (const p of roundRobin(3, 2)) {
-        counts.set(p.homeIndex, (counts.get(p.homeIndex) ?? 0) + 1);
-        counts.set(p.awayIndex, (counts.get(p.awayIndex) ?? 0) + 1);
-      }
-      expect([...counts.values()]).toEqual([4, 4, 4]);
+    it("rejects a group that is not a single letter", () => {
+      const { errors } = parseFixtureBlock(
+        "A1 | France | Italy | 2026-09-04 20:45 | 1",
+        BTT,
+      );
+      expect(errors[0]).toMatch(/not a group letter/i);
+    });
+
+    it("rejects a matchday that is not a number", () => {
+      const { errors } = parseFixtureBlock(
+        "A | France | Italy | 2026-09-04 20:45 | first",
+        BTT,
+      );
+      expect(errors[0]).toMatch(/not a matchday/i);
     });
   });
 
-  it("handles two teams", () => {
-    expect(roundRobin(2, 1)).toHaveLength(1);
-    expect(roundRobin(2, 2)).toHaveLength(2);
+  it("keeps the good lines when one is broken", () => {
+    const { fixtures, errors } = parseFixtureBlock(
+      [
+        "A | France | Italy | 2026-09-04 20:45 | 1",
+        "A | Belgium | 2026-09-04 20:45 | 1",
+        "A | Belgium | Türkiye | 2026-09-07 20:45 | 2",
+      ].join("\n"),
+      BTT,
+    );
+    // A whole paste failing because of one typo would be miserable to use.
+    expect(fixtures).toHaveLength(2);
+    expect(errors).toHaveLength(1);
   });
 
-  it("returns nothing for a group too small to play", () => {
-    expect(roundRobin(1, 2)).toEqual([]);
-    expect(roundRobin(0, 1)).toEqual([]);
-  });
-
-  it("spreads home fixtures rather than giving one team all of them", () => {
-    const home = new Map<number, number>();
-    for (const p of roundRobin(4, 2)) {
-      home.set(p.homeIndex, (home.get(p.homeIndex) ?? 0) + 1);
-    }
-    // Six matches each over the campaign; nobody should be far off three home.
-    for (const n of home.values()) {
-      expect(n).toBeGreaterThanOrEqual(2);
-      expect(n).toBeLessThanOrEqual(4);
-    }
-  });
-});
-
-describe("matchdayCount", () => {
-  it("matches what roundRobin actually produces", () => {
-    for (const count of [2, 3, 4, 5, 6]) {
-      for (const rounds of [1, 2] as const) {
-        const produced = new Set(roundRobin(count, rounds).map((p) => p.matchday));
-        expect(matchdayCount(count, rounds)).toBe(produced.size);
-      }
-    }
-  });
-
-  it("is six for the Nations League shape", () => {
-    expect(matchdayCount(4, 2)).toBe(6);
-    expect(matchdayCount(3, 2)).toBe(6);
+  it("returns nothing for empty input", () => {
+    expect(parseFixtureBlock("", BTT)).toEqual({ fixtures: [], errors: [] });
   });
 });

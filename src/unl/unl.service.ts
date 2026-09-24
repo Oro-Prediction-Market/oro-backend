@@ -20,9 +20,9 @@ import {
 } from "../markets/unl-standings.util";
 import {
   ParsedTeam,
-  matchdayCount,
+  nationKey,
+  parseFixtureBlock,
   parseTeamBlock,
-  roundRobin,
 } from "./unl-bulk.util";
 
 /**
@@ -511,73 +511,124 @@ export class UnlService {
   }
 
   /**
-   * Generate a group's whole fixture list.
+   * Create fixtures from a pasted list.
    *
-   * A group's pairings are not information an admin holds — they follow from
-   * who is in the group. Four teams home and away is always the same twelve
-   * matches over six matchdays, so the only real input is when each matchday
-   * kicks off.
+   * `dryRun` returns exactly what a real run would do without writing, which
+   * is what the admin page previews. Worth having here more than anywhere:
+   * a kickoff is also the market's betting deadline, so a mistyped date is a
+   * market that stops taking bets at the wrong moment.
    *
-   * Refuses outright if the group already has fixtures. Generating a second
-   * round-robin on top of an existing one would double every pairing, and
-   * with markets possibly attached that is not something to half-do and then
-   * ask about.
+   * Nation names resolve by **exact** (accent-folded) match within the group.
+   * Never by substring: "Ireland" must not quietly select "Northern Ireland",
+   * and this competition fields both.
    */
-  async generateFixtures(
+  async bulkCreateFixtures(
     season: string,
-    groupKey: string,
-    kickoffs: string[],
-    rounds: 1 | 2,
-  ): Promise<{ created: number; matchdays: number }> {
+    text: string,
+    tzOffsetMinutes: number,
+    dryRun: boolean,
+  ): Promise<{
+    resolved: {
+      groupKey: string;
+      homeName: string;
+      awayName: string;
+      kickoffAt: string;
+      matchday: number | null;
+      problem: string | null;
+    }[];
+    errors: string[];
+    created: number;
+  }> {
     const target = requireText(season, "season");
-    const key = normaliseGroupKey(groupKey);
+    const { fixtures, errors } = parseFixtureBlock(text ?? "", tzOffsetMinutes);
 
-    const teams = await this.teamRepo.find({
-      where: { season: target, groupKey: key },
-      order: { sortOrder: "ASC", name: "ASC" },
-    });
-    if (teams.length < 2) {
-      throw new BadRequestException(
-        `Group ${key} has ${teams.length} nation(s). Add at least two first.`,
-      );
+    const teams = await this.teamRepo.find({ where: { season: target } });
+    const byGroup = new Map<string, Map<string, UnlTeam>>();
+    for (const t of teams) {
+      if (!byGroup.has(t.groupKey)) byGroup.set(t.groupKey, new Map());
+      byGroup.get(t.groupKey)!.set(nationKey(t.name), t);
     }
 
-    const already = await this.fixtureRepo.count({
-      where: { season: target, groupKey: key },
-    });
-    if (already > 0) {
-      throw new BadRequestException(
-        `Group ${key} already has ${already} fixture(s). Delete them first — ` +
-          `generating again would create a second copy of every pairing.`,
-      );
+    const existing = await this.fixtureRepo.find({ where: { season: target } });
+    // Two teams meet twice a campaign, so the matchday is part of the key.
+    const taken = new Set(
+      existing.map(
+        (f) => `${f.homeTeamId}|${f.awayTeamId}|${f.matchday ?? "-"}`,
+      ),
+    );
+
+    const resolved: {
+      groupKey: string;
+      homeName: string;
+      awayName: string;
+      kickoffAt: string;
+      matchday: number | null;
+      problem: string | null;
+      home?: UnlTeam;
+      away?: UnlTeam;
+    }[] = [];
+
+    for (const f of fixtures) {
+      const group = byGroup.get(f.groupKey);
+      const row = { ...f, problem: null as string | null };
+
+      if (!group) {
+        resolved.push({ ...row, problem: `Group ${f.groupKey} has no nations yet` });
+        continue;
+      }
+      const home = group.get(nationKey(f.homeName));
+      const away = group.get(nationKey(f.awayName));
+      if (!home || !away) {
+        const missing = [!home && f.homeName, !away && f.awayName]
+          .filter(Boolean)
+          .join(" and ");
+        resolved.push({
+          ...row,
+          problem: `${missing} not in Group ${f.groupKey}`,
+        });
+        continue;
+      }
+
+      const key = `${home.id}|${away.id}|${f.matchday ?? "-"}`;
+      if (taken.has(key)) {
+        resolved.push({ ...row, problem: "already exists" });
+        continue;
+      }
+      taken.add(key);
+      resolved.push({ ...row, home, away });
     }
 
-    const needed = matchdayCount(teams.length, rounds);
-    if (!Array.isArray(kickoffs) || kickoffs.length !== needed) {
-      throw new BadRequestException(
-        `Group ${key} needs ${needed} kickoff time(s) for ${teams.length} ` +
-          `teams over ${rounds} leg(s); got ${kickoffs?.length ?? 0}.`,
-      );
-    }
-    const times = kickoffs.map((k, i) => parseDate(k, `kickoff ${i + 1}`));
+    const toCreate = resolved.filter((r) => !r.problem && r.home && r.away);
 
-    const pairings = roundRobin(teams.length, rounds);
-    const rows = pairings.map((p) =>
+    if (dryRun) {
+      return {
+        resolved: resolved.map(({ home: _h, away: _a, ...r }) => r),
+        errors,
+        created: toCreate.length,
+      };
+    }
+
+    const rows = toCreate.map((r) =>
       this.fixtureRepo.create({
         season: target,
-        groupKey: key,
-        homeTeamId: teams[p.homeIndex].id,
-        awayTeamId: teams[p.awayIndex].id,
-        kickoffAt: times[p.matchday - 1],
+        groupKey: r.home!.groupKey,
+        homeTeamId: r.home!.id,
+        awayTeamId: r.away!.id,
+        kickoffAt: new Date(r.kickoffAt),
+        // Null, never 0 — see the entity docstring.
         homeScore: null,
         awayScore: null,
         status: UnlFixtureStatus.SCHEDULED,
-        matchday: p.matchday,
+        matchday: r.matchday,
       }),
     );
-    await this.fixtureRepo.save(rows);
+    if (rows.length) await this.fixtureRepo.save(rows);
 
-    return { created: rows.length, matchdays: needed };
+    return {
+      resolved: resolved.map(({ home: _h, away: _a, ...r }) => r),
+      errors,
+      created: rows.length,
+    };
   }
 
   async updateFixture(
