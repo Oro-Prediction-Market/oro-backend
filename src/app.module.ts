@@ -70,6 +70,8 @@ import { FreeCallsModule } from "./free-calls/free-calls.module";
 import { SavedMarketsModule } from "./saved/saved-markets.module";
 import { SavedMarket } from "./entities/saved-market.entity";
 import { StatBoardOverride } from "./entities/stat-board-override.entity";
+import { UnlTeam } from "./entities/unl-team.entity";
+import { UnlFixture } from "./entities/unl-fixture.entity";
 import { Announcement } from "./entities/announcement.entity";
 import { FeedbackModule } from "./feedback/feedback.module";
 import { AmlAlert } from "./aml/entities/aml-alert.entity";
@@ -161,6 +163,8 @@ import { FriendlyThrottlerGuard } from "./shared/guards/friendly-throttler.guard
           SavedMarket,
           StatBoardOverride,
           Announcement,
+          UnlTeam,
+          UnlFixture,
         ],
         // Schema changes ship as migrations ONLY. synchronize silently DROPs a
         // column when an entity property is renamed — irrecoverable financial
