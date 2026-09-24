@@ -8,6 +8,7 @@ import { AuditLog, AuditAction, RoleType } from "../entities/audit-log.entity";
 import { MarketsService } from "../markets/markets.service";
 import { DataSource } from "typeorm";
 import { Inject, forwardRef } from "@nestjs/common";
+import { neverAutoSettles } from "../markets/settlement-sources.util";
 
 /**
  * Auto-resolution cron job.
@@ -63,8 +64,11 @@ export class AutoResolveMarketsJob {
 
     for (const market of candidates) {
       try {
-        // TER/BTC markets resolve themselves via their own service — skip to avoid double payouts
-        if (["ter", "btc"].includes(market.externalSource ?? "")) continue;
+        // TER/BTC resolve themselves via their own service (skip to avoid
+        // double payouts); unl-manual is settled by an admin and by nothing
+        // else. The keeper's dispute-window guard carries the same check —
+        // either settler alone is enough to settle a market, so both refuse.
+        if (neverAutoSettles(market.externalSource)) continue;
 
         // Count objections
         const objectionCount = await this.disputeRepo.count({

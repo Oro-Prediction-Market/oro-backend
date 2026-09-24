@@ -23,6 +23,11 @@ import {
 import { CreateMarketDto } from "./dto/create-market.dto";
 import { statNamesMatch } from "./stat-outcome-match.util";
 import {
+  isSelfResolvingSource,
+  isManualOnlySource,
+  neverAutoSettles,
+} from "./settlement-sources.util";
+import {
   fetchFixture,
   isFixtureStable,
   readFixtureResult,
@@ -412,7 +417,7 @@ export class KeeperService {
             await this.marketsService.transition(market.id, MarketStatus.OPEN);
             justOpenedIds.add(market.id);
             this.addLog("success", `✅ Market "${market.title}" auto-opened.`);
-            if (!["ter", "btc"].includes(market.externalSource ?? "")) {
+            if (!isSelfResolvingSource(market.externalSource)) {
               await this.notifyAdmin(
                 `🤖 <b>Keeper: Market Opened</b>\n\n` +
                   `📊 <b>${market.title}</b>\n` +
@@ -442,8 +447,10 @@ export class KeeperService {
       let closed = 0;
       for (const market of openMarkets) {
         if (!market.closesAt) continue;
-        // TER/BTC markets are managed by their own service — skip them entirely
-        if (["ter", "btc"].includes(market.externalSource ?? "")) continue;
+        // TER/BTC markets are managed by their own service — skip them entirely.
+        // Deliberately NOT neverAutoSettles(): a Nations League market must
+        // still be closed at kickoff, or betting stays open on a played match.
+        if (isSelfResolvingSource(market.externalSource)) continue;
         // Never close a market that was opened in this same cron tick
         if (justOpenedIds.has(market.id)) {
           this.addLog(
@@ -466,8 +473,15 @@ export class KeeperService {
             );
             // Send admin a DM with one button per outcome so they can propose
             // the winner directly from Telegram — no admin panel needed.
-            // Skip for TER/BTC markets — they auto-resolve without admin intervention.
-            if (!["ter", "btc"].includes(market.externalSource ?? "")) {
+            // Skipped for TER/BTC (they resolve without an admin) and for the
+            // Nations League: that handler writes a raw marketRepo.update which
+            // bypasses proposeResolution and picks the outcome by LABEL, and
+            // this competition fields Republic of Ireland AND Northern Ireland.
+            // Its proposals come from the fixture row, on the admin page.
+            if (
+              !isSelfResolvingSource(market.externalSource) &&
+              !isManualOnlySource(market.externalSource)
+            ) {
               await this.notifyAdminPropose(market);
             }
           } catch (err: any) {
@@ -531,7 +545,11 @@ export class KeeperService {
       for (const market of resolvingMarkets) {
         if (!market.disputeDeadlineAt || !market.proposedOutcomeId) continue;
         if (new Date() < new Date(market.disputeDeadlineAt)) continue; // window still open
-        if (["ter", "btc"].includes(market.externalSource ?? "")) continue; // auto-resolving markets manage themselves
+        // TER/BTC manage their own settlement; unl-manual is settled by an
+        // admin and by nothing else. AutoResolveMarketsJob carries the same
+        // check — either settler alone is enough to settle a market, so both
+        // have to refuse.
+        if (neverAutoSettles(market.externalSource)) continue;
 
         // Never auto-settle a market that has objections — a disputed result
         // must be reviewed by a human admin. This keeper runs every minute and

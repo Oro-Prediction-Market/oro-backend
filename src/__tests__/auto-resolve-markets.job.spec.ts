@@ -69,6 +69,26 @@ describe("AutoResolveMarketsJob", () => {
     expect(marketsService.resolve).not.toHaveBeenCalled();
   });
 
+  /**
+   * The test that makes "an admin resolves the Nations League" true rather
+   * than intended.
+   *
+   * There is no provider for this competition, so nothing can check a proposal
+   * against a result — an admin enters the score, proposes, and resolves. This
+   * job and KeeperService.handleDisputeWindowExpiry both settle any RESOLVING
+   * market whose window expires unobjected, and EITHER ONE alone is enough to
+   * settle it. If someone removes the exclusion here, this fails loudly.
+   */
+  it("never settles a Nations League market, however quiet the window was", async () => {
+    const { job, marketsService } = build([
+      { externalSource: "unl-manual" as any },
+    ]);
+
+    await job.autoResolveExpiredWindows();
+
+    expect(marketsService.resolve).not.toHaveBeenCalled();
+  });
+
   it("skips markets without a proposed outcome", async () => {
     const { job, marketsService } = build([{ proposedOutcomeId: null as any }]);
 
