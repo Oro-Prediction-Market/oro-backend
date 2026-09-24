@@ -187,6 +187,7 @@ export class MarketsService implements OnModuleInit {
       if (dto.candidate) metadata.candidate = dto.candidate;
       if (dto.matchLabel) metadata.matchLabel = dto.matchLabel;
       if (dto.matchday) metadata.matchday = dto.matchday;
+      if (dto.unlFixtureId) metadata.unlFixtureId = dto.unlFixtureId;
 
       // 3. Create market and link outcomes (cascade will handle saving them)
       const market = this.marketRepo.create({

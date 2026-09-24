@@ -130,4 +130,19 @@ export class CreateMarketDto {
   @IsOptional()
   @IsString()
   candidate?: string;
+
+  /**
+   * The `unl_fixtures` row this market was created from (stored in
+   * `metadata.unlFixtureId`).
+   *
+   * This, not `unl_fixtures.marketId`, is the authoritative dedupe key. The
+   * market is committed before the fixture row can be stamped, so a crash
+   * between the two would otherwise let the next run build a SECOND market for
+   * the same match. EPL and UCL do not have this problem because their dedupe
+   * key (`externalMatchId`) already lives on the market itself.
+   */
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  unlFixtureId?: string;
 }
