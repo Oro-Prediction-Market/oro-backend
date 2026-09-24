@@ -5,6 +5,7 @@ import { MarketsModule } from "../markets/markets.module";
 import { UnlTeam } from "../entities/unl-team.entity";
 import { UnlFixture } from "../entities/unl-fixture.entity";
 import { Market } from "../entities/market.entity";
+import { AuditLog } from "../entities/audit-log.entity";
 import { UnlController } from "./unl.controller";
 import { UnlAdminController } from "./unl-admin.controller";
 import { UnlService } from "./unl.service";
@@ -20,7 +21,10 @@ import { UnlService } from "./unl.service";
  */
 @Module({
   imports: [
-    TypeOrmModule.forFeature([UnlTeam, UnlFixture, Market]),
+    // AuditLog is here because UnlAdminController writes its audit rows
+    // directly, rather than pulling in AdminModule (which imports most of the
+    // app) just to log a team rename.
+    TypeOrmModule.forFeature([UnlTeam, UnlFixture, Market, AuditLog]),
     StatOverridesModule,
     MarketsModule,
   ],
