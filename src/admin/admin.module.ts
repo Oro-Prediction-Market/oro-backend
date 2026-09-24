@@ -21,6 +21,7 @@ import { AuditService } from "./audit.service";
 import { TelegramModule } from "../telegram/telegram.module";
 import { EplModule } from "../epl/epl.module";
 import { UclModule } from "../ucl/ucl.module";
+import { UnlModule } from "../unl/unl.module";
 import { StatOverridesModule } from "../stat-overrides/stat-overrides.module";
 import { SuggestionsModule } from "../suggestions/suggestions.module";
 import { ChallengesModule } from "../challenges/challenges.module";
@@ -48,6 +49,7 @@ import { InsightsModule } from "../insights/insights.module";
     UsersModule,
     EplModule,
     UclModule,
+    UnlModule,
     StatOverridesModule,
     SuggestionsModule,
     // For voiding stuck duels. The Duels list reads Challenge through the

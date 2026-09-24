@@ -62,6 +62,13 @@ import {
   buildUclStatMarketDto,
   UclStatKey,
 } from "../ucl/ucl-stat-markets";
+import { UnlService } from "../unl/unl.service";
+import {
+  UNL_STAT_MARKET_META,
+  UNL_STAT_SUBCATEGORIES,
+  UnlStatKey,
+  buildUnlStatMarketDto,
+} from "../unl/unl-stat-markets";
 import { DistributionStatus } from "../entities/revenue-distribution.entity";
 import { TIER_ORDER, TIER_LABELS } from "../markets/tiers";
 import { FixturesService } from "./fixtures.service";
@@ -140,6 +147,7 @@ export class AdminController {
     private revenueDistributionService: RevenueDistributionService,
     private eplService: EplService,
     private uclService: UclService,
+    private unlService: UnlService,
     private statOverrides: StatOverridesService,
   ) {}
 
@@ -3557,7 +3565,103 @@ export class AdminController {
     return market;
   }
 
-  // ── Stat board overrides (EPL + UCL) ──────────────────────────────────────
+  // ── Nations League stat markets ────────────────────────────────────────────
+  //
+  // Mirrors the UCL pair, minus the provider. Both Nations League boards are
+  // admin-entered (stat_board_overrides), so there is no leaderboard to create
+  // a market from until someone publishes one — which is why the preview
+  // returns the board and the create refuses an empty one rather than opening
+  // a market with two names in it.
+
+  @Get("unl/stat-market/preview")
+  @ApiOperation({
+    summary: "Nations League boards + which stat markets already exist",
+  })
+  async previewUnlStatMarkets() {
+    const [stats, season] = await Promise.all([
+      this.unlService.getStats(),
+      this.unlService.getSeasonInfo(),
+    ]);
+    const existing = await this.dataSource.getRepository(Market).find({
+      where: {
+        subcategory: In(UNL_STAT_SUBCATEGORIES),
+        status: In([
+          MarketStatus.UPCOMING,
+          MarketStatus.OPEN,
+          MarketStatus.CLOSED,
+          MarketStatus.RESOLVING,
+        ]),
+      },
+      select: ["id", "title", "subcategory", "status"],
+    });
+    return { stats, existing, season };
+  }
+
+  @Post("unl/stat-market")
+  @ApiOperation({
+    summary: "Create a Nations League stat market from the published board",
+  })
+  async createUnlStatMarket(
+    @Body() body: { stat?: string; closesAt?: string; topN?: number },
+    @Request() req: any,
+  ) {
+    const stat = body?.stat as UnlStatKey;
+    const meta = UNL_STAT_MARKET_META[stat];
+    if (!meta) {
+      throw new BadRequestException("stat must be one of: goals, assists");
+    }
+
+    // Block a duplicate active market for the same stat.
+    const dup = await this.dataSource.getRepository(Market).findOne({
+      where: {
+        subcategory: meta.subcategory,
+        status: In([
+          MarketStatus.UPCOMING,
+          MarketStatus.OPEN,
+          MarketStatus.CLOSED,
+          MarketStatus.RESOLVING,
+        ]),
+      },
+    });
+    if (dup) {
+      throw new BadRequestException(
+        `An active "${meta.title}" market already exists (id ${dup.id}). Resolve or cancel it first.`,
+      );
+    }
+
+    const stats = await this.unlService.getStats();
+    const topN = Math.min(Math.max(Number(body?.topN ?? 15), 2), 25);
+    const players = (stats[meta.board] ?? []).slice(0, topN);
+    if (players.length < 2) {
+      // Unlike EPL and UCL, waiting will not fix this — no feed will ever fill
+      // the board. Say what the admin actually has to do.
+      throw new BadRequestException(
+        `The Nations League ${meta.word} board has ${players.length} player(s) on it. ` +
+          `This competition has no stats feed, so add the players on the Stats tab ` +
+          `first, then create the market.`,
+      );
+    }
+
+    const dto = buildUnlStatMarketDto(stat, players, body?.closesAt);
+    const market = await this.marketsService.create(dto);
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action: AuditAction.MARKET_CREATE,
+      entityType: "market",
+      entityId: market.id,
+      after: {
+        title: market.title,
+        subcategory: meta.subcategory,
+        outcomes: players.length,
+        closesAt: dto.closesAt,
+      },
+      ipAddress: req.ip,
+    });
+    return market;
+  }
+
+  // ── Stat board overrides (EPL, UCL, Nations League) ───────────────────────
   //
   // The goals/assists boards come live from football-data.org, and on the free
   // tier they are thin: /scorers is goal-ranked, so a player with assists but
@@ -3579,7 +3683,7 @@ export class AdminController {
     const lg = this.assertLeague(league);
     const [rows, stats] = await Promise.all([
       this.statOverrides.list(lg),
-      lg === "epl" ? this.eplService.getStats() : this.uclService.getStats(),
+      this.leagueService(lg).getStats(),
     ]);
 
     // NOTE: getStats() has already applied these edits, so its boards carry
@@ -3720,10 +3824,11 @@ export class AdminController {
     // Deliberately a separate action from adding the player to the board:
     // this writes an outcome into a parimutuel market people already hold
     // positions in, which is not something a display edit should do silently.
-    const subcategory =
-      lg === "epl"
-        ? EPL_STAT_MARKET_META[row.board as EplStatKey]?.subcategory
-        : UCL_STAT_MARKET_META[row.board as UclStatKey]?.subcategory;
+    const subcategory = {
+      epl: EPL_STAT_MARKET_META[row.board as EplStatKey]?.subcategory,
+      ucl: UCL_STAT_MARKET_META[row.board as UclStatKey]?.subcategory,
+      unl: UNL_STAT_MARKET_META[row.board as UnlStatKey]?.subcategory,
+    }[lg];
     const market = await this.dataSource.getRepository(Market).findOne({
       where: {
         subcategory,
@@ -3762,12 +3867,23 @@ export class AdminController {
     return result;
   }
 
-  /** Only these two leagues have stat boards. */
-  private assertLeague(league: string): "epl" | "ucl" {
-    if (league !== "epl" && league !== "ucl") {
-      throw new BadRequestException("league must be one of: epl, ucl");
+  /** The leagues that have stat boards. */
+  private assertLeague(league: string): "epl" | "ucl" | "unl" {
+    if (league !== "epl" && league !== "ucl" && league !== "unl") {
+      throw new BadRequestException("league must be one of: epl, ucl, unl");
     }
     return league;
+  }
+
+  /**
+   * The service backing a league's boards.
+   *
+   * A lookup rather than a ternary, because with three leagues a ternary
+   * chain silently routes the third one to whichever branch is the fallback —
+   * which for a stat board means showing another competition's players.
+   */
+  private leagueService(lg: "epl" | "ucl" | "unl") {
+    return { epl: this.eplService, ucl: this.uclService, unl: this.unlService }[lg];
   }
 
   // ── Per-currency market books ───────────────────────────────────────────────
