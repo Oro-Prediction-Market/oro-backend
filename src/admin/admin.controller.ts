@@ -36,7 +36,7 @@ import {
   UpdateMarketDto,
   ReopenMarketDto,
 } from "../markets/markets.service";
-import { isEplUclSubcategory } from "../markets/market-notify.util";
+import { isCompetitionSubcategory } from "../markets/market-notify.util";
 import { CreateMarketGroupDto } from "../markets/dto/create-market-group.dto";
 import { UpdateMarketGroupDto } from "../markets/dto/update-market-group.dto";
 import { SuggestionsService } from "../suggestions/suggestions.service";
@@ -1195,10 +1195,10 @@ export class AdminController {
     // not noisy and users expect it. Keep posting it automatically here. Do not
     // remove it along with the create-time announcement cleanup.
     //
-    // EXCEPTION: EPL/UCL markets are excluded — they settle constantly (one per
-    // fixture) and predictors already get an individual result DM, so a channel
-    // post per football result is just noise.
-    if (!isEplUclSubcategory(before.subcategory)) {
+    // EXCEPTION: competition markets (EPL/UCL/UNL) are excluded — they settle
+    // constantly (one per fixture) and predictors already get an individual
+    // result DM, so a channel post per football result is just noise.
+    if (!isCompetitionSubcategory(before.subcategory)) {
       await this.telegramSimple.postToChannel(
         `✅ <b>MARKET SETTLED</b>\n\n` +
           `📊 <b>${before.title}</b>\n\n` +

@@ -11,7 +11,7 @@ import { RedisService } from "../redis/redis.service";
 import { randomUUID } from "crypto";
 import { CreateMarketDto } from "./dto/create-market.dto";
 import { DEFAULT_HOUSE_EDGE_PCT } from "./fee.constants";
-import { isEplUclSubcategory } from "./market-notify.util";
+import { isCompetitionSubcategory } from "./market-notify.util";
 import { CreateMarketGroupDto } from "./dto/create-market-group.dto";
 import { UpdateMarketDto } from "./dto/update-market.dto";
 import { UpdateMarketGroupDto } from "./dto/update-market-group.dto";
@@ -968,11 +968,11 @@ export class MarketsService implements OnModuleInit {
       evidenceNote,
     );
     await this.invalidateMarketCache(marketId);
-    if (market && !isEplUclSubcategory(market.subcategory)) {
-      // EPL/UCL markets settle constantly (one per fixture, plus the stat
-      // boards), so a channel "Market Resolved" post for each is just noise —
-      // every predictor already gets their own result DM. Silence the channel
-      // broadcast for those; keep it for admin-created / one-off markets.
+    if (market && !isCompetitionSubcategory(market.subcategory)) {
+      // Competition markets (EPL/UCL/UNL) settle constantly — one per fixture,
+      // plus the stat boards — so a channel "Market Resolved" post for each is
+      // just noise; every predictor already gets their own result DM. Silence
+      // the channel broadcast for those; keep it for admin-created / one-offs.
       const winner = market.outcomes?.find(
         (o: any) => o.id === winningOutcomeId,
       );
