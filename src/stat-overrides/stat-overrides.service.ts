@@ -39,6 +39,10 @@ export interface AdminBoardRow {
 const STATS_CACHE_KEY: Record<StatBoardLeague, string> = {
   epl: "oro:epl:stats",
   ucl: "oro:ucl:stats",
+  // The Nations League service caches nothing — it reads our own database, not
+  // a rate-limited provider — so there is no key to bust. Present because the
+  // Record is exhaustive; `bust("unl")` is a harmless no-op DEL.
+  unl: "oro:unl:stats",
 };
 
 /**

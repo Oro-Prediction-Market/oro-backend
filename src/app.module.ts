@@ -65,6 +65,7 @@ import { MarketCommentFlag } from "./entities/market-comment-flag.entity";
 import { MarketCommentLike } from "./entities/market-comment-like.entity";
 import { EplModule } from "./epl/epl.module";
 import { UclModule } from "./ucl/ucl.module";
+import { UnlModule } from "./unl/unl.module";
 import { InsightsModule } from "./insights/insights.module";
 import { FreeCallsModule } from "./free-calls/free-calls.module";
 import { SavedMarketsModule } from "./saved/saved-markets.module";
@@ -208,6 +209,7 @@ import { FriendlyThrottlerGuard } from "./shared/guards/friendly-throttler.guard
     ShareModule,
     EplModule,
     UclModule,
+    UnlModule,
     FeedbackModule,
     InsightsModule,
     FreeCallsModule,

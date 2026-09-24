@@ -8,7 +8,12 @@ import {
   Unique,
 } from "typeorm";
 
-export type StatBoardLeague = "epl" | "ucl";
+/**
+ * "unl" is the Nations League, where BOTH boards are manual — the competition
+ * has no provider at all, so every row on its leaderboards is one of these
+ * (`isManual: true`) rather than an edit laid over a feed.
+ */
+export type StatBoardLeague = "epl" | "ucl" | "unl";
 export type StatBoardKey = "goals" | "assists";
 
 /**
