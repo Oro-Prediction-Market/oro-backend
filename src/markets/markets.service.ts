@@ -142,7 +142,10 @@ export class MarketsService implements OnModuleInit {
   }
 
   private async invalidateMarketCache(marketId?: string): Promise<void> {
-    const keys = ["oro:cache:markets:all"];
+    // Both scopes of findAll, or a market that just opened would be missing
+    // from the feed for the rest of the 30s TTL while the unfiltered list
+    // already showed it.
+    const keys = ["oro:cache:markets:all", "oro:cache:markets:all:live"];
     if (marketId) keys.push(`oro:cache:market:${marketId}`);
     await this.redis.del(...keys);
   }
@@ -427,21 +430,43 @@ export class MarketsService implements OnModuleInit {
     return this.findGroup(groupId);
   }
 
-  async findAll(q?: string): Promise<Market[]> {
+  /**
+   * Every market a client might list, optionally narrowed to the live ones.
+   *
+   * `scope: "live"` drops RESOLVED and SETTLED. That is almost the entire
+   * table — a finished market is never deleted, so this list has grown to
+   * thousands of rows of which a couple of dozen are actually running, and the
+   * feeds discard the rest on arrival anyway. Measured before this existed:
+   * 10.8MB and 4,474 markets, of which 23 were live. Over mobile data that
+   * payload IS the load time of every hub and feed in both apps.
+   *
+   * Deliberately NOT filtered by competition. Which markets belong to a hub is
+   * decided in the client by predicates that read subcategory, category,
+   * settlementSource AND title — so a server-side subcategory filter would
+   * silently drop the hand-tagged ones, and duplicating those rules here would
+   * only let the two copies drift. Status is a fact the server owns outright.
+   *
+   * The default stays "all" so the ~29 existing callers keep their behaviour
+   * until each is moved across deliberately.
+   */
+  async findAll(q?: string, scope: "all" | "live" = "all"): Promise<Market[]> {
+    const suffix = scope === "live" ? ":live" : "";
     const cacheKey = q
-      ? `oro:cache:markets:search:${q.toLowerCase().trim()}`
-      : "oro:cache:markets:all";
+      ? `oro:cache:markets:search:${q.toLowerCase().trim()}${suffix}`
+      : `oro:cache:markets:all${suffix}`;
     const cached = await this.redis.getJson<Market[]>(cacheKey);
     if (cached) return cached;
 
-    const activeStatuses = [
+    const LIVE_STATUSES = [
       MarketStatus.UPCOMING,
       MarketStatus.OPEN,
       MarketStatus.CLOSED,
       MarketStatus.RESOLVING,
-      MarketStatus.RESOLVED,
-      MarketStatus.SETTLED,
     ];
+    const activeStatuses =
+      scope === "live"
+        ? LIVE_STATUSES
+        : [...LIVE_STATUSES, MarketStatus.RESOLVED, MarketStatus.SETTLED];
 
     const qb = this.marketRepo
       .createQueryBuilder("market")

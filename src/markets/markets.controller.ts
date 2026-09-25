@@ -92,8 +92,20 @@ export class MarketsController {
     required: false,
     description: "Search term to filter markets by title or description",
   })
-  findAll(@Query("q") q?: string) {
-    return this.marketsService.findAll(q);
+  @ApiQuery({
+    name: "scope",
+    required: false,
+    enum: ["all", "live"],
+    description:
+      'Defaults to "all". "live" returns only UPCOMING/OPEN/CLOSED/RESOLVING ' +
+      "markets, omitting resolved and settled ones — which are the great " +
+      "majority of the table and are discarded by the feeds anyway. Use it " +
+      "for any screen that only renders running markets.",
+  })
+  findAll(@Query("q") q?: string, @Query("scope") scope?: string) {
+    // Anything other than the exact string keeps the historic behaviour, so a
+    // typo or an old client can never silently lose finished markets.
+    return this.marketsService.findAll(q, scope === "live" ? "live" : "all");
   }
 
   @Get("resolved")
