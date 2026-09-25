@@ -11,8 +11,11 @@ import {
   HttpCode,
   HttpStatus,
   BadRequestException,
+  NotFoundException,
   ParseUUIDPipe,
+  Res,
 } from "@nestjs/common";
+import type { Response } from "express";
 import { IsString, MaxLength } from "class-validator";
 
 class FeedHeartbeatDto {
@@ -32,6 +35,7 @@ import { Repository } from "typeorm";
 import { Dispute } from "../entities/dispute.entity";
 import { User } from "../entities/user.entity";
 import { JwtAuthGuard, Public, AdminGuard } from "../auth/guards";
+import { withOutcomeImageRefs } from "./outcome-image.util";
 import {
   MarketsService,
   OpenPositionDto,
@@ -102,10 +106,45 @@ export class MarketsController {
       "majority of the table and are discarded by the feeds anyway. Use it " +
       "for any screen that only renders running markets.",
   })
-  findAll(@Query("q") q?: string, @Query("scope") scope?: string) {
+  async findAll(
+    @Query("q") q?: string,
+    @Query("scope") scope?: string,
+    @Query("images") images?: string,
+  ) {
     // Anything other than the exact string keeps the historic behaviour, so a
     // typo or an old client can never silently lose finished markets.
-    return this.marketsService.findAll(q, scope === "live" ? "live" : "all");
+    const markets = await this.marketsService.findAll(
+      q,
+      scope === "live" ? "live" : "all",
+    );
+    // Opt-in, so a client deployed before this one keeps receiving the inlined
+    // images it knows how to render. A client that asks for references knows
+    // to resolve them against its own API base.
+    return images === "ref" ? withOutcomeImageRefs(markets) : markets;
+  }
+
+  /**
+   * The decoded bytes of an outcome image that is stored as a data URI.
+   *
+   * Exists so the market list can stop carrying those images inline: they were
+   * 206KB of a 320KB response, re-sent on every poll because a data URI cannot
+   * be cached. Served here once and then cached by the browser for a year —
+   * safe because the URL carries a fingerprint of the image, so replacing the
+   * image changes the URL rather than leaving a stale copy pinned.
+   */
+  @Get("outcome-image/:id")
+  @Public()
+  @ApiOperation({ summary: "Serve an outcome's inlined image as a file" })
+  async outcomeImage(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Res() res: Response,
+  ) {
+    const image = await this.marketsService.getOutcomeImage(id);
+    if (!image) throw new NotFoundException("No image for this outcome");
+    res.setHeader("Content-Type", image.mime);
+    res.setHeader("Content-Length", image.body.length);
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    res.end(image.body);
   }
 
   @Get("resolved")

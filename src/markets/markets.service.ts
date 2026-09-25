@@ -50,6 +50,7 @@ import { ledgerBalance } from "../shared/utils/ledger.util";
 import { ReputationService } from "./reputation.service";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import { bracketAdvance, WC_KICKOFFS } from "./wc-knockout";
+import { isDataUri, decodeDataUri } from "./outcome-image.util";
 export { CreateMarketDto } from "./dto/create-market.dto";
 export { UpdateMarketDto } from "./dto/update-market.dto";
 export { OpenPositionDto } from "./dto/open-position.dto";
@@ -521,6 +522,24 @@ export class MarketsService implements OnModuleInit {
     await Promise.all(markets.map((m) => this.attachSignal(m)));
     await this.attachBooksToMany(markets);
     return markets;
+  }
+
+  /**
+   * The bytes behind an outcome's inlined image, for the public image route.
+   *
+   * Only ever reads `imageUrl`, and only serves it when it decodes to an
+   * image — this is an unauthenticated endpoint keyed by outcome id, so it
+   * must not turn into a way to read arbitrary stored strings.
+   */
+  async getOutcomeImage(
+    outcomeId: string,
+  ): Promise<{ mime: string; body: Buffer } | null> {
+    const outcome = await this.outcomeRepo.findOne({
+      where: { id: outcomeId },
+      select: { id: true, imageUrl: true },
+    });
+    if (!outcome?.imageUrl || !isDataUri(outcome.imageUrl)) return null;
+    return decodeDataUri(outcome.imageUrl);
   }
 
   async findOne(id: string): Promise<Market> {
