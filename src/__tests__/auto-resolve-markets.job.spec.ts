@@ -70,23 +70,43 @@ describe("AutoResolveMarketsJob", () => {
   });
 
   /**
-   * The test that makes "an admin resolves the Nations League" true rather
-   * than intended.
+   * The Nations League settles on its objection window like everything else.
    *
-   * There is no provider for this competition, so nothing can check a proposal
-   * against a result — an admin enters the score, proposes, and resolves. This
-   * job and KeeperService.handleDisputeWindowExpiry both settle any RESOLVING
-   * market whose window expires unobjected, and EITHER ONE alone is enough to
-   * settle it. If someone removes the exclusion here, this fails loudly.
+   * It was once excluded here, so a proposed market sat in RESOLVING until an
+   * admin resolved it by hand. That step re-read the work of the same person
+   * who had typed the score and proposed it, rather than checking it, while
+   * winners went unpaid until someone next opened the panel.
+   *
+   * Worth knowing what is and is not guaranteed: a fixture-linked market is
+   * re-read from football-data before the money moves, and this competition
+   * has no feed to re-read, so the objection window is the only check between
+   * a typed score and a payout.
    */
-  it("never settles a Nations League market, however quiet the window was", async () => {
+  it("settles a Nations League market once its window expires unobjected", async () => {
     const { job, marketsService } = build([
       { externalSource: "unl-manual" as any },
     ]);
 
     await job.autoResolveExpiredWindows();
 
-    expect(marketsService.resolve).not.toHaveBeenCalled();
+    expect(marketsService.resolve).toHaveBeenCalledWith(
+      "m1",
+      "o1",
+      "system:auto-resolve",
+    );
+  });
+
+  /**
+   * TER and BTC are still excluded, and for a different reason: their own
+   * service drives them end to end. Two systems settling one market is how a
+   * market gets settled twice.
+   */
+  it("still never settles a self-resolving price market", async () => {
+    for (const externalSource of ["ter", "btc"]) {
+      const { job, marketsService } = build([{ externalSource: externalSource as any }]);
+      await job.autoResolveExpiredWindows();
+      expect(marketsService.resolve).not.toHaveBeenCalled();
+    }
   });
 
   it("skips markets without a proposed outcome", async () => {

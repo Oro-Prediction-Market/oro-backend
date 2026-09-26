@@ -24,7 +24,7 @@ import { CreateMarketDto } from "./dto/create-market.dto";
 import { statNamesMatch } from "./stat-outcome-match.util";
 import {
   isSelfResolvingSource,
-  isManualOnlySource,
+  requiresManualProposal,
   neverAutoSettles,
 } from "./settlement-sources.util";
 import {
@@ -480,7 +480,7 @@ export class KeeperService {
             // Its proposals come from the fixture row, on the admin page.
             if (
               !isSelfResolvingSource(market.externalSource) &&
-              !isManualOnlySource(market.externalSource)
+              !requiresManualProposal(market.externalSource)
             ) {
               await this.notifyAdminPropose(market);
             }
