@@ -16,6 +16,9 @@ export const AppDataSource = new DataSource({
   migrationsRun: false,
   logging: true,
   extra: {
+    // Same session zone as the app (see app.module.ts), so a migration's
+    // `now()` means what the app means by it.
+    options: `-c timezone=${process.env.DB_TIMEZONE || process.env.TZ || "Asia/Thimphu"}`,
     max: 5,
     connectionTimeoutMillis: 10000,
     idleTimeoutMillis: 30000,

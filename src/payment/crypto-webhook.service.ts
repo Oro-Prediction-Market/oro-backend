@@ -19,7 +19,23 @@ export const KNOWN_DEPOSIT_ACTIONS = new Set([
   "unexpected",
 ]);
 
-/** Payout actions. Note withdrawals are **not** delivered by webhook at all. */
+/**
+ * Withdrawal actions: every status a withdrawal or customer payout can take.
+ * Delivered as `withdrawals.<net>.<status>` (21PAY-HD-WALLET-CONTRACT.md §3).
+ */
+export const KNOWN_WITHDRAWAL_ACTIONS = new Set([
+  "requested",
+  "pending_approval",
+  "approved",
+  "broadcasting",
+  "confirming",
+  "completed",
+  "rejected",
+  "failed",
+  "cancelled",
+]);
+
+/** Raw operator payouts — 21 Pay's own sweeps. Recorded, never acted on. */
 export const KNOWN_PAYOUT_ACTIONS = new Set([
   "broadcast",
   "confirmed",
@@ -73,6 +89,7 @@ export class CryptoWebhookService {
     if (!family || !action) return false;
     if (family === "deposits") return KNOWN_DEPOSIT_ACTIONS.has(action);
     if (family === "payouts") return KNOWN_PAYOUT_ACTIONS.has(action);
+    if (family === "withdrawals") return KNOWN_WITHDRAWAL_ACTIONS.has(action);
     return false;
   }
 

@@ -43,6 +43,22 @@ export enum RemoteWithdrawalStatus {
   CANCELLED = "cancelled",
 }
 
+/**
+ * Which 21 Pay API a withdrawal was sent through.
+ *
+ * - `destination`: `POST /v1/withdrawals` to a destination whitelisted at
+ *   21 Pay (the original, invoice-account flow).
+ * - `customer_payout`: `POST /v1/customer-payouts` straight to the user's own
+ *   address (Single HD wallet). No whitelist at 21 Pay; our own cooldown and
+ *   admin approval stand in front of it.
+ *
+ * Both are read back with `GET /v1/withdrawals/{id}` and share every status.
+ */
+export enum PayoutKind {
+  DESTINATION = "destination",
+  CUSTOMER_PAYOUT = "customer_payout",
+}
+
 export const TERMINAL_REMOTE_STATUSES: ReadonlySet<string> = new Set([
   RemoteWithdrawalStatus.COMPLETED,
   RemoteWithdrawalStatus.REJECTED,
@@ -189,6 +205,10 @@ export class CryptoWithdrawal {
 
   @Column({ type: "varchar", length: 128 })
   idempotencyKey: string;
+
+  /** Set when the withdrawal is approved; see {@link PayoutKind}. */
+  @Column({ type: "varchar", length: 24, default: PayoutKind.DESTINATION })
+  kind: PayoutKind;
 
   @CreateDateColumn()
   createdAt: Date;

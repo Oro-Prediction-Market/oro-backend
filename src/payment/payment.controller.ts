@@ -635,18 +635,26 @@ export class PaymentController {
     const { family, action } = this.cryptoWebhook.parseSubject(subject);
 
     if (family === "deposits") {
-      // Single HD wallet: an event with `end_user_id` belongs to a permanent
-      // address. Only `credited` moves money; every other deposit event is
-      // recorded and ignored, as 21 Pay's contract says.
       const hd = CryptoHdWalletService.parseCreditedEvent(payload ?? {});
-      if (hd || action === "credited") {
-        const outcome = hd
-          ? action === "credited"
-            ? await this.cryptoHd.credit(hd)
-            : { handled: true, credited: false, reason: `hd_ignored:${action}` }
-          : // An invoice payment's `credited`: the invoice flow already
-            // credits on `confirmed`, so acting here would pay twice.
-            { handled: true, credited: false, reason: "invoice_credited_ignored" };
+      const toPermanentAddress =
+        !hd &&
+        action !== "credited" &&
+        (await this.cryptoHd.isPermanentAddress(
+          payload?.network ?? "",
+          payload?.to ?? payload?.deposit_address,
+        ));
+      if (hd || action === "credited" || toPermanentAddress) {
+        let outcome: { handled: boolean; credited: boolean; reason?: string };
+        if (hd && action === "credited") {
+          outcome = await this.cryptoHd.credit(hd);
+        } else if (hd || toPermanentAddress) {
+          // detected / accepted / confirmed / held … on a permanent address.
+          outcome = { handled: true, credited: false, reason: `hd_ignored:${action}` };
+        } else {
+          // An invoice payment's `credited`: the invoice flow already credits
+          // on `confirmed`, so acting here would pay twice.
+          outcome = { handled: true, credited: false, reason: "invoice_credited_ignored" };
+        }
 
         await this.cryptoWebhook.markProcessed(
           event.id,
@@ -654,6 +662,24 @@ export class PaymentController {
         );
         return { received: true, duplicate: false, credited: outcome.credited };
       }
+    }
+
+    if (family === "withdrawals") {
+      // Withdrawal / customer-payout status. Throws on a 21 Pay read failure,
+      // and the 5xx is what makes them retry.
+      const outcome = await this.cryptoWithdrawal.handleWebhook(payload ?? {});
+      await this.cryptoWebhook.markProcessed(
+        event.id,
+        outcome.handled ? undefined : outcome.reason,
+      );
+      return { received: true, duplicate: false };
+    }
+
+    if (family === "payouts") {
+      // Raw operator payouts are 21 Pay moving funds (sweeps to treasury). We
+      // never create one, so there is nothing of ours to update.
+      await this.cryptoWebhook.markProcessed(event.id);
+      return { received: true, duplicate: false };
     }
 
     const outcome = await this.cryptoSettlement.settle({

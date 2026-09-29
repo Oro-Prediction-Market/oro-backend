@@ -30,6 +30,15 @@ function build(opts: {
   // Simulate losing a cross-replica race: the conditional claim matches 0 rows.
   restoreClaimAffected?: number;
   completedClaimAffected?: number;
+  /** Config overrides. The tests below this file's HD section exercise the
+   *  original `destination` flow, so that is the default here. */
+  config?: Record<string, string>;
+  /** Affected rows for the approve() claim (pending → approved). */
+  approveClaimAffected?: number;
+  /** Affected rows for the reject() claim, inside the refund transaction. */
+  rejectClaimAffected?: number;
+  /** Per-query lookup for withdrawalRepo.findOneBy; defaults to `withdrawal`. */
+  findWithdrawal?: (where: any) => any;
 } = {}) {
   const saved: { entity: string; value: any }[] = [];
   const updates: { entity: string; where: any; patch: any }[] = [];
@@ -57,13 +66,17 @@ function build(opts: {
       const affected =
         patch?.restoreTransactionId !== undefined
           ? opts.restoreClaimAffected ?? 1
-          : 1;
+          : patch?.approvalStatus === WithdrawalApprovalStatus.REJECTED
+            ? opts.rejectClaimAffected ?? 1
+            : 1;
       return Promise.resolve({ affected });
     }),
   };
 
   const withdrawalRepo: any = {
-    findOneBy: jest.fn().mockResolvedValue(opts.withdrawal ?? null),
+    findOneBy: jest.fn().mockImplementation(async (where: any) =>
+      opts.findWithdrawal ? opts.findWithdrawal(where) : (opts.withdrawal ?? null),
+    ),
     find: jest.fn().mockResolvedValue([]),
     create: jest.fn().mockImplementation((d: any) => ({ id: "w1", ...d })),
     save: jest.fn().mockImplementation((d: any) => Promise.resolve(d)),
@@ -72,7 +85,12 @@ function build(opts: {
       // The COMPLETED transition claim is conditional on completedAt IS NULL;
       // let a test force it to match 0 rows (another replica already completed).
       const affected =
-        patch?.completedAt !== undefined ? opts.completedClaimAffected ?? 1 : 1;
+        patch?.completedAt !== undefined
+          ? opts.completedClaimAffected ?? 1
+          : where?.approvalStatus === WithdrawalApprovalStatus.PENDING_APPROVAL &&
+              patch?.approvalStatus === WithdrawalApprovalStatus.APPROVED
+            ? opts.approveClaimAffected ?? 1
+            : 1;
       return Promise.resolve({ affected });
     }),
   };
@@ -83,6 +101,7 @@ function build(opts: {
     find: jest.fn().mockResolvedValue([]),
     create: jest.fn().mockImplementation((d: any) => ({ id: "d1", ...d })),
     save: jest.fn().mockImplementation((d: any) => Promise.resolve(d)),
+    update: jest.fn().mockResolvedValue({ affected: 0 }),
   };
   const userRepo: any = {
     findOneBy: jest
@@ -99,8 +118,16 @@ function build(opts: {
     createWithdrawal: jest
       .fn()
       .mockResolvedValue({ id: "p21-w1", status: "approved" }),
+    createCustomerPayout: jest
+      .fn()
+      .mockResolvedValue({ id: "p21-cp1", status: "approved" }),
+    getWithdrawal: jest.fn(),
   };
-  const config: any = { get: (_k: string, d: string) => d };
+  const cfg: Record<string, string> = {
+    USDT_PAYOUT_MODE: "destination",
+    ...opts.config,
+  };
+  const config: any = { get: (k: string, d?: string) => cfg[k] ?? d };
 
   const userNotifRepo = {
     create: (e: any) => e,
@@ -225,7 +252,7 @@ describe("request", () => {
   it("explains the 24h cooldown rather than refusing blankly", async () => {
     // A winner who cannot be paid for 24 hours needs to know why, or the
     // product looks broken at exactly the moment it matters most.
-    const usableAt = new Date("2026-01-02T00:00:00Z");
+    const usableAt = new Date(Date.now() + 20 * 3_600_000);
     const { service } = build({
       destination: {
         ...ACTIVE_DEST,
@@ -298,9 +325,12 @@ describe("approve and reject", () => {
       // maker-checker and naming the approver would defeat it.
       requestedBy: "u1",
     });
-    const patch = updates.find((u) => u.entity === "CryptoWithdrawal")!.patch;
-    expect(patch.approvalStatus).toBe(WithdrawalApprovalStatus.APPROVED);
-    expect(patch.pay21WithdrawalId).toBe("p21-w1");
+    // Claimed first, then the payout id is stored once 21 Pay accepts.
+    const patches = updates
+      .filter((u) => u.entity === "CryptoWithdrawal")
+      .map((u) => u.patch);
+    expect(patches[0].approvalStatus).toBe(WithdrawalApprovalStatus.APPROVED);
+    expect(patches.some((p) => p.pay21WithdrawalId === "p21-w1")).toBe(true);
   });
 
   it("will not let someone approve their own withdrawal", async () => {
@@ -560,5 +590,421 @@ describe("cooldown blocks approval", () => {
     expect(
       updates.some((u) => u.patch?.approvalStatus === WithdrawalApprovalStatus.APPROVED),
     ).toBe(false);
+  });
+});
+
+// ── Single HD wallet: customer payouts ─────────────────────────────────────
+//
+// 21PAY-HD-WALLET-CONTRACT.md §3. The default payout mode; the tests above
+// pin `destination` to keep exercising the original flow.
+
+const HD = { USDT_PAYOUT_MODE: "customer_payout" };
+const HD_DEST = {
+  id: "d1",
+  userId: "u1",
+  pay21DestinationId: null,
+  network: "tron",
+  address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+  status: WithdrawalDestinationStatus.ACTIVE,
+  usableAt: new Date(Date.now() - 60_000),
+};
+const hdPending = () => ({
+  id: "w1",
+  userId: "u1",
+  destinationId: "d1",
+  network: "tron",
+  amountUsdt: "10.000000000",
+  approvalStatus: WithdrawalApprovalStatus.PENDING_APPROVAL,
+  idempotencyKey: "wd:u1:r1",
+  pay21WithdrawalId: null,
+  remoteStatus: null,
+  restoreTransactionId: null,
+  txHash: null,
+});
+const refunds = (saved: { entity: string; value: any }[]) =>
+  saved.filter(
+    (r) => r.entity === "Transaction" && r.value.type === TransactionType.REFUND,
+  );
+const upstream = (status: number) =>
+  Object.assign(new Error(`Twenty-one Pay POST failed with ${status}`), {
+    upstreamStatus: status,
+  });
+
+describe("HD: payout addresses", () => {
+  it("never registers with 21 Pay, and starts our own 24h cooldown", async () => {
+    const { service, client, destRepo } = build({ config: HD });
+    destRepo.findOneBy.mockResolvedValue(null);
+    const before = Date.now();
+    const d: any = await service.addDestination("u1", {
+      network: "tron",
+      address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    });
+    expect(client.createWithdrawalDestination).not.toHaveBeenCalled();
+    expect(d.status).toBe(WithdrawalDestinationStatus.COOLDOWN);
+    expect(d.pay21DestinationId).toBeNull();
+    const waitH = (d.usableAt.getTime() - before) / 3_600_000;
+    expect(waitH).toBeGreaterThanOrEqual(23.99);
+    expect(waitH).toBeLessThanOrEqual(24.01);
+  });
+
+  it("refuses a chain customer payouts do not cover", async () => {
+    const { service, destRepo } = build({ config: HD });
+    destRepo.findOneBy.mockResolvedValue(null);
+    await expect(
+      service.addDestination("u1", {
+        network: "ethereum",
+        address: "0x52908400098527886E0F7030069857D2E4169EE7",
+      }),
+    ).rejects.toThrow(/only Tron/);
+  });
+
+  it("ends a cooldown once its time has passed", async () => {
+    const { service, destRepo } = build({ config: HD });
+    await service.listDestinations("u1");
+    expect(destRepo.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: "u1",
+        status: WithdrawalDestinationStatus.COOLDOWN,
+      }),
+      { status: WithdrawalDestinationStatus.ACTIVE },
+    );
+  });
+
+  it("lets a withdrawal be requested once the cooldown has passed", async () => {
+    const { service } = build({
+      config: HD,
+      destination: {
+        ...HD_DEST,
+        status: WithdrawalDestinationStatus.COOLDOWN,
+        usableAt: new Date(Date.now() - 1_000),
+      },
+    });
+    await expect(
+      service.request("u1", { destinationId: "d1", amountUsdt: "10", clientRequestId: "r1" }),
+    ).resolves.toBeDefined();
+  });
+
+  it("refuses a request while the cooldown is running", async () => {
+    const { service } = build({
+      config: HD,
+      destination: {
+        ...HD_DEST,
+        status: WithdrawalDestinationStatus.COOLDOWN,
+        usableAt: new Date(Date.now() + 3_600_000),
+      },
+    });
+    await expect(
+      service.request("u1", { destinationId: "d1", amountUsdt: "10", clientRequestId: "r1" }),
+    ).rejects.toThrow(/held for 24 hours/);
+  });
+});
+
+describe("HD: approve", () => {
+  it("sends a customer payout with our key, the user, the address and micro-USDT", async () => {
+    const { service, client, updates } = build({
+      config: HD,
+      withdrawal: hdPending(),
+      destination: HD_DEST,
+    });
+    await service.approve("admin-1", "w1");
+
+    expect(client.createCustomerPayout).toHaveBeenCalledWith({
+      idempotencyKey: "wd:u1:r1",
+      endUserId: "u1",
+      network: "tron",
+      toAddress: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+      amountBaseUnits: "10000000",
+    });
+    expect(client.createWithdrawal).not.toHaveBeenCalled();
+
+    const patches = updates.filter((u) => u.entity === "CryptoWithdrawal");
+    // Claimed from pending before anything was sent…
+    expect(patches[0].where).toMatchObject({
+      approvalStatus: WithdrawalApprovalStatus.PENDING_APPROVAL,
+    });
+    expect(patches[0].patch).toMatchObject({
+      approvalStatus: WithdrawalApprovalStatus.APPROVED,
+      kind: "customer_payout",
+    });
+    // …then the payout id stored, and its status applied.
+    expect(patches.some((p) => p.patch.pay21WithdrawalId === "p21-cp1")).toBe(true);
+    expect(patches.some((p) => p.patch.remoteStatus === "approved")).toBe(true);
+  });
+
+  it("sends nothing when another admin decided first", async () => {
+    const { service, client } = build({
+      config: HD,
+      withdrawal: hdPending(),
+      destination: HD_DEST,
+      approveClaimAffected: 0,
+    });
+    await expect(service.approve("admin-1", "w1")).rejects.toThrow(/already been decided/);
+    expect(client.createCustomerPayout).not.toHaveBeenCalled();
+  });
+
+  it("will not let someone approve their own withdrawal", async () => {
+    const { service, client } = build({ config: HD, withdrawal: hdPending(), destination: HD_DEST });
+    await expect(service.approve("u1", "w1")).rejects.toBeInstanceOf(ForbiddenException);
+    expect(client.createCustomerPayout).not.toHaveBeenCalled();
+  });
+
+  it.each([400, 403, 422, 429])(
+    "a definite refusal (%i) puts it back in the queue and refunds nothing",
+    async (status) => {
+      const { service, client, updates, saved } = build({
+        config: HD,
+        withdrawal: hdPending(),
+        destination: HD_DEST,
+      });
+      client.createCustomerPayout.mockRejectedValue(upstream(status));
+
+      await expect(service.approve("admin-1", "w1")).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      const revert = updates.find(
+        (u) =>
+          u.entity === "CryptoWithdrawal" &&
+          u.patch.approvalStatus === WithdrawalApprovalStatus.PENDING_APPROVAL,
+      );
+      expect(revert).toBeDefined();
+      // Only reverted if no payout id was stored in the meantime.
+      expect(revert!.where).toMatchObject({ approvalStatus: WithdrawalApprovalStatus.APPROVED });
+      expect(refunds(saved)).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    ["a timeout", new Error("Twenty-one Pay POST /customer-payouts timed out after 15000ms")],
+    ["a 5xx", upstream(502)],
+    ["a network error", new TypeError("fetch failed")],
+  ])(
+    "an unknown outcome (%s) stays approved — never back to the queue, never refunded",
+    async (_label, err) => {
+      const { service, client, updates, saved } = build({
+        config: HD,
+        withdrawal: hdPending(),
+        destination: HD_DEST,
+      });
+      client.createCustomerPayout.mockRejectedValue(err);
+
+      await expect(service.approve("admin-1", "w1")).resolves.toBeDefined();
+      expect(
+        updates.some(
+          (u) => u.patch.approvalStatus === WithdrawalApprovalStatus.PENDING_APPROVAL,
+        ),
+      ).toBe(false);
+      expect(refunds(saved)).toHaveLength(0);
+    },
+  );
+
+  it("a 409 holds it for review: not re-queued, not refunded", async () => {
+    const { service, client, updates, saved } = build({
+      config: HD,
+      withdrawal: hdPending(),
+      destination: HD_DEST,
+    });
+    client.createCustomerPayout.mockRejectedValue(upstream(409));
+    await service.approve("admin-1", "w1");
+
+    expect(updates.some((u) => u.patch.needsManualReview === true)).toBe(true);
+    expect(
+      updates.some((u) => u.patch.approvalStatus === WithdrawalApprovalStatus.PENDING_APPROVAL),
+    ).toBe(false);
+    expect(refunds(saved)).toHaveLength(0);
+  });
+
+  it("refunds once when 21 Pay rejects on the spot", async () => {
+    const { service, client, saved } = build({
+      config: HD,
+      withdrawal: hdPending(),
+      destination: HD_DEST,
+    });
+    client.createCustomerPayout.mockResolvedValue({
+      id: "p21-cp1",
+      status: "rejected",
+      failure_reason: "sanctions",
+    });
+    await service.approve("admin-1", "w1");
+
+    expect(refunds(saved)).toHaveLength(1);
+    expect(Number(refunds(saved)[0].value.amount)).toBe(10);
+  });
+
+  it("refuses a saved address that is not a valid Tron address", async () => {
+    const { service, client } = build({
+      config: HD,
+      withdrawal: hdPending(),
+      destination: { ...HD_DEST, address: "not-an-address" },
+    });
+    await expect(service.approve("admin-1", "w1")).rejects.toThrow(/not a valid/);
+    expect(client.createCustomerPayout).not.toHaveBeenCalled();
+  });
+
+  it("refuses while the address is in cooldown, before calling 21 Pay", async () => {
+    const { service, client } = build({
+      config: HD,
+      withdrawal: hdPending(),
+      destination: { ...HD_DEST, usableAt: new Date(Date.now() + 3_600_000) },
+    });
+    await expect(service.approve("admin-1", "w1")).rejects.toThrow(/cooldown/);
+    expect(client.createCustomerPayout).not.toHaveBeenCalled();
+  });
+});
+
+describe("HD: re-sending an unconfirmed approval", () => {
+  it("re-sends with the same key and stores the payout it gets back", async () => {
+    const approvedNoId = {
+      ...hdPending(),
+      approvalStatus: WithdrawalApprovalStatus.APPROVED,
+      kind: "customer_payout",
+      approvedAt: new Date(Date.now() - 5 * 60_000),
+    };
+    const { service, client, withdrawalRepo, updates } = build({
+      config: HD,
+      withdrawal: approvedNoId,
+      destination: HD_DEST,
+    });
+    withdrawalRepo.find.mockResolvedValue([approvedNoId]);
+
+    await service.resubmitUnconfirmed();
+
+    expect(client.createCustomerPayout).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: "wd:u1:r1" }),
+    );
+    expect(updates.some((u) => u.patch.pay21WithdrawalId === "p21-cp1")).toBe(true);
+    // Only rows that are approved, have no payout id, and are not under review.
+    expect(withdrawalRepo.find.mock.calls[0][0].where).toMatchObject({
+      approvalStatus: WithdrawalApprovalStatus.APPROVED,
+      needsManualReview: false,
+    });
+  });
+});
+
+describe("HD: withdrawal webhooks", () => {
+  const submitted = () => ({
+    ...hdPending(),
+    approvalStatus: WithdrawalApprovalStatus.APPROVED,
+    kind: "customer_payout",
+    pay21WithdrawalId: "p21-cp1",
+    remoteStatus: "approved",
+  });
+
+  it("completed → marked paid, nothing refunded, from 21 Pay's current record", async () => {
+    const wd = submitted();
+    const { service, client, updates, saved } = build({ config: HD, withdrawal: wd });
+    client.getWithdrawal.mockResolvedValue({ id: "p21-cp1", status: "completed", tx_hash: "aa99" });
+
+    const out = await service.handleWebhook({
+      id: "p21-cp1",
+      status: "completed",
+      idempotency_key: "wd:u1:r1",
+    });
+
+    expect(out.handled).toBe(true);
+    expect(client.getWithdrawal).toHaveBeenCalledWith("p21-cp1");
+    expect(updates.some((u) => u.patch.completedAt instanceof Date)).toBe(true);
+    expect(refunds(saved)).toHaveLength(0);
+  });
+
+  it.each(["rejected", "failed"])(
+    "%s with no tx hash → refunded exactly once",
+    async (status) => {
+      const wd = submitted();
+      const { service, client, saved } = build({ config: HD, withdrawal: wd });
+      client.getWithdrawal.mockResolvedValue({ id: "p21-cp1", status, failure_reason: "x" });
+
+      await service.handleWebhook({ id: "p21-cp1", status, idempotency_key: "wd:u1:r1" });
+      expect(refunds(saved)).toHaveLength(1);
+    },
+  );
+
+  it("failed WITH a tx hash → held for review, not refunded", async () => {
+    const wd = submitted();
+    const { service, client, saved, updates } = build({ config: HD, withdrawal: wd });
+    client.getWithdrawal.mockResolvedValue({ id: "p21-cp1", status: "failed", tx_hash: "aa99" });
+
+    await service.handleWebhook({ id: "p21-cp1", status: "failed", idempotency_key: "wd:u1:r1" });
+    expect(refunds(saved)).toHaveLength(0);
+    expect(updates.some((u) => u.patch.needsManualReview === true)).toBe(true);
+  });
+
+  it("acts on 21 Pay's current state, not the event body", async () => {
+    // A late `failed` body for a payout 21 Pay now reports completed.
+    const wd = submitted();
+    const { service, client, saved } = build({ config: HD, withdrawal: wd });
+    client.getWithdrawal.mockResolvedValue({ id: "p21-cp1", status: "completed", tx_hash: "aa99" });
+
+    await service.handleWebhook({ id: "p21-cp1", status: "failed", idempotency_key: "wd:u1:r1" });
+    expect(refunds(saved)).toHaveLength(0);
+  });
+
+  it("adopts the payout id by our key when the submit response was lost", async () => {
+    const wd = { ...submitted(), pay21WithdrawalId: null };
+    const { service, client, updates } = build({
+      config: HD,
+      findWithdrawal: (where) => (where.idempotencyKey === "wd:u1:r1" ? wd : null),
+    });
+    client.getWithdrawal.mockResolvedValue({ id: "p21-cp1", status: "broadcasting" });
+
+    const out = await service.handleWebhook({
+      id: "p21-cp1",
+      status: "broadcasting",
+      idempotency_key: "wd:u1:r1",
+    });
+    expect(out.handled).toBe(true);
+    expect(updates.some((u) => u.patch.pay21WithdrawalId === "p21-cp1")).toBe(true);
+  });
+
+  it("never adopts a payout for a withdrawal we did not approve", async () => {
+    const wd = hdPending(); // still pending
+    const { service, client } = build({
+      config: HD,
+      findWithdrawal: (where) => (where.idempotencyKey === "wd:u1:r1" ? wd : null),
+    });
+    const out = await service.handleWebhook({ id: "p21-x", idempotency_key: "wd:u1:r1" });
+    expect(out).toEqual({ handled: false, reason: "not_approved" });
+    expect(client.getWithdrawal).not.toHaveBeenCalled();
+  });
+
+  it("ignores a payout whose key does not match the withdrawal", async () => {
+    const wd = submitted();
+    const { service, client } = build({ config: HD, withdrawal: wd });
+    const out = await service.handleWebhook({ id: "p21-cp1", idempotency_key: "wd:someone:else" });
+    expect(out.reason).toBe("key_mismatch");
+    expect(client.getWithdrawal).not.toHaveBeenCalled();
+  });
+
+  it("ignores a payout we know nothing about", async () => {
+    const { service, client } = build({ config: HD, findWithdrawal: () => null });
+    const out = await service.handleWebhook({ id: "p21-zz", idempotency_key: "wd:u9:r9" });
+    expect(out).toEqual({ handled: false, reason: "unknown_withdrawal" });
+    expect(client.getWithdrawal).not.toHaveBeenCalled();
+  });
+});
+
+describe("reject vs approve race", () => {
+  it("a reject that lost the race refunds nothing", async () => {
+    const { service, saved } = build({
+      config: HD,
+      withdrawal: hdPending(),
+      rejectClaimAffected: 0,
+    });
+    await expect(service.reject("admin-2", "w1", "Suspicious")).rejects.toThrow(
+      /already been decided/,
+    );
+    expect(refunds(saved)).toHaveLength(0);
+  });
+
+  it("a reject that won refunds once and records the decision", async () => {
+    const { service, saved, updates } = build({ config: HD, withdrawal: hdPending() });
+    await service.reject("admin-2", "w1", "Suspicious");
+    expect(refunds(saved)).toHaveLength(1);
+    expect(
+      updates.some(
+        (u) =>
+          u.patch.approvalStatus === WithdrawalApprovalStatus.REJECTED &&
+          u.where.approvalStatus === WithdrawalApprovalStatus.PENDING_APPROVAL,
+      ),
+    ).toBe(true);
   });
 });

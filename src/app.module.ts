@@ -183,6 +183,7 @@ import { FriendlyThrottlerGuard } from "./shared/guards/friendly-throttler.guard
         migrationsRun: config.get("DB_MIGRATIONS_RUN", "false") === "true",
         logging: false,
         extra: {
+          options: `-c timezone=${config.get("DB_TIMEZONE") || process.env.TZ || "Asia/Thimphu"}`,
           // App connects DIRECTLY to the CNPG primary (no pooler in path).
           // 16 HPA pods x 15 = 240 conns, safely under PG max_connections=400.
           max: 15,

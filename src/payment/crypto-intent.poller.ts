@@ -61,16 +61,20 @@ export class CryptoIntentPoller {
   async pollWithdrawals(): Promise<void> {
     if (!this.client.enabled) return;
 
-    const open = await this.withdrawalRepo.find({
-      where: { pay21WithdrawalId: Not(IsNull()) },
-      order: { updatedAt: "ASC" },
-      take: BATCH,
-    });
+    // Finished rows are excluded in the query, not skipped after it. Skipping
+    // them in the loop let the 20 oldest finished withdrawals fill every batch
+    // forever, so once 20 had completed no new withdrawal was ever polled.
+    const open = await this.withdrawalRepo
+      .createQueryBuilder("w")
+      .where("w.pay21WithdrawalId IS NOT NULL")
+      .andWhere("(w.remoteStatus IS NULL OR w.remoteStatus NOT IN (:...terminal))", {
+        terminal: [...TERMINAL_REMOTE_STATUSES],
+      })
+      .orderBy("w.updatedAt", "ASC")
+      .take(BATCH)
+      .getMany();
 
     for (const wd of open) {
-      if (wd.remoteStatus && TERMINAL_REMOTE_STATUSES.has(wd.remoteStatus)) {
-        continue;
-      }
       try {
         const remote = await this.client.getWithdrawal(wd.pay21WithdrawalId!);
         await this.withdrawals.applyRemoteState(wd.id, remote);
@@ -80,6 +84,23 @@ export class CryptoIntentPoller {
             `${(err as Error).message}`,
         );
       }
+    }
+  }
+
+  /**
+   * Re-send approved withdrawals whose submission was never confirmed (a
+   * timeout or 5xx from 21 Pay). Same idempotency key, so this returns the
+   * original payout when there is one. See CryptoWithdrawalService.submit.
+   */
+  @Cron(CronExpression.EVERY_MINUTE)
+  async resubmitUnconfirmedWithdrawals(): Promise<void> {
+    if (!this.client.enabled) return;
+    try {
+      await this.withdrawals.resubmitUnconfirmed();
+    } catch (err) {
+      this.logger.warn(
+        `[USDT] Withdrawal re-send pass failed: ${(err as Error).message}`,
+      );
     }
   }
 

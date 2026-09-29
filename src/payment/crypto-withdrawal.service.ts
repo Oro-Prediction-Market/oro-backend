@@ -9,7 +9,15 @@ import {
 import { InjectRepository, InjectDataSource } from "@nestjs/typeorm";
 import { usdtIdentityVerified } from "../shared/utils/wallet.util";
 import { ConfigService } from "@nestjs/config";
-import { DataSource, In, IsNull, Repository } from "typeorm";
+import {
+  DataSource,
+  EntityManager,
+  In,
+  IsNull,
+  LessThan,
+  LessThanOrEqual,
+  Repository,
+} from "typeorm";
 import { User, KycStatus } from "../entities/user.entity";
 import { UserNotification } from "../entities/user-notification.entity";
 import {
@@ -19,6 +27,7 @@ import {
 import {
   CryptoWithdrawal,
   CryptoWithdrawalDestination,
+  PayoutKind,
   RemoteWithdrawalStatus,
   TERMINAL_REMOTE_STATUSES,
   WithdrawalApprovalStatus,
@@ -34,6 +43,7 @@ import { ledgerBalance } from "../shared/utils/ledger.util";
 import { announceBalanceChange } from "./usdt-deposit-credit";
 import { RedisService } from "../redis/redis.service";
 import { SseService } from "../sse/sse.service";
+import { HD_NETWORKS } from "./crypto-hd-wallet.service";
 
 const USDT = "USDT";
 
@@ -43,6 +53,26 @@ const USDT = "USDT";
  * restore().
  */
 class AlreadyRestoredError extends Error {}
+
+/** Thrown inside reject()'s transaction when someone else decided first. */
+class AlreadyDecidedError extends Error {}
+
+/**
+ * Upstream statuses that mean 21 Pay refused the request and created nothing,
+ * so the withdrawal can safely go back to the approval queue.
+ *
+ * Deliberately absent: 409 ("idempotency key reused for a different payout")
+ * — a payout with our key *exists* — and every 5xx, timeout and network error,
+ * where the payout may exist. Those stay approved and are never refundable
+ * from the queue.
+ */
+const DEFINITE_REFUSALS: ReadonlySet<number> = new Set([
+  400, 401, 403, 404, 422, 429,
+]);
+
+function upstreamStatusOf(err: unknown): number | undefined {
+  return (err as Error & { upstreamStatus?: number })?.upstreamStatus;
+}
 
 /**
  * USDT withdrawals.
@@ -162,6 +192,28 @@ export class CryptoWithdrawalService {
     const existing = await this.destRepo.findOneBy({ userId, network, address });
     if (existing) return existing;
 
+    if (this.payoutKind === PayoutKind.CUSTOMER_PAYOUT) {
+      // Customer payouts take a raw address: 21 Pay keeps no whitelist and
+      // no cooldown for them. Ours stands in, so a hijacked account cannot
+      // add an address and empty itself in one sitting (Stage J, D2).
+      if (!HD_NETWORKS.has(network as CryptoNetwork)) {
+        throw new BadRequestException(
+          `${network} withdrawals are unavailable — only Tron is supported`,
+        );
+      }
+      return this.destRepo.save(
+        this.destRepo.create({
+          userId,
+          pay21DestinationId: null,
+          network,
+          address,
+          label: input.label ?? null,
+          status: WithdrawalDestinationStatus.COOLDOWN,
+          usableAt: new Date(Date.now() + this.cooldownMs),
+        }),
+      );
+    }
+
     const remote = await this.client.createWithdrawalDestination({
       network: network as CryptoNetwork,
       address,
@@ -192,10 +244,53 @@ export class CryptoWithdrawalService {
   async listDestinations(
     userId: string,
   ): Promise<CryptoWithdrawalDestination[]> {
-    return this.destRepo.find({
+    // Nothing else ever ends a cooldown: without this an address stayed
+    // `cooldown` forever and could never be selected.
+    await this.destRepo.update(
+      {
+        userId,
+        status: WithdrawalDestinationStatus.COOLDOWN,
+        usableAt: LessThanOrEqual(new Date()),
+      },
+      { status: WithdrawalDestinationStatus.ACTIVE },
+    );
+    const rows = await this.destRepo.find({
       where: { userId },
       order: { createdAt: "DESC" },
     });
+    // A pre-HD row may have no `usableAt`; judge it by age instead.
+    return rows.map((d) =>
+      d.status === WithdrawalDestinationStatus.COOLDOWN && this.isUsable(d)
+        ? Object.assign(d, { status: WithdrawalDestinationStatus.ACTIVE })
+        : d,
+    );
+  }
+
+  /** Which API approvals go through. Customer payouts unless told otherwise. */
+  private get payoutKind(): PayoutKind {
+    return this.config.get<string>("USDT_PAYOUT_MODE") === "destination"
+      ? PayoutKind.DESTINATION
+      : PayoutKind.CUSTOMER_PAYOUT;
+  }
+
+  /** Our cooldown on a new payout address. 24 h unless configured. */
+  private get cooldownMs(): number {
+    const hours = Number(
+      this.config.get<string>("USDT_DESTINATION_COOLDOWN_HOURS") ?? "24",
+    );
+    return (Number.isFinite(hours) && hours >= 0 ? hours : 24) * 3_600_000;
+  }
+
+  /** Whether a destination may be paid to now. */
+  private isUsable(d: CryptoWithdrawalDestination): boolean {
+    if (d.status === WithdrawalDestinationStatus.DISABLED) return false;
+    // A future `usableAt` always wins, whatever the status says: for a
+    // whitelisted destination it is 21 Pay's own cooldown.
+    if (d.usableAt) return new Date(d.usableAt).getTime() <= Date.now();
+    if (d.status === WithdrawalDestinationStatus.ACTIVE) return true;
+    // A pre-HD row in cooldown with no `usableAt`: judge it by its age.
+    const created = new Date(d.createdAt).getTime();
+    return Number.isFinite(created) && created + this.cooldownMs <= Date.now();
   }
 
   private mapDestinationStatus(raw: string): WithdrawalDestinationStatus {
@@ -233,7 +328,7 @@ export class CryptoWithdrawalService {
     if (destination.status === WithdrawalDestinationStatus.DISABLED) {
       throw new BadRequestException("That withdrawal address is disabled");
     }
-    if (destination.status === WithdrawalDestinationStatus.COOLDOWN) {
+    if (!this.isUsable(destination)) {
       // Explained rather than refused blankly. A winner who cannot be paid for
       // 24 hours needs to know why, or the product looks broken at exactly the
       // moment it matters most.
@@ -348,7 +443,14 @@ export class CryptoWithdrawalService {
     });
   }
 
-  /** Approve, then submit to 21Pay. */
+  /**
+   * Approve, then submit to 21 Pay.
+   *
+   * The approval is **claimed before anything is sent**: a conditional update
+   * from `pending_approval`, so two admins — or an approve racing a reject —
+   * cannot both act. Without it, a reject landing while the payout request is
+   * in flight refunds the user *and* pays them.
+   */
   async approve(
     adminId: string,
     withdrawalId: string,
@@ -356,8 +458,8 @@ export class CryptoWithdrawalService {
     this.assertEnabled();
     const wd = await this.requirePending(withdrawalId);
 
-    // Maker-checker on our side too: 21Pay enforces it on theirs, and a user
-    // who is also an admin must not be able to release their own money.
+    // Maker-checker on our side too: a user who is also an admin must not be
+    // able to release their own money.
     if (wd.userId === adminId) {
       throw new ForbiddenException(
         "You cannot approve your own withdrawal",
@@ -367,69 +469,298 @@ export class CryptoWithdrawalService {
     const destination = await this.destRepo.findOneBy({
       id: wd.destinationId,
     });
-    if (!destination?.pay21DestinationId) {
-      throw new BadRequestException("Withdrawal address is not registered");
+    if (!destination) {
+      throw new BadRequestException("Withdrawal address not found");
     }
+    const kind = this.payoutKind;
+    this.assertSendable(destination, kind);
 
-    // Refuse locally before calling out.
-    //
-    // 21Pay would reject this anyway, but the admin UI is not the authority —
-    // the endpoint is reachable directly — and a pointless call to the money
-    // API on every premature click is worth avoiding on its own.
-    if (destination.usableAt && destination.usableAt.getTime() > Date.now()) {
-      throw new BadRequestException(
-        "This destination is still in its 24-hour cooldown at 21 Pay. It " +
-          `becomes usable at ${destination.usableAt.toISOString()}. The ` +
-          "withdrawal stays pending until then.",
-      );
-    }
-
-    // A destination inside 21Pay's cooldown, disabled, or unknown to them is a
-    // precondition failure, not an outage. Surfaced as 503 "temporarily
-    // unavailable" it reads as our fault and invites a retry that cannot
-    // succeed, so it is translated before it reaches the admin.
-    const remote = await this.client
-      .createWithdrawal({
-      idempotencyKey: wd.idempotencyKey,
-      destinationId: destination.pay21DestinationId,
-      amountBaseUnits: toBaseUnits(String(wd.amountUsdt)),
-        network: wd.network,
-        // The user who requested it, not the admin approving — see the client.
-        requestedBy: wd.userId,
-      })
-      .catch((err: unknown) => {
-        const message = (err as Error)?.message ?? "";
-        if (/422/.test(message)) {
-          const when = destination.usableAt
-            ? ` It becomes usable at ${destination.usableAt.toISOString()}.`
-            : "";
-          throw new BadRequestException(
-            "21 Pay will not pay to this destination yet — it is in cooldown, " +
-              `disabled, or unknown to them.${when} The withdrawal stays ` +
-              "pending and can be approved once that clears.",
-          );
-        }
-        throw err;
-      });
-
-    await this.withdrawalRepo.update(
-      { id: wd.id },
+    const claim = await this.withdrawalRepo.update(
+      { id: wd.id, approvalStatus: WithdrawalApprovalStatus.PENDING_APPROVAL },
       {
         approvalStatus: WithdrawalApprovalStatus.APPROVED,
         approvedBy: adminId,
         approvedAt: new Date(),
-        pay21WithdrawalId: remote.id,
-        remoteStatus: remote.status,
+        kind,
       },
     );
+    if (!claim.affected) {
+      throw new ForbiddenException("This withdrawal has already been decided");
+    }
 
-    this.logger.log(
-      `[USDT] Withdrawal ${wd.id} approved by ${adminId}, submitted as ${remote.id}`,
+    await this.submit(
+      {
+        ...wd,
+        approvalStatus: WithdrawalApprovalStatus.APPROVED,
+        approvedBy: adminId,
+        kind,
+      },
+      destination,
     );
+
+    this.logger.log(`[USDT] Withdrawal ${wd.id} approved by ${adminId}`);
     return (await this.withdrawalRepo.findOneBy({ id: wd.id }))!;
   }
 
-  /** Reject before anything is sent, and give the money back. */
+  /**
+   * Refuse locally before calling out. The admin UI is not the authority —
+   * the endpoint is reachable directly — and a wrong-chain or premature send
+   * is not something to learn about from 21 Pay.
+   */
+  private assertSendable(
+    destination: CryptoWithdrawalDestination,
+    kind: PayoutKind,
+  ): void {
+    if (destination.status === WithdrawalDestinationStatus.DISABLED) {
+      throw new BadRequestException("That withdrawal address is disabled");
+    }
+    if (!this.isUsable(destination)) {
+      const when = destination.usableAt
+        ? ` It becomes usable at ${destination.usableAt.toISOString()}.`
+        : "";
+      throw new BadRequestException(
+        "This withdrawal address is still in its 24-hour cooldown." +
+          `${when} The withdrawal stays pending until then.`,
+      );
+    }
+    if (
+      !isValidAddressForNetwork(
+        destination.network as CryptoNetwork,
+        destination.address,
+      )
+    ) {
+      throw new BadRequestException(
+        `The saved address is not a valid ${destination.network} address`,
+      );
+    }
+    if (kind === PayoutKind.CUSTOMER_PAYOUT) {
+      if (!HD_NETWORKS.has(destination.network as CryptoNetwork)) {
+        throw new BadRequestException(
+          `${destination.network} payouts are not supported — only Tron`,
+        );
+      }
+    } else if (!destination.pay21DestinationId) {
+      throw new BadRequestException("Withdrawal address is not registered");
+    }
+  }
+
+  /**
+   * Send an approved withdrawal to 21 Pay.
+   *
+   * Three outcomes, and the difference between the last two is the whole
+   * point of this method:
+   *
+   * - **accepted** — the payout id is stored and its state applied.
+   * - **definitely refused** (a 4xx in {@link DEFINITE_REFUSALS}) — nothing
+   *   exists at 21 Pay, so the withdrawal goes back to the approval queue.
+   * - **unknown** (timeout, 5xx, network) — the payout may exist. It stays
+   *   approved with no payout id and {@link resubmitUnconfirmed} re-sends it
+   *   with the **same idempotency key**, which 21 Pay answers with the
+   *   original payout if there is one. It must never return to the queue:
+   *   from there a reject would refund money that may already be leaving.
+   */
+  private async submit(
+    wd: CryptoWithdrawal,
+    destination: CryptoWithdrawalDestination,
+  ): Promise<void> {
+    let remote: { id: string; status: string; tx_hash?: string; failure_reason?: string };
+    try {
+      remote =
+        wd.kind === PayoutKind.CUSTOMER_PAYOUT
+          ? await this.client.createCustomerPayout({
+              idempotencyKey: wd.idempotencyKey,
+              endUserId: wd.userId,
+              network: destination.network as CryptoNetwork,
+              toAddress: destination.address,
+              amountBaseUnits: toBaseUnits(String(wd.amountUsdt)),
+            })
+          : await this.client.createWithdrawal({
+              idempotencyKey: wd.idempotencyKey,
+              destinationId: destination.pay21DestinationId!,
+              amountBaseUnits: toBaseUnits(String(wd.amountUsdt)),
+              network: wd.network,
+              // The user who requested it, not the admin approving.
+              requestedBy: wd.userId,
+            });
+    } catch (err) {
+      const status = upstreamStatusOf(err);
+
+      if (status !== undefined && DEFINITE_REFUSALS.has(status)) {
+        await this.withdrawalRepo.update(
+          {
+            id: wd.id,
+            approvalStatus: WithdrawalApprovalStatus.APPROVED,
+            pay21WithdrawalId: IsNull(),
+          },
+          {
+            approvalStatus: WithdrawalApprovalStatus.PENDING_APPROVAL,
+            approvedBy: null,
+            approvedAt: null,
+          },
+        );
+        throw new BadRequestException(
+          this.refusalMessage(status, destination, wd.kind),
+        );
+      }
+
+      if (status === 409) {
+        // A payout already carries this key with different details. That
+        // should be impossible — amount and address never change — so a
+        // person looks before anything else happens.
+        await this.withdrawalRepo.update(
+          { id: wd.id },
+          {
+            needsManualReview: true,
+            failureReason: "21 Pay: idempotency key already used (409)",
+          },
+        );
+        this.logger.error(
+          `[USDT] Withdrawal ${wd.id}: 21 Pay answered 409 for its key — ` +
+            `held for review, not re-sent and not refunded`,
+        );
+        return;
+      }
+
+      this.logger.error(
+        `[USDT] Withdrawal ${wd.id}: payout request outcome unknown ` +
+          `(${(err as Error)?.message}). Stays approved; will be re-sent ` +
+          `with the same key.`,
+      );
+      return;
+    }
+
+    await this.withdrawalRepo.update(
+      { id: wd.id, pay21WithdrawalId: IsNull() },
+      { pay21WithdrawalId: remote.id },
+    );
+    this.logger.log(
+      `[USDT] Withdrawal ${wd.id} submitted as ${remote.id} (${remote.status})`,
+    );
+    // Also settles an immediately-final answer (rejected on the spot).
+    await this.applyRemoteState(wd.id, remote);
+  }
+
+  private refusalMessage(
+    status: number,
+    destination: CryptoWithdrawalDestination,
+    kind: PayoutKind,
+  ): string {
+    const back = " The withdrawal is back in the queue.";
+    if (status === 429) {
+      return "21 Pay's account-wide withdrawal limit is reached. Try again later." + back;
+    }
+    if (status === 422) {
+      return kind === PayoutKind.CUSTOMER_PAYOUT
+        ? "21 Pay refused the payout: invalid address, or not enough balance " +
+            "in the 21 Pay account." + back
+        : "21 Pay will not pay to this destination yet — it is in cooldown, " +
+            "disabled, or unknown to them." +
+            (destination.usableAt
+              ? ` It becomes usable at ${destination.usableAt.toISOString()}.`
+              : "") +
+            back;
+    }
+    if (status === 403) {
+      return "21 Pay refused: this account type cannot make that kind of payout." + back;
+    }
+    return `21 Pay refused the payout (HTTP ${status}).` + back;
+  }
+
+  /**
+   * Re-send approved withdrawals whose submission outcome was never learned.
+   *
+   * Safe because the idempotency key is the withdrawal's own: 21 Pay returns
+   * the original payout if the first request created one, and creates it
+   * otherwise. Called by the poller.
+   */
+  async resubmitUnconfirmed(olderThanMs = 60_000): Promise<void> {
+    const stuck = await this.withdrawalRepo.find({
+      where: {
+        approvalStatus: WithdrawalApprovalStatus.APPROVED,
+        pay21WithdrawalId: IsNull(),
+        needsManualReview: false,
+        approvedAt: LessThan(new Date(Date.now() - olderThanMs)),
+      },
+      order: { approvedAt: "ASC" },
+      take: 20,
+    });
+
+    for (const wd of stuck) {
+      const destination = await this.destRepo.findOneBy({
+        id: wd.destinationId,
+      });
+      if (!destination) continue;
+      try {
+        await this.submit(wd, destination);
+      } catch (err) {
+        // A definite refusal put it back in the queue; the admin sees it there.
+        this.logger.warn(
+          `[USDT] Re-send of withdrawal ${wd.id}: ${(err as Error).message}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * A `withdrawals.<net>.<status>` webhook.
+   *
+   * The body names the payout (`id`) and our key (`idempotency_key`). We act
+   * on 21 Pay's **current** record, fetched here, not on the body: events can
+   * arrive out of order, and this is the path that refunds.
+   */
+  async handleWebhook(
+    payload: Record<string, any>,
+  ): Promise<{ handled: boolean; reason?: string }> {
+    const payoutId = payload?.id ? String(payload.id) : null;
+    const key = payload?.idempotency_key ? String(payload.idempotency_key) : null;
+
+    let wd = payoutId
+      ? await this.withdrawalRepo.findOneBy({ pay21WithdrawalId: payoutId })
+      : null;
+
+    if (!wd && key) {
+      // The submit response was lost, so we never stored the payout id.
+      wd = await this.withdrawalRepo.findOneBy({ idempotencyKey: key });
+      if (wd && !wd.pay21WithdrawalId && payoutId) {
+        if (wd.approvalStatus !== WithdrawalApprovalStatus.APPROVED) {
+          // Never adopt a payout for a withdrawal we did not approve.
+          this.logger.error(
+            `[USDT] Payout ${payoutId} names withdrawal ${wd.id}, which is ` +
+              `${wd.approvalStatus} — ignored`,
+          );
+          return { handled: false, reason: "not_approved" };
+        }
+        await this.withdrawalRepo.update(
+          { id: wd.id, pay21WithdrawalId: IsNull() },
+          { pay21WithdrawalId: payoutId },
+        );
+        wd.pay21WithdrawalId = payoutId;
+      }
+    }
+
+    if (!wd?.pay21WithdrawalId) {
+      return { handled: false, reason: "unknown_withdrawal" };
+    }
+    if (key && key !== wd.idempotencyKey) {
+      this.logger.error(
+        `[USDT] Payout ${payoutId} carries key ${key}, but withdrawal ` +
+          `${wd.id} has ${wd.idempotencyKey} — ignored`,
+      );
+      return { handled: false, reason: "key_mismatch" };
+    }
+
+    const remote = await this.client.getWithdrawal(wd.pay21WithdrawalId);
+    await this.applyRemoteState(wd.id, remote);
+    return { handled: true };
+  }
+
+  /**
+   * Reject before anything is sent, and give the money back.
+   *
+   * The claim and the refund are one transaction: a reject that lost the race
+   * to an approval refunds nothing, and one that won cannot leave the user
+   * rejected but unrefunded.
+   */
   async reject(
     adminId: string,
     withdrawalId: string,
@@ -439,16 +770,27 @@ export class CryptoWithdrawalService {
       throw new BadRequestException("A rejection reason is required");
     }
     const wd = await this.requirePending(withdrawalId);
+    const why = reason.trim();
 
-    await this.restore(wd, `rejected: ${reason.trim()}`);
-    await this.withdrawalRepo.update(
-      { id: wd.id },
-      {
-        approvalStatus: WithdrawalApprovalStatus.REJECTED,
-        approvedBy: adminId,
-        rejectionReason: reason.trim().slice(0, 255),
-      },
-    );
+    try {
+      await this.restore(wd, `rejected: ${why}`, async (em) => {
+        const claim = await em.update(
+          CryptoWithdrawal,
+          { id: wd.id, approvalStatus: WithdrawalApprovalStatus.PENDING_APPROVAL },
+          {
+            approvalStatus: WithdrawalApprovalStatus.REJECTED,
+            approvedBy: adminId,
+            rejectionReason: why.slice(0, 255),
+          },
+        );
+        if (!claim.affected) throw new AlreadyDecidedError();
+      });
+    } catch (err) {
+      if (err instanceof AlreadyDecidedError) {
+        throw new ForbiddenException("This withdrawal has already been decided");
+      }
+      throw err;
+    }
     return (await this.withdrawalRepo.findOneBy({ id: wd.id }))!;
   }
 
@@ -598,11 +940,14 @@ export class CryptoWithdrawalService {
   private async restore(
     wd: CryptoWithdrawal,
     reason: string,
+    /** Runs first, in the same transaction; throwing rolls the refund back. */
+    inSameTransaction?: (em: EntityManager) => Promise<void>,
   ): Promise<boolean> {
     if (wd.restoreTransactionId) return false; // fast path: already restored
 
     try {
       await this.dataSource.transaction(async (em) => {
+        if (inSameTransaction) await inSameTransaction(em);
         const amount = Number(wd.amountUsdt);
         const balance = await ledgerBalance(em, wd.userId, USDT);
         const credit = await em.save(

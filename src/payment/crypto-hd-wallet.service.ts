@@ -182,6 +182,24 @@ export class CryptoHdWalletService {
     return this.toAddressView(row);
   }
 
+  /**
+   * Whether `address` is one of our permanent addresses.
+   *
+   * HD deposit events other than `credited` carry no `end_user_id` — only the
+   * address, as `to`. This is how the webhook tells them apart from invoice
+   * events and ignores them, instead of handing them to invoice settlement
+   * where every one logs as an unknown intent.
+   */
+  async isPermanentAddress(
+    network: string,
+    address: string | null | undefined,
+  ): Promise<boolean> {
+    if (!address) return false;
+    return this.addressRepo.exists({
+      where: { network: String(network).toLowerCase(), address },
+    });
+  }
+
   async listDeposits(userId: string, limit = 20): Promise<HdDepositView[]> {
     const rows = await this.depositRepo.find({
       where: { userId },
