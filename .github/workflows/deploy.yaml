@@ -56,8 +56,8 @@ jobs:
           if [ '${{ vars.USDT_ENABLED }}${{ secrets.USDT_ENABLED }}' = 'true' ]; then
             [ -n '${{ secrets.TWENTY_ONE_PAY_API }}' ] \
               || warn "TWENTY_ONE_PAY_API — USDT is enabled but there is no API token, so every call to 21 Pay will fail"
-            [ -n '${{ secrets.TWENTYONE_PAY_WEBHOOK }}' ] \
-              || warn "TWENTYONE_PAY_WEBHOOK — deposits will only be credited by the 60s fallback poller"
+            [ -n '${{ secrets.TWENTYONE_PAY_WEBHOOK_SECRET || secrets.TWENTYONE_PAY_WEBHOOK }}' ] \
+              || warn "TWENTYONE_PAY_WEBHOOK_SECRET — deposits will only be credited by the 60s fallback poller"
             [ -n '${{ vars.TWENTYONE_PAY_NETWORKS }}${{ secrets.TWENTYONE_PAY_NETWORKS }}' ] \
               || warn "TWENTYONE_PAY_NETWORKS — unset means no chains are offered and no deposit can start"
           fi
@@ -134,7 +134,7 @@ jobs:
             --from-literal=KYC_INDEX_KEY='${{ secrets.KYC_INDEX_KEY }}' \
             --from-literal=TWENTYONE_PAY_BASE_URL="$PAY21_BASE_URL" \
             --from-literal=TWENTY_ONE_PAY_API='${{ secrets.TWENTY_ONE_PAY_API }}' \
-            --from-literal=TWENTYONE_PAY_WEBHOOK='${{ secrets.TWENTYONE_PAY_WEBHOOK }}' \
+            --from-literal=TWENTYONE_PAY_WEBHOOK_SECRET='${{ secrets.TWENTYONE_PAY_WEBHOOK_SECRET || secrets.TWENTYONE_PAY_WEBHOOK }}' \
             --from-literal=TWENTYONE_PAY_NETWORKS="$USDT_NETWORKS" \
             --from-literal=USDT_ENABLED="$USDT_ENABLED" \
             --from-literal=MINIO_ENDPOINT="$MINIO_ENDPOINT" \
@@ -150,7 +150,7 @@ jobs:
         run: |
           # Pods read oro-secrets only at start, and re-running this workflow on
           # the same commit leaves the image unchanged — so a secret added in
-          # GitHub (e.g. TWENTYONE_PAY_WEBHOOK) would never reach a pod.
+          # GitHub (e.g. TWENTYONE_PAY_WEBHOOK_SECRET) would never reach a pod.
           # Stamping a digest of the Secret into the pod template rolls the pods
           # exactly when either the image or the Secret changes.
           SECRETS_HASH="$(kubectl -n $NS get secret oro-secrets -o jsonpath='{.data}' | sha256sum | cut -c1-16)"
