@@ -440,6 +440,11 @@ export class UsersController {
   @ApiOperation({ summary: "Proxy a user's profile photo with CORS headers" })
   async avatar(@Param("id") id: string, @Res() res: Response) {
     res.setHeader("Access-Control-Allow-Origin", "*");
+    // Allow-Origin governs fetch(); an <img> is a no-cors load, which helmet's
+    // default Cross-Origin-Resource-Policy of "same-origin" blocks instead —
+    // and the apps are on a different origin to the API. Both headers are
+    // needed for this to render anywhere it is actually used.
+    res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
     const user = await this.userRepo
       .findOne({
         where: { id },

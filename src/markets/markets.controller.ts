@@ -144,6 +144,12 @@ export class MarketsController {
     res.setHeader("Content-Type", image.mime);
     res.setHeader("Content-Length", image.body.length);
     res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    // The apps are on a different origin (oro.fun vs api.oro.fun), and helmet's
+    // default Cross-Origin-Resource-Policy of "same-origin" makes the browser
+    // drop the response before it reaches the <img> — silently, and only in a
+    // browser, so curl shows a perfectly good PNG while every crest on the page
+    // falls back to a letter. This endpoint exists to be embedded cross-origin.
+    res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
     res.end(image.body);
   }
 
