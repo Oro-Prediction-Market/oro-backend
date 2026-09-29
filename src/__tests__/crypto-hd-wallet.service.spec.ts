@@ -92,6 +92,8 @@ function build(world: Partial<World> = {}, config: Record<string, string> = {}) 
   };
   const cfg: any = { get: (k: string, d?: string) => config[k] ?? d };
 
+  const redis = { del: jest.fn(async (..._k: string[]) => undefined) };
+  const sse = { emit: jest.fn() };
   const service = new CryptoHdWalletService(
     ds,
     {} as any,
@@ -100,8 +102,10 @@ function build(world: Partial<World> = {}, config: Record<string, string> = {}) 
     userNotifRepo,
     {} as any,
     cfg,
+    redis as any,
+    sse as any,
   );
-  return { service, saved, updates, hdRows, notifs };
+  return { service, saved, updates, hdRows, notifs, redis, sse };
 }
 
 const credited = (over: Record<string, any> = {}) =>
@@ -279,6 +283,20 @@ describe("CryptoHdWalletService.credit", () => {
     });
   });
 
+  it("refreshes the wallet balance after crediting, and not on a duplicate", async () => {
+    const { service, redis, sse } = build();
+    await service.credit(credited());
+    await service.credit(credited());
+    expect(redis.del).toHaveBeenCalledTimes(1);
+    expect(redis.del).toHaveBeenCalledWith(`oro:cache:balance:${USER}`);
+    expect(sse.emit).toHaveBeenCalledTimes(1);
+    expect(sse.emit).toHaveBeenCalledWith(
+      USER,
+      "balance:updated",
+      expect.objectContaining({ currency: "USDT" }),
+    );
+  });
+
   it("notifies the user after crediting, and not on a duplicate", async () => {
     const { service, notifs } = build();
     await service.credit(credited());
@@ -327,6 +345,8 @@ describe("CryptoHdWalletService.getDepositAddress", () => {
       {} as any,
       client,
       { get: () => undefined } as any,
+      {} as any,
+      {} as any,
     );
     return { service, client };
   }

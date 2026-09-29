@@ -109,6 +109,8 @@ function build(opts: {
       return n;
     },
   };
+  const redis = { del: jest.fn(async (..._k: string[]) => undefined) };
+  const sse = { emit: jest.fn() };
   const service = new CryptoWithdrawalService(
     withdrawalRepo,
     destRepo,
@@ -117,9 +119,13 @@ function build(opts: {
     client,
     config,
     userNotifRepo as any,
+    redis as any,
+    sse as any,
   );
   return {
     service,
+    redis,
+    sse,
     saved,
     updates,
     notifications,
@@ -199,6 +205,21 @@ describe("request", () => {
     expect(Number(debit.amount)).toBe(-10);
     expect(debit.currency).toBe("USDT");
     expect(debit.type).toBe(TransactionType.WITHDRAWAL);
+  });
+
+  it("refreshes the wallet balance after the debit", async () => {
+    const { service, redis, sse } = build();
+    await service.request("u1", {
+      destinationId: "d1",
+      amountUsdt: "10",
+      clientRequestId: "r1",
+    });
+    expect(redis.del).toHaveBeenCalledWith("oro:cache:balance:u1");
+    expect(sse.emit).toHaveBeenCalledWith(
+      "u1",
+      "balance:updated",
+      expect.objectContaining({ currency: "USDT" }),
+    );
   });
 
   it("explains the 24h cooldown rather than refusing blankly", async () => {
@@ -299,6 +320,17 @@ describe("approve and reject", () => {
     const credit = saved.find((r) => r.entity === "Transaction")!.value;
     expect(Number(credit.amount)).toBe(10);
     expect(credit.currency).toBe("USDT");
+  });
+
+  it("refreshes the wallet balance after returning the money", async () => {
+    const { service, redis, sse } = build({ withdrawal: pending });
+    await service.reject("admin-1", "w1", "Suspicious pattern");
+    expect(redis.del).toHaveBeenCalledWith(expect.stringMatching(/^oro:cache:balance:/));
+    expect(sse.emit).toHaveBeenCalledWith(
+      expect.any(String),
+      "balance:updated",
+      expect.objectContaining({ currency: "USDT" }),
+    );
   });
 
   it("refuses a second decision", async () => {

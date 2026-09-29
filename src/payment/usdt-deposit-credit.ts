@@ -7,6 +7,8 @@ import {
 } from "../entities/payment.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { ledgerBalance } from "../shared/utils/ledger.util";
+import { RedisService } from "../redis/redis.service";
+import { SseService } from "../sse/sse.service";
 
 const USDT = "USDT";
 
@@ -73,4 +75,23 @@ export async function writeUsdtDepositCredit(
   );
 
   return { paymentId: payment.id, transactionId: tx.id };
+}
+
+/**
+ * Tell the apps a USDT balance moved: drop the 15 s balance cache that
+ * `GET /users/me` reads, and push `balance:updated` over SSE.
+ *
+ * Call it **after** the transaction commits. Without the cache drop, a wallet
+ * that refreshes the moment a deposit lands reads the pre-deposit figure and
+ * keeps showing it — the DK rail does the same two steps for that reason.
+ * Neither step can throw (`RedisService.del` swallows its own errors).
+ */
+export async function announceBalanceChange(
+  redis: Pick<RedisService, "del">,
+  sse: Pick<SseService, "emit">,
+  userId: string,
+  data: Record<string, unknown>,
+): Promise<void> {
+  await redis.del(`oro:cache:balance:${userId}`);
+  sse.emit(userId, "balance:updated", data);
 }

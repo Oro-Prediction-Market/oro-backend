@@ -37,10 +37,19 @@ function build(intent: any) {
   };
   const ds: any = { transaction: (cb: Function) => cb(em) };
   const userNotifRepo = { create: (e: any) => e, save: async () => undefined };
+  const redis = { del: jest.fn(async (..._k: string[]) => undefined) };
+  const sse = { emit: jest.fn() };
   return {
-    service: new CryptoSettlementService(ds, userNotifRepo as any),
+    service: new CryptoSettlementService(
+      ds,
+      userNotifRepo as any,
+      redis as any,
+      sse as any,
+    ),
     saved,
     updates,
+    redis,
+    sse,
   };
 }
 
@@ -226,5 +235,28 @@ describe("CryptoSettlementService.reverse — reorg clawback", () => {
     const out = await service.reverse("pay21-1", "chain reorg");
     expect(out.reason).toBe("not_credited");
     expect(saved).toHaveLength(0);
+  });
+});
+
+describe("CryptoSettlementService — balance refresh", () => {
+  it("drops the balance cache and pushes balance:updated after a credit", async () => {
+    const { service, redis, sse } = build({ ...baseIntent });
+    await service.settle(confirmed);
+    expect(redis.del).toHaveBeenCalledWith("oro:cache:balance:u1");
+    expect(sse.emit).toHaveBeenCalledWith(
+      "u1",
+      "balance:updated",
+      expect.objectContaining({ currency: "USDT" }),
+    );
+  });
+
+  it("does neither when nothing was credited", async () => {
+    const { service, redis, sse } = build({
+      ...baseIntent,
+      creditedAt: new Date(),
+    });
+    await service.settle(confirmed);
+    expect(redis.del).not.toHaveBeenCalled();
+    expect(sse.emit).not.toHaveBeenCalled();
   });
 });

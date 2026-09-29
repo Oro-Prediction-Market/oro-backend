@@ -13,7 +13,12 @@ import {
 } from "../entities/crypto-payment-intent.entity";
 import { ledgerBalance } from "../shared/utils/ledger.util";
 import { fromBaseUnits } from "./usdt.util";
-import { writeUsdtDepositCredit } from "./usdt-deposit-credit";
+import {
+  announceBalanceChange,
+  writeUsdtDepositCredit,
+} from "./usdt-deposit-credit";
+import { RedisService } from "../redis/redis.service";
+import { SseService } from "../sse/sse.service";
 
 const USDT = "USDT";
 
@@ -53,6 +58,8 @@ export class CryptoSettlementService {
     @InjectDataSource() private readonly dataSource: DataSource,
     @InjectRepository(UserNotification)
     private readonly userNotifRepo: Repository<UserNotification>,
+    private readonly redis: RedisService,
+    private readonly sse: SseService,
   ) {}
 
   /**
@@ -157,6 +164,10 @@ export class CryptoSettlementService {
     });
 
     if (credited.userId) {
+      await announceBalanceChange(this.redis, this.sse, credited.userId, {
+        currency: USDT,
+        pay21IntentId: input.pay21IntentId,
+      });
       this.notifyTransaction(
         credited.userId,
         "Deposit received",
@@ -238,7 +249,8 @@ export class CryptoSettlementService {
     pay21IntentId: string,
     reason: string,
   ): Promise<SettlementOutcome> {
-    return this.dataSource.transaction(async (em) => {
+    const reversed: { userId: string | null } = { userId: null };
+    const outcome = await this.dataSource.transaction(async (em) => {
       const intent = await em
         .createQueryBuilder(CryptoPaymentIntent, "i")
         .setLock("pessimistic_write")
@@ -284,8 +296,17 @@ export class CryptoSettlementService {
         `[USDT] REVERSED ${amount} USDT for intent ${pay21IntentId} ` +
           `(user ${intent.userId}): ${reason}`,
       );
+      reversed.userId = intent.userId;
       return { handled: true, credited: false, reason: "reversed" };
     });
+
+    if (reversed.userId) {
+      await announceBalanceChange(this.redis, this.sse, reversed.userId, {
+        currency: USDT,
+        pay21IntentId,
+      });
+    }
+    return outcome;
   }
 
   /** Status and chain metadata for a non-crediting event. */

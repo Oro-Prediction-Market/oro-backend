@@ -23,7 +23,12 @@ import {
   isCryptoNetwork,
 } from "./services/twentyone-pay/twentyone-pay.types";
 import { fromBaseUnits } from "./usdt.util";
-import { writeUsdtDepositCredit } from "./usdt-deposit-credit";
+import {
+  announceBalanceChange,
+  writeUsdtDepositCredit,
+} from "./usdt-deposit-credit";
+import { RedisService } from "../redis/redis.service";
+import { SseService } from "../sse/sse.service";
 import { EXPLORER_TX } from "./crypto-deposit.service";
 
 /**
@@ -95,6 +100,8 @@ export class CryptoHdWalletService {
     private readonly userNotifRepo: Repository<UserNotification>,
     private readonly client: TwentyOnePayClient,
     private readonly config: ConfigService,
+    private readonly redis: RedisService,
+    private readonly sse: SseService,
   ) {}
 
   // ── Addresses ──────────────────────────────────────────────────────────────
@@ -332,6 +339,10 @@ export class CryptoHdWalletService {
     });
 
     if (credited.userId) {
+      await announceBalanceChange(this.redis, this.sse, credited.userId, {
+        currency: "USDT",
+        pay21IntentId: event.intentId,
+      });
       this.notifyDeposit(credited.userId, amount, event.network);
     }
     return outcome;

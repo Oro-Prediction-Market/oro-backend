@@ -31,6 +31,9 @@ import {
 } from "./services/twentyone-pay/twentyone-pay.types";
 import { isValidAddressForNetwork, toBaseUnits } from "./usdt.util";
 import { ledgerBalance } from "../shared/utils/ledger.util";
+import { announceBalanceChange } from "./usdt-deposit-credit";
+import { RedisService } from "../redis/redis.service";
+import { SseService } from "../sse/sse.service";
 
 const USDT = "USDT";
 
@@ -70,6 +73,8 @@ export class CryptoWithdrawalService {
     private readonly config: ConfigService,
     @InjectRepository(UserNotification)
     private readonly userNotifRepo: Repository<UserNotification>,
+    private readonly redis: RedisService,
+    private readonly sse: SseService,
   ) {}
 
   /**
@@ -249,7 +254,7 @@ export class CryptoWithdrawalService {
     const existing = await this.withdrawalRepo.findOneBy({ idempotencyKey });
     if (existing) return existing;
 
-    return this.dataSource.transaction(async (em) => {
+    const created = await this.dataSource.transaction(async (em) => {
       const balance = await ledgerBalance(em, userId, USDT);
       if (balance < amount) {
         throw new BadRequestException("Insufficient balance");
@@ -282,6 +287,12 @@ export class CryptoWithdrawalService {
         }),
       );
     });
+
+    await announceBalanceChange(this.redis, this.sse, userId, {
+      currency: USDT,
+      withdrawalId: created.id,
+    });
+    return created;
   }
 
   private parseAmount(raw: string): number {
@@ -632,6 +643,10 @@ export class CryptoWithdrawalService {
     this.logger.log(
       `[USDT] Restored ${wd.amountUsdt} USDT to user ${wd.userId} (${reason})`,
     );
+    await announceBalanceChange(this.redis, this.sse, wd.userId, {
+      currency: USDT,
+      withdrawalId: wd.id,
+    });
     return true;
   }
 
