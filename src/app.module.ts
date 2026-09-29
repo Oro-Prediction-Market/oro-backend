@@ -27,6 +27,10 @@ import {
   CryptoWithdrawal,
   CryptoWithdrawalDestination,
 } from "./entities/crypto-withdrawal.entity";
+import {
+  CryptoDepositAddress,
+  CryptoHdDeposit,
+} from "./entities/crypto-hd-wallet.entity";
 import { OutcomeBook } from "./entities/outcome-book.entity";
 import { Position } from "./entities/position.entity";
 import { Payment } from "./entities/payment.entity";
@@ -135,6 +139,8 @@ import { FriendlyThrottlerGuard } from "./shared/guards/friendly-throttler.guard
           CryptoWebhookEvent,
           CryptoWithdrawal,
           CryptoWithdrawalDestination,
+          CryptoDepositAddress,
+          CryptoHdDeposit,
           Position,
           Payment,
           Transaction,

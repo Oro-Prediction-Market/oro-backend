@@ -73,7 +73,7 @@ const NETWORK_DISPLAY: Record<CryptoNetwork, DepositNetworkView> = {
 };
 
 /** Explorer bases, so no client maintains a per-chain URL table. */
-const EXPLORER_TX: Record<CryptoNetwork, string> = {
+export const EXPLORER_TX: Record<CryptoNetwork, string> = {
   [CryptoNetwork.TRON]: "https://tronscan.org/#/transaction/",
   [CryptoNetwork.BASE]: "https://basescan.org/tx/",
   [CryptoNetwork.POLYGON]: "https://polygonscan.com/tx/",

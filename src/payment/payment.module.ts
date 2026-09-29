@@ -31,6 +31,11 @@ import { Pay21WebhookGuard } from "./guards/pay21-webhook.guard";
 import { DkMigrationFreezeGuard } from "./guards/dk-migration-freeze.guard";
 import { CryptoWebhookEvent } from "../entities/crypto-webhook-event.entity";
 import { CryptoPaymentIntent } from "../entities/crypto-payment-intent.entity";
+import {
+  CryptoDepositAddress,
+  CryptoHdDeposit,
+} from "../entities/crypto-hd-wallet.entity";
+import { CryptoHdWalletService } from "./crypto-hd-wallet.service";
 
 @Module({
   imports: [
@@ -48,6 +53,8 @@ import { CryptoPaymentIntent } from "../entities/crypto-payment-intent.entity";
       CryptoWebhookEvent,
       CryptoWithdrawal,
       CryptoWithdrawalDestination,
+      CryptoDepositAddress,
+      CryptoHdDeposit,
     ]),
     TelegramModule,
   ],
@@ -64,6 +71,7 @@ import { CryptoPaymentIntent } from "../entities/crypto-payment-intent.entity";
     CryptoSettlementService,
     CryptoIntentPoller,
     CryptoWithdrawalService,
+    CryptoHdWalletService,
     DKWithdrawalReconciler,
     Pay21WebhookGuard,
     DkMigrationFreezeGuard,

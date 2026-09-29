@@ -5,6 +5,10 @@ import { CryptoWebhookEvent } from "../entities/crypto-webhook-event.entity";
 
 /** Deposit actions the engine actually publishes. Anything else is dropped. */
 export const KNOWN_DEPOSIT_ACTIONS = new Set([
+  // The only event a Single HD wallet deposit is credited on. Invoice
+  // payments get it too, without `end_user_id`, and keep crediting on
+  // `confirmed` as before. See 21PAY-HD-WALLET-CONTRACT.md §2.
+  "credited",
   "detected",
   "accepted",
   "confirmed",

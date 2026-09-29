@@ -3,12 +3,6 @@ import { InjectDataSource, InjectRepository } from "@nestjs/typeorm";
 import { DataSource, EntityManager, Repository } from "typeorm";
 import { UserNotification } from "../entities/user-notification.entity";
 import {
-  Payment,
-  PaymentMethod,
-  PaymentStatus,
-  PaymentType,
-} from "../entities/payment.entity";
-import {
   Transaction,
   TransactionType,
 } from "../entities/transaction.entity";
@@ -19,6 +13,7 @@ import {
 } from "../entities/crypto-payment-intent.entity";
 import { ledgerBalance } from "../shared/utils/ledger.util";
 import { fromBaseUnits } from "./usdt.util";
+import { writeUsdtDepositCredit } from "./usdt-deposit-credit";
 
 const USDT = "USDT";
 
@@ -191,49 +186,20 @@ export class CryptoSettlementService {
     input: SettlementInput,
     status: CryptoIntentStatus,
   ): Promise<void> {
-    const payment = await em.save(
-      Payment,
-      em.create(Payment, {
-        userId: intent.userId,
-        type: PaymentType.DEPOSIT,
-        status: PaymentStatus.SUCCESS,
-        method: PaymentMethod.USDT,
-        amount: detected,
-        currency: USDT,
-        // The intent id, never the tx hash: it is the stable natural key
-        // across detected, confirmed, partial and top-up events, whereas a
-        // hash is per transfer.
-        externalPaymentId: intent.pay21IntentId,
-        confirmedAt: new Date(),
-        metadata: {
-          network: intent.network,
-          txHash: input.txHash ?? null,
-          blockNumber: input.blockNumber ?? null,
-          intentStatus: status,
-        },
-      }),
-    );
-
-    const balanceBefore = await ledgerBalance(em, intent.userId, USDT);
-
-    const tx = await em.save(
-      Transaction,
-      em.create(Transaction, {
-        userId: intent.userId,
-        type: TransactionType.DEPOSIT,
-        // We credit what arrived, always. Note this is what the *user* is
-        // owed; our own claim on 21Pay is `detected − fee`, because they
-        // deduct a per-tenant fee at ledger-post time. Reconciliation models
-        // that difference; the credit does not.
-        amount: detected,
-        currency: USDT,
-        balanceBefore,
-        balanceAfter: balanceBefore + detected,
-        paymentId: payment.id,
-        isBonus: false,
-        note: `USDT deposit · ${intent.network}`,
-      }),
-    );
+    const { paymentId, transactionId } = await writeUsdtDepositCredit(em, {
+      userId: intent.userId,
+      amount: detected,
+      // The intent id, never the tx hash: it is the stable natural key across
+      // detected, confirmed, partial and top-up events, whereas a hash is per
+      // transfer.
+      externalPaymentId: intent.pay21IntentId,
+      network: intent.network,
+      metadata: {
+        txHash: input.txHash ?? null,
+        blockNumber: input.blockNumber ?? null,
+        intentStatus: status,
+      },
+    });
 
     await em.update(
       CryptoPaymentIntent,
@@ -243,8 +209,8 @@ export class CryptoSettlementService {
         detectedAmountUsdt: detected,
         txHash: input.txHash ?? intent.txHash,
         blockNumber: input.blockNumber ?? intent.blockNumber,
-        paymentId: payment.id,
-        transactionId: tx.id,
+        paymentId,
+        transactionId,
         creditedAt: new Date(),
       },
     );

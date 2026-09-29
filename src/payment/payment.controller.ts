@@ -41,6 +41,7 @@ import { CryptoDepositService } from "./crypto-deposit.service";
 import { CryptoWebhookService } from "./crypto-webhook.service";
 import { CryptoSettlementService } from "./crypto-settlement.service";
 import { CryptoWithdrawalService } from "./crypto-withdrawal.service";
+import { CryptoHdWalletService } from "./crypto-hd-wallet.service";
 import { Pay21WebhookGuard } from "./guards/pay21-webhook.guard";
 import { DkMigrationFreezeGuard } from "./guards/dk-migration-freeze.guard";
 
@@ -101,6 +102,7 @@ export class PaymentController {
     private readonly cryptoWebhook: CryptoWebhookService,
     private readonly cryptoSettlement: CryptoSettlementService,
     private readonly cryptoWithdrawal: CryptoWithdrawalService,
+    private readonly cryptoHd: CryptoHdWalletService,
     private readonly configService: ConfigService,
     private readonly dkBankPaymentService: DKBankPaymentService,
     private readonly dkGatewayService: DKGatewayService,
@@ -570,6 +572,31 @@ export class PaymentController {
   }
 
   /**
+   * The account's permanent USDT deposit address (Single HD wallet).
+   *
+   * Issued by 21 Pay on first call and stored; every later call is a local
+   * read. Any amount, any number of times, never expires — so no amount and
+   * no countdown, unlike an invoice intent.
+   */
+  @Get("usdt/deposit-address")
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({ summary: "Permanent USDT deposit address for this account" })
+  async usdtDepositAddress(
+    @Request() req: any,
+    @Query("network") network?: string,
+  ) {
+    return this.cryptoHd.getDepositAddress(req.user.userId, network || "tron");
+  }
+
+  @Get("usdt/hd-deposits")
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: "Deposits received on the permanent address" })
+  async usdtHdDeposits(@Request() req: any, @Query("limit") limit?: string) {
+    return this.cryptoHd.listDeposits(req.user.userId, Number(limit) || 20);
+  }
+
+  /**
    * 21Pay webhook receiver.
    *
    * `@Public()` by necessity — 21Pay has no session with us — and the HMAC in
@@ -605,7 +632,30 @@ export class PaymentController {
 
     // Synchronous on purpose: if this throws, the 5xx is what makes 21Pay
     // retry, and with no replay endpoint that retry is the only recovery.
-    const { action } = this.cryptoWebhook.parseSubject(subject);
+    const { family, action } = this.cryptoWebhook.parseSubject(subject);
+
+    if (family === "deposits") {
+      // Single HD wallet: an event with `end_user_id` belongs to a permanent
+      // address. Only `credited` moves money; every other deposit event is
+      // recorded and ignored, as 21 Pay's contract says.
+      const hd = CryptoHdWalletService.parseCreditedEvent(payload ?? {});
+      if (hd || action === "credited") {
+        const outcome = hd
+          ? action === "credited"
+            ? await this.cryptoHd.credit(hd)
+            : { handled: true, credited: false, reason: `hd_ignored:${action}` }
+          : // An invoice payment's `credited`: the invoice flow already
+            // credits on `confirmed`, so acting here would pay twice.
+            { handled: true, credited: false, reason: "invoice_credited_ignored" };
+
+        await this.cryptoWebhook.markProcessed(
+          event.id,
+          outcome.handled ? undefined : outcome.reason,
+        );
+        return { received: true, duplicate: false, credited: outcome.credited };
+      }
+    }
+
     const outcome = await this.cryptoSettlement.settle({
       pay21IntentId:
         payload?.intent_id ?? payload?.intentId ?? payload?.id ?? "",

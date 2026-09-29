@@ -136,6 +136,33 @@ export interface Withdrawal {
   failure_reason?: string;
 }
 
+/** A customer's permanent deposit address (Single HD wallet). */
+export interface CustomerDepositAddress {
+  end_user_id: string;
+  network: string;
+  deposit_address: string;
+  created_at: string;
+}
+
+/**
+ * A payout to a customer's own wallet. Same nine states as `Withdrawal`, and
+ * readable with `getWithdrawal(id)`. `approved` means ≤ 100 USDT and sending
+ * now; `pending_approval` means 21 Pay is reviewing (`review_reason`).
+ */
+export interface CustomerPayout {
+  id: string;
+  network: string;
+  to_address: string;
+  amount: string;
+  currency: string;
+  status: Withdrawal["status"];
+  end_user_id?: string;
+  tx_hash?: string;
+  failure_reason?: string;
+  review_reason?: string;
+  created_at: string;
+}
+
 /**
  * Whether two addresses are the same address.
  *
@@ -475,6 +502,57 @@ export class TwentyOnePayClient {
       "POST",
       `/withdrawals/${encodeURIComponent(withdrawalId)}/cancel`,
     );
+  }
+
+  // ── Single HD wallet ───────────────────────────────────────────────────────
+  //
+  // Our tenant's profile is `stored_value`: one permanent address per
+  // customer, credited from `deposits.<net>.credited`, paid out with
+  // `customer-payouts`. See docs/usdt-oro/21PAY-HD-WALLET-CONTRACT.md.
+
+  /**
+   * The customer's permanent deposit address on `network`, created on first
+   * call (201) and returned unchanged afterwards (200) — safe to call again.
+   *
+   * `endUserId` is our user id. It comes back as `end_user_id` on every
+   * `credited` webhook, which is how a deposit finds its owner.
+   */
+  getOrCreateCustomerDepositAddress(params: {
+    endUserId: string;
+    network: CryptoNetwork;
+  }): Promise<CustomerDepositAddress> {
+    this.assertNetworkEnabled(params.network);
+    return this.request<CustomerDepositAddress>(
+      "POST",
+      `/customers/${encodeURIComponent(params.endUserId)}/deposit-addresses`,
+      { network: params.network },
+    );
+  }
+
+  /**
+   * Pay a customer from our 21 Pay balance to their own wallet.
+   *
+   * The user's ledger must already be debited: 21 Pay says so, and our
+   * withdrawal flow debits at request time. `idempotencyKey` is our withdrawal
+   * id — a retry returns the original payout, a reuse for a different payout
+   * is 409. Status arrives as `withdrawals.<net>.<status>` webhooks and via
+   * `getWithdrawal(id)`.
+   */
+  createCustomerPayout(params: {
+    idempotencyKey: string;
+    endUserId: string;
+    network: CryptoNetwork;
+    toAddress: string;
+    amountBaseUnits: string;
+  }): Promise<CustomerPayout> {
+    this.assertNetworkEnabled(params.network);
+    return this.request<CustomerPayout>("POST", "/customer-payouts", {
+      idempotency_key: params.idempotencyKey,
+      end_user_id: params.endUserId,
+      network: params.network,
+      to_address: params.toAddress,
+      amount: params.amountBaseUnits,
+    });
   }
 
   /**
