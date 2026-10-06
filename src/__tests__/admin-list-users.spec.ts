@@ -59,3 +59,50 @@ describe("AdminController.listUsers — sorting", () => {
     expect(paged).toMatch(/"distinctAlias"\."u_id" ASC/);
   });
 });
+
+describe("AdminController.listUsers — betting P&L", () => {
+  const run = async (q: Record<string, unknown>) => {
+    const { ctrl, sqls } = await harness();
+    await ctrl.listUsers({ sortDir: "desc", ...q });
+    // The paged query carries every WHERE; take the first that joins pnl.
+    return sqls.find((s) => s.sql.includes(`"pnl"`) || s.sql.includes(" pnl "))!;
+  };
+
+  it("joins settled, real-money bets only", async () => {
+    const { sql } = await run({});
+    expect(sql).toContain("status IN ('won', 'lost')");
+    expect(sql).toContain(`"isBonusFunded" = false`);
+  });
+
+  it("measures BTN by default and USDT only for USDT accounts — never both", async () => {
+    expect((await run({})).params).toContain("BTN");
+    const usdt = await run({ currency: "USDT" });
+    expect(usdt.params).toContain("USDT");
+    expect(usdt.params).not.toContain("BTN");
+  });
+
+  it.each([
+    ["profitable", "pnl.profit > 0"],
+    ["losing", "pnl.profit < 0"],
+    ["even", "pnl.settled > 0 AND pnl.profit = 0"],
+    ["none", `pnl."userId" IS NULL`],
+  ])("filters %s users", async (profit, where) => {
+    expect((await run({ profit })).sql).toContain(where);
+  });
+
+  it("binds min and max profit as parameters", async () => {
+    const { sql, params } = await run({ minProfit: -500, maxProfit: 2000 });
+    expect(sql).toContain("COALESCE(pnl.profit, 0) >=");
+    expect(sql).toContain("COALESCE(pnl.profit, 0) <=");
+    expect(params).toEqual(expect.arrayContaining([-500, 2000]));
+  });
+
+  it("sorts by profit through the paginated path without throwing", async () => {
+    const { ctrl, sqls } = await harness();
+    await expect(
+      ctrl.listUsers({ sortField: "profit", sortDir: "desc", page: 3, limit: 20 }),
+    ).resolves.toMatchObject({ page: 3 });
+    const paged = sqls.map((s) => s.sql).find((q) => q.includes("distinctAlias"));
+    expect(paged).toMatch(/ORDER BY "distinctAlias"\."pnl_profit" DESC/);
+  });
+});

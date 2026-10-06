@@ -1538,6 +1538,9 @@ export class AdminController {
       dkStatus = "all",
       currency = "all",
       tier = "all",
+      profit = "all",
+      minProfit,
+      maxProfit,
       sortField = "joined",
       sortDir = "desc",
       page = 1,
@@ -1584,6 +1587,41 @@ export class AdminController {
       )
       .addSelect("ref.username", "referredByUsername")
       .addSelect("ref.telegramId", "referredByTelegramId");
+
+    // ── Betting P&L ─────────────────────────────────────────────────────────
+    // Payouts minus stakes on SETTLED bets only: open bets have no result yet
+    // and refunds are neither won nor lost. Bonus-funded bets are excluded —
+    // that stake was Oro's money, not the user's. One currency at a time:
+    // USDT when the list is filtered to USDT accounts, otherwise ngultrum.
+    const pnlCcy = currency === "USDT" ? "USDT" : "BTN";
+    qb.leftJoin(
+      `(SELECT "userId",
+               SUM(CASE WHEN status = 'won' THEN payout ELSE 0 END) - SUM(amount) AS profit,
+               SUM(amount) AS staked,
+               COUNT(*) AS settled
+          FROM positions
+         WHERE status IN ('won', 'lost')
+           AND "isBonusFunded" = false
+           AND currency = :pnlCcy
+         GROUP BY "userId")`,
+      "pnl",
+      'pnl."userId" = u.id',
+      { pnlCcy },
+    )
+      // Lower-case aliases with no dot — see the Sort section for why.
+      .addSelect("COALESCE(pnl.profit, 0)", "pnl_profit")
+      .addSelect("COALESCE(pnl.staked, 0)", "pnl_staked")
+      .addSelect("COALESCE(pnl.settled, 0)", "pnl_settled");
+
+    if (profit === "profitable") qb.andWhere("pnl.profit > 0");
+    else if (profit === "losing") qb.andWhere("pnl.profit < 0");
+    else if (profit === "even") qb.andWhere("pnl.settled > 0 AND pnl.profit = 0");
+    else if (profit === "none") qb.andWhere('pnl."userId" IS NULL');
+
+    if (minProfit !== undefined && Number.isFinite(Number(minProfit)))
+      qb.andWhere("COALESCE(pnl.profit, 0) >= :minProfit", { minProfit: Number(minProfit) });
+    if (maxProfit !== undefined && Number.isFinite(Number(maxProfit)))
+      qb.andWhere("COALESCE(pnl.profit, 0) <= :maxProfit", { maxProfit: Number(maxProfit) });
 
     // ── Full-text search ────────────────────────────────────────────────────
     if (search && search.trim()) {
@@ -1664,6 +1702,9 @@ export class AdminController {
       qb.addSelect("COALESCE(u.betStreakCount, 0)", "sort_streak")
         .orderBy("sort_streak", dir)
         .addOrderBy("u.id", "ASC");
+    } else if (sortField === "profit") {
+      // Already selected as pnl_profit above.
+      qb.orderBy("pnl_profit", dir).addOrderBy("u.id", "ASC");
     } else {
       // joined (default)
       qb.orderBy("u.createdAt", dir);
@@ -1689,6 +1730,11 @@ export class AdminController {
       referredByName: raw[i]?.referredByName ?? null,
       referredByUsername: raw[i]?.referredByUsername ?? null,
       referredByTelegramId: raw[i]?.referredByTelegramId ?? null,
+      // Betting P&L in `pnlCurrency` — see the P&L section above.
+      profit: Number(raw[i]?.pnl_profit ?? 0),
+      staked: Number(raw[i]?.pnl_staked ?? 0),
+      settledBets: Number(raw[i]?.pnl_settled ?? 0),
+      pnlCurrency: pnlCcy,
     }));
 
     return {

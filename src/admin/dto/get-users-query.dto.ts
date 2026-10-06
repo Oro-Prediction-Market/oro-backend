@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from "@nestjs/swagger";
-import { IsOptional, IsIn, IsInt, Min, Max, MaxLength } from "class-validator";
+import { IsOptional, IsIn, IsInt, IsNumber, Min, Max, MaxLength } from "class-validator";
 import { Type } from "class-transformer";
 import { TIER_ORDER } from "../../markets/tiers";
 
@@ -46,12 +46,36 @@ export class GetUsersQueryDto {
   tier?: string;
 
   @ApiPropertyOptional({
-    enum: ["name", "balance", "streak", "joined"],
+    enum: ["name", "balance", "streak", "joined", "profit"],
     default: "joined",
   })
   @IsOptional()
-  @IsIn(["name", "balance", "streak", "joined"])
-  sortField?: "name" | "balance" | "streak" | "joined";
+  @IsIn(["name", "balance", "streak", "joined", "profit"])
+  sortField?: "name" | "balance" | "streak" | "joined" | "profit";
+
+  @ApiPropertyOptional({
+    enum: ["all", "profitable", "losing", "even", "none"],
+    default: "all",
+    description:
+      "Betting P&L on settled, real-money bets: payouts minus stakes. " +
+      "`none` = no settled bets yet. Measured in BTN, or USDT when the " +
+      "currency filter is USDT — never the two added together.",
+  })
+  @IsOptional()
+  @IsIn(["all", "profitable", "losing", "even", "none"])
+  profit?: "all" | "profitable" | "losing" | "even" | "none";
+
+  @ApiPropertyOptional({ description: "Minimum betting P&L (inclusive)" })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  minProfit?: number;
+
+  @ApiPropertyOptional({ description: "Maximum betting P&L (inclusive)" })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  maxProfit?: number;
 
   @ApiPropertyOptional({ enum: ["asc", "desc"], default: "desc" })
   @IsOptional()
