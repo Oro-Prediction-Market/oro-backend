@@ -31,7 +31,19 @@ describe("AdminInsightsController.edgeExceptions", () => {
   it("filters on the standard edge from fee.constants, not a literal", async () => {
     const { res, query } = run([]);
     await res;
-    expect(query.mock.calls[0][1]).toEqual([DEFAULT_HOUSE_EDGE_PCT]);
+    expect(query.mock.calls[0][1][0]).toBe(DEFAULT_HOUSE_EDGE_PCT);
+  });
+
+  /** BTC and TER rounds run on their own edge by design. */
+  it("leaves out the BTC and TER round markets", async () => {
+    const { res, query } = run([]);
+    await res;
+    const [sql, params] = query.mock.calls[0];
+    expect(params[1]).toEqual(["btc", "ter"]);
+    // Hand-made markets have no source and must stay in.
+    expect(sql).toMatch(/\(m\."externalSource" IS NULL OR m\."externalSource" <> ALL\(\$2::text\[\]\)\)/);
+    // The source filter applies to both edge conditions, not just the second.
+    expect(sql).toMatch(/\(m\."houseEdgePct" <> \$1 OR b\."houseEdgePct" <> \$1\)\s+(--[^\n]*\n\s*)*AND/);
   });
 
   it("lists a market configured off-standard, with its book", async () => {

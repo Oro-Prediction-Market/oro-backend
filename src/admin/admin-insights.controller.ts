@@ -16,6 +16,9 @@ import { JobHealthService } from "../job-health/job-health.service";
 
 const MEDALS = ["🥇", "🥈", "🥉"];
 
+/** Round-based games with their own edge; never listed as edge exceptions. */
+export const EDGE_EXCEPTION_IGNORED_SOURCES = ["btc", "ter"];
+
 /** The label season.service writes into prize notes and notification metadata. */
 function monthLabel(month: number, year: number): string {
   return new Date(Date.UTC(year, month - 1, 1)).toLocaleString("en-US", {
@@ -224,11 +227,14 @@ export class AdminInsightsController {
               b.currency, b."houseEdgePct" AS "bookEdge", b."totalPool" AS "bookPool"
          FROM markets m
          LEFT JOIN market_books b ON b."marketId" = m.id
-        WHERE m."houseEdgePct" <> $1
-           OR b."houseEdgePct" <> $1
+        WHERE (m."houseEdgePct" <> $1 OR b."houseEdgePct" <> $1)
+          -- BTC and TER rounds run on their own edge by design. They are not
+          -- exceptions, and at one round every few minutes they would fill
+          -- the 500-row limit and push real exceptions off the list.
+          AND (m."externalSource" IS NULL OR m."externalSource" <> ALL($2::text[]))
         ORDER BY m."createdAt" DESC
         LIMIT 500`,
-      [DEFAULT_HOUSE_EDGE_PCT],
+      [DEFAULT_HOUSE_EDGE_PCT, EDGE_EXCEPTION_IGNORED_SOURCES],
     );
 
     const byMarket = new Map<
