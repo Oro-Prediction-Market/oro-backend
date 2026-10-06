@@ -18,11 +18,12 @@ describe("AdminInsightsController.seasons", () => {
       volume: 1000,
     }));
 
-  function build(seasons: any[], prizes: any[]) {
+  function build(seasons: any[], prizes: any[], notices: any[] = []) {
     const query = jest
       .fn()
       .mockResolvedValueOnce(seasons)
-      .mockResolvedValueOnce(prizes);
+      .mockResolvedValueOnce(prizes)
+      .mockResolvedValueOnce(notices);
     return {
       ctrl: new AdminInsightsController({ query } as any),
       query,
@@ -99,5 +100,35 @@ describe("AdminInsightsController.seasons", () => {
     const res = await ctrl.seasons();
     expect(res.seasons).toEqual([]);
     expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  describe("notification read receipts", () => {
+    const paidAll = [
+      { userId: "u1", amount: "700", note: "🥇 Season prize — September 2026 #1", createdAt: new Date() },
+      { userId: "u2", amount: "500", note: "🥈 Season prize — September 2026 #2", createdAt: new Date() },
+      { userId: "u3", amount: "350", note: "🥉 Season prize — September 2026 #3", createdAt: new Date() },
+    ];
+
+    it("reports who opened the prize popup and who has not", async () => {
+      const seen = new Date("2026-10-02T08:00:00Z");
+      const { ctrl } = build([september()], paidAll, [
+        { userId: "u1", month: "September 2026", createdAt: new Date(), seenAt: seen },
+        { userId: "u2", month: "September 2026", createdAt: new Date(), seenAt: null },
+      ]);
+
+      const [p1, p2, p3] = (await ctrl.seasons()).seasons[0].podium;
+
+      expect([p1.notified, p1.seenAt]).toEqual([true, seen]);
+      expect([p2.notified, p2.seenAt]).toEqual([true, null]);
+      // Paid but never notified — the send failed after the money moved.
+      expect([p3.paid, p3.notified]).toEqual([true, false]);
+    });
+
+    it("does not take another month's notification as this one's", async () => {
+      const { ctrl } = build([september()], paidAll, [
+        { userId: "u1", month: "August 2026", createdAt: new Date(), seenAt: new Date() },
+      ]);
+      expect((await ctrl.seasons()).seasons[0].podium[0].notified).toBe(false);
+    });
   });
 });

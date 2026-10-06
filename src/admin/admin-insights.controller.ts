@@ -50,6 +50,9 @@ export class AdminInsightsController {
    * note season.service writes exists for that user. Matching on the note is
    * what the service itself uses as its idempotency key, so this cannot
    * disagree with what the service believes it did.
+   *
+   * Each place also carries whether the in-app prize notification was created
+   * and whether the winner has opened it (`seenAt`).
    */
   @Get("seasons")
   async seasons(@Query("limit") limit?: string) {
@@ -91,6 +94,26 @@ export class AdminInsightsController {
       prizeRows.map((r) => [`${r.note}|${r.userId}`, r]),
     );
 
+    // The in-app popup each winner gets, and whether they opened it. Keyed by
+    // the month label season.service stores in the notification's metadata.
+    // `seenAt` stays null until the popup is shown — the only read receipt
+    // there is. (The Telegram DM has none; Telegram does not report reads.)
+    const noticeRows: Array<{
+      userId: string;
+      month: string;
+      createdAt: Date;
+      seenAt: Date | null;
+    }> = await this.dataSource.query(
+      `SELECT "userId", metadata->>'month' AS month, "createdAt", "seenAt"
+         FROM user_notifications
+        WHERE type = 'season_prize'
+          AND metadata->>'month' = ANY($1)`,
+      [labels],
+    );
+    const noticeByMonthAndUser = new Map(
+      noticeRows.map((r) => [`${r.month}|${r.userId}`, r]),
+    );
+
     return {
       prizes: SEASON_PRIZES,
       minQualifiers: SEASON_MIN_QUALIFIERS,
@@ -109,6 +132,7 @@ export class AdminInsightsController {
             const rank = Number(w.rank);
             const note = `${MEDALS[rank - 1]} Season prize — ${label} #${rank}`;
             const paid = prizeByNoteAndUser.get(`${note}|${w.userId}`);
+            const notice = noticeByMonthAndUser.get(`${label}|${w.userId}`);
             return {
               rank,
               userId: w.userId as string,
@@ -119,6 +143,12 @@ export class AdminInsightsController {
               paid: !!paid,
               paidAmount: paid ? Number(paid.amount) : null,
               paidAt: paid?.createdAt ?? null,
+              // Notification is only sent on a fresh credit, so a paid place
+              // with no notification row means the send failed after the
+              // money moved — worth seeing, not just "unseen".
+              notified: !!notice,
+              notifiedAt: notice?.createdAt ?? null,
+              seenAt: notice?.seenAt ?? null,
             };
           });
 
