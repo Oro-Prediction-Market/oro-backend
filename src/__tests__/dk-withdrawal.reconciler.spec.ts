@@ -29,7 +29,11 @@ function makePayment(overrides: any = {}) {
 }
 
 function makeReconciler(payment: any) {
-  const paymentRepo: any = { find: jest.fn(), update: jest.fn() };
+  const paymentRepo: any = {
+    find: jest.fn(),
+    update: jest.fn(),
+    findOne: jest.fn().mockResolvedValue(payment),
+  };
   const dkGateway: any = {
     checkTransactionStatus: jest.fn(),
     checkTransferStatus: jest.fn(),
@@ -66,7 +70,7 @@ function makeReconciler(payment: any) {
     sse,
     userNotifRepo,
   );
-  return { reconciler, paymentRepo, dkGateway, em };
+  return { reconciler, paymentRepo, dkGateway, em, userNotifRepo };
 }
 
 const reconcile = (r: any, p: any) => (r as any).reconcileOne(p);
@@ -299,5 +303,127 @@ describe("DKWithdrawalReconciler — how soon a row is asked about", () => {
     await reconcile(reconciler, payment);
 
     expect(dkGateway.checkTransactionStatus).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Closing a stuck withdrawal by hand, from DK's statement.
+ *
+ * In September four users' money sat in PROCESSING for four days and was
+ * returned with SQL. This runs the reconciler's own finalise instead, so a
+ * manual close goes through the same locks and writes the same rows.
+ */
+describe("DKWithdrawalReconciler — manual close", () => {
+  const dk = (over: any = {}) =>
+    makePayment({ type: "withdrawal", method: "dkbank", ...over });
+  const admin = { adminId: "admin-1", note: "Not on DK statement 20-24 Sep" };
+
+  it("returns the money with a refund row when DK did not send it", async () => {
+    const payment = dk();
+    const { reconciler, em } = makeReconciler(payment);
+
+    await expect(
+      reconciler.resolveManually("pay-1", "not_sent", admin),
+    ).resolves.toBe("failed");
+
+    const refund = em.save.mock.calls.find(
+      (c: any[]) => c[1]?.type === TransactionType.REFUND,
+    )?.[1];
+    expect(refund).toMatchObject({ amount: 200, paymentId: "pay-1", userId: "user-1" });
+    expect(payment.status).toBe(PaymentStatus.FAILED);
+  });
+
+  it("keeps the customer-visible reason neutral and the admin's note in metadata", async () => {
+    const payment = dk();
+    const { reconciler } = makeReconciler(payment);
+
+    await reconciler.resolveManually("pay-1", "not_sent", admin);
+
+    expect(payment.failureReason).toBe(
+      "Withdrawal could not be completed — funds returned to your wallet",
+    );
+    expect(payment.metadata.manualReconcile).toMatchObject({
+      verdict: "not_sent",
+      adminId: "admin-1",
+      note: admin.note,
+    });
+  });
+
+  it("lets the debit stand and writes no refund when DK did send it", async () => {
+    const payment = dk();
+    const { reconciler, em } = makeReconciler(payment);
+
+    await expect(reconciler.resolveManually("pay-1", "sent", admin)).resolves.toBe(
+      "success",
+    );
+
+    expect(
+      em.save.mock.calls.some((c: any[]) => c[1]?.type === TransactionType.REFUND),
+    ).toBe(false);
+    expect(em.update).toHaveBeenCalledWith(
+      expect.anything(),
+      { paymentId: "pay-1", type: TransactionType.WITHDRAWAL },
+      { note: "DK Bank withdrawal confirmed" },
+    );
+    expect(payment.status).toBe(PaymentStatus.SUCCESS);
+  });
+
+  it("sends the user nothing unless asked", async () => {
+    const { reconciler, userNotifRepo } = makeReconciler(dk());
+    await reconciler.resolveManually("pay-1", "not_sent", admin);
+    expect(userNotifRepo.save).not.toHaveBeenCalled();
+  });
+
+  it("notifies when asked", async () => {
+    const { reconciler, userNotifRepo } = makeReconciler(dk());
+    await reconciler.resolveManually("pay-1", "sent", admin, true);
+    expect(userNotifRepo.save).toHaveBeenCalledTimes(1);
+  });
+
+  it("still notifies on the automatic path", async () => {
+    const payment = makePayment({ externalPaymentId: "DK-OLD-1" });
+    const { reconciler, dkGateway, userNotifRepo } = makeReconciler(payment);
+    dkGateway.checkTransactionStatus.mockResolvedValue({ status: "SUCCESS" });
+    (payment as any).createdAt = new Date(Date.now() - 3600_000);
+
+    await reconcile(reconciler, payment);
+
+    expect(userNotifRepo.save).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([PaymentStatus.SUCCESS, PaymentStatus.FAILED, PaymentStatus.PENDING])(
+    "refuses a withdrawal that is %s",
+    async (status) => {
+      const { reconciler, em } = makeReconciler(dk({ status }));
+      await expect(
+        reconciler.resolveManually("pay-1", "not_sent", admin),
+      ).rejects.toThrow(/only a processing withdrawal/);
+      expect(em.save).not.toHaveBeenCalled();
+    },
+  );
+
+  it("refuses anything that is not a DK withdrawal", async () => {
+    const { reconciler } = makeReconciler(dk({ type: "deposit" }));
+    await expect(
+      reconciler.resolveManually("pay-1", "not_sent", admin),
+    ).rejects.toThrow(/not found/);
+  });
+
+  it("reports a close that lost the race to another admin", async () => {
+    const payment = dk();
+    const { reconciler, em } = makeReconciler(payment);
+    // The pre-check saw PROCESSING; by the time the lock is taken it is not.
+    em.getRepository.mockImplementation(() => ({
+      createQueryBuilder: () => ({
+        setLock: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest
+          .fn()
+          .mockResolvedValue({ ...payment, status: PaymentStatus.FAILED }),
+      }),
+    }));
+    await expect(
+      reconciler.resolveManually("pay-1", "not_sent", admin),
+    ).rejects.toThrow(/closed by someone else/);
   });
 });

@@ -17,6 +17,8 @@ import { AuditLog } from "../entities/audit-log.entity";
 import { AdminController } from "./admin.controller";
 import { AdminInsightsController } from "./admin-insights.controller";
 import { AdminLedgerController } from "./admin-ledger.controller";
+import { AdminWithdrawalsController } from "./admin-withdrawals.controller";
+import { PaymentModule } from "../payment/payment.module";
 import { MarketsModule } from "../markets/markets.module";
 import { FixturesService } from "./fixtures.service";
 import { AuditService } from "./audit.service";
@@ -46,6 +48,7 @@ import { InsightsModule } from "../insights/insights.module";
     BullModule.registerQueue({ name: NOTIFICATION_QUEUE }),
     RedisModule,
     MarketsModule,
+    PaymentModule,
     TelegramModule,
     // For UserNotificationService — announcements write the in-app bell rows.
     UsersModule,
@@ -66,6 +69,7 @@ import { InsightsModule } from "../insights/insights.module";
     AnnouncementsController,
     AdminInsightsController,
     AdminLedgerController,
+    AdminWithdrawalsController,
   ],
   providers: [FixturesService, AuditService, AnnouncementsService],
   exports: [AuditService],

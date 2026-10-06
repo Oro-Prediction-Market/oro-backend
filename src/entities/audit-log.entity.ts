@@ -30,6 +30,8 @@ export enum AuditAction {
   // Recomputed a wallet's stored running balances from its own rows. Display
   // figures only — no amount changes.
   LEDGER_REBUILD = "ledger.rebuild_running_balances",
+  // Closed a stuck DK withdrawal from the bank statement (sent / not sent).
+  WITHDRAWAL_MANUAL_RESOLVE = "withdrawal.manual_resolve",
   PAYMENT_VIEW = "payment.view",
   DUEL_VOID = "duel.void", // call a stuck duel off and refund both wagers
 

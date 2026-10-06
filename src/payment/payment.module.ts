@@ -76,6 +76,15 @@ import { CryptoHdWalletService } from "./crypto-hd-wallet.service";
     Pay21WebhookGuard,
     DkMigrationFreezeGuard,
   ],
-  exports: [DKGatewayService, BankLinkService, TwentyOnePayClient, CryptoDepositService, CryptoSettlementService],
+  exports: [
+    DKGatewayService,
+    BankLinkService,
+    TwentyOnePayClient,
+    CryptoDepositService,
+    CryptoSettlementService,
+    // For the admin's manual close of a stuck withdrawal — same instance, so
+    // its cron still runs once.
+    DKWithdrawalReconciler,
+  ],
 })
 export class PaymentModule {}

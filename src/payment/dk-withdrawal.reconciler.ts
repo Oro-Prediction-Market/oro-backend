@@ -1,6 +1,8 @@
 import {
+  ConflictException,
   Injectable,
   Logger,
+  NotFoundException,
   Optional,
 } from "@nestjs/common";
 import { Cron, CronExpression } from "@nestjs/schedule";
@@ -260,15 +262,85 @@ export class DKWithdrawalReconciler {
   }
 
   /**
+   * Close a stuck withdrawal on an admin's word, after checking DK's statement.
+   *
+   * The reconciler cannot finish a withdrawal DK gave no handle for, or one
+   * whose status DK keeps answering ambiguously — those wait for a human. Until
+   * now that human finished them with SQL. This runs the same `finalise` the
+   * automatic path does, under the same locks, so a manual close cannot leave
+   * the books in a state the automatic one could not.
+   *
+   * Only PROCESSING withdrawals: that is the one state in which the user's
+   * money is held with the outcome unknown. Anything else is already settled
+   * one way or the other, and changing it would need a different correction.
+   *
+   * `sent` keeps the debit; `not_sent` returns the money with a REFUND row.
+   * The unique (paymentId, type) index makes a second refund impossible even
+   * if two admins click at once — the second also finds the row no longer
+   * PROCESSING and does nothing.
+   *
+   * No message goes to the user unless asked for.
+   */
+  async resolveManually(
+    paymentId: string,
+    verdict: "sent" | "not_sent",
+    admin: { adminId: string; note: string },
+    notifyUser = false,
+  ): Promise<"success" | "failed"> {
+    const payment = await this.paymentRepo.findOne({ where: { id: paymentId } });
+    if (
+      !payment ||
+      payment.type !== PaymentType.WITHDRAWAL ||
+      payment.method !== PaymentMethod.DK_BANK
+    ) {
+      throw new NotFoundException("DK withdrawal not found");
+    }
+    if (payment.status !== PaymentStatus.PROCESSING) {
+      throw new ConflictException(
+        `This withdrawal is already ${payment.status}; only a processing withdrawal can be closed here.`,
+      );
+    }
+
+    const outcome = await this.finalise(
+      payment,
+      verdict === "sent" ? "success" : "failed",
+      {
+        status: "MANUAL",
+        // What a customer may see if they open the payment. Neutral on
+        // purpose; the admin's reasoning lives in metadata and the audit log.
+        statusDesc:
+          verdict === "sent"
+            ? undefined
+            : "Withdrawal could not be completed — funds returned to your wallet",
+      },
+      { manual: admin, notify: notifyUser },
+    );
+    if (!outcome) {
+      throw new ConflictException(
+        "This withdrawal was closed by someone else while you were deciding.",
+      );
+    }
+    return outcome;
+  }
+
+  /**
    * Apply a terminal verdict. Mirrors phase 3 of `confirmWithdrawal`: on
    * success the existing debit simply stands; on a definite failure the
    * reserved funds are returned.
+   *
+   * Returns what this call did, or null when the row was no longer PROCESSING
+   * by the time the lock was taken.
    */
   private async finalise(
     payment: Payment,
     verdict: "success" | "failed",
     result: { status: string; statusDesc?: string; raw?: unknown },
-  ) {
+    opts: {
+      manual?: { adminId: string; note: string };
+      notify?: boolean;
+    } = {},
+  ): Promise<"success" | "failed" | null> {
+    const notify = opts.notify ?? true;
     const userId = payment.userId;
     const amount = Number(payment.amount);
     // Set only past the `status === PROCESSING` guard below, so the notification
@@ -307,6 +379,16 @@ export class DKWithdrawalReconciler {
           raw: result.raw ?? null,
           at: new Date().toISOString(),
         },
+        ...(opts.manual
+          ? {
+              manualReconcile: {
+                verdict: verdict === "success" ? "sent" : "not_sent",
+                adminId: opts.manual.adminId,
+                note: opts.manual.note,
+                at: new Date().toISOString(),
+              },
+            }
+          : {}),
       };
 
       if (verdict === "success") {
@@ -322,7 +404,9 @@ export class DKWithdrawalReconciler {
         await em.save(locked);
         finalized.outcome = "success";
         this.logger.log(
-          `[Reconcile] payment ${payment.id} settled at DK — marked SUCCESS`,
+          opts.manual
+            ? `[Reconcile] payment ${payment.id} closed as SENT by admin ${opts.manual.adminId}`
+            : `[Reconcile] payment ${payment.id} settled at DK — marked SUCCESS`,
         );
         return;
       }
@@ -347,15 +431,20 @@ export class DKWithdrawalReconciler {
       await em.save(locked);
       finalized.outcome = "failed";
       this.logger.warn(
-        `[Reconcile] payment ${payment.id} failed at DK — refunded Nu ${amount}`,
+        opts.manual
+          ? `[Reconcile] payment ${payment.id} closed as NOT SENT by admin ${opts.manual.adminId} — refunded Nu ${amount}`
+          : `[Reconcile] payment ${payment.id} failed at DK — refunded Nu ${amount}`,
       );
     });
+
+    if (!finalized.outcome) return null;
 
     await this.redis.del(`oro:cache:balance:${userId}`);
     this.sse.emit(userId, "balance:updated", { paymentId: payment.id });
 
     // Same messages as the instant path (confirmWithdrawal), so a withdrawal
     // notifies identically whether DK answered at once or was reconciled later.
+    if (!notify) return finalized.outcome;
     if (finalized.outcome === "success") {
       this.notifyTransaction(
         userId,
@@ -381,5 +470,6 @@ export class DKWithdrawalReconciler {
         },
       );
     }
+    return finalized.outcome;
   }
 }
