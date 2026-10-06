@@ -4,6 +4,17 @@ import { PositionStatus } from "../entities/position.entity";
 import { MarketStatus } from "../entities/market.entity";
 
 /**
+ * settleMarket opens with a row lock and a raw "already settled?" query. The
+ * fakes here predate it; give any fake without `query` one that says "never
+ * settled", so each test exercises a first settlement as before.
+ */
+function lockable<T>(em: T): T {
+  const e = em as any;
+  if (e && typeof e.query !== "function") e.query = jest.fn().mockResolvedValue([]);
+  return em;
+}
+
+/**
  * Settlement now runs once per currency book, so `em.find` is asked for the
  * market's MarketBook rows. These mocks answer `find` with whatever the test
  * set up for positions, which would hand settlement a list of non-books.
@@ -123,7 +134,7 @@ function makeEm(positions: any[]) {
 
 function makeEngine(em: any, minUniqueBettors = 2) {
   const mockDataSource = {
-    transaction: jest.fn().mockImplementation((cb: Function) => cb(em)),
+    transaction: jest.fn().mockImplementation((cb: Function) => cb(lockable(em))),
   };
   const mockConfigService = {
     get: jest.fn().mockImplementation((key: string, def: string) => {

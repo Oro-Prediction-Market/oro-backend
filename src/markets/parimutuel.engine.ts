@@ -1175,12 +1175,27 @@ export class ParimutuelEngine implements OnModuleInit {
       }
     }
 
+    const run: { alreadySettled?: boolean } = {};
     const settlements = await this.settleMarket(
       market,
       winner,
       unclaimedForfeitByCurrency,
       challengerRewardsByCurrency,
+      run,
     );
+
+    // Another resolver settled this market while we waited on the lock. It
+    // has already booked the revenue, cleared caches and sent the messages;
+    // doing any of that again would double it.
+    if (run.alreadySettled) {
+      this.logger.warn(
+        `[Concurrency] Market ${marketId} was settled by another resolver — ` +
+          `this pass paid nothing`,
+      );
+      return (
+        settlements.find((st) => st.currency === BTN_CURRENCY) ?? settlements[0]
+      );
+    }
 
     // Callers downstream of this point predate books and speak in a single
     // ngultrum settlement. The BTN book is that settlement; the others are
@@ -1352,8 +1367,49 @@ export class ParimutuelEngine implements OnModuleInit {
       string,
       { userId: string; bondAmount: number }[]
     > = new Map(),
+    // Set to true when another resolver had already settled the market, so the
+    // caller can skip the work that resolver has already done.
+    run: { alreadySettled?: boolean } = {},
   ): Promise<Settlement[]> {
     return await this.dataSource.transaction(async (em) => {
+      // ── One settler per market ────────────────────────────────────────────
+      // Lock the market row before reading anything. Without it, two resolvers
+      // starting together (the keeper and AutoResolveMarketsJob both tick at
+      // :05, or two pods) each read "no settlement yet" and the same PENDING
+      // positions, and each paid every winner — the "recovery" path in
+      // resolveMarket lets the second one past the RESOLVING claim while the
+      // first is still paying. Under the lock the second waits, then sees the
+      // first one's committed SETTLED status and pays nothing.
+      //
+      // Bet placement locks this same row first, so the order is the same and
+      // the two cannot deadlock.
+      //
+      // "Already settled" is read from the settlement rows, not the status:
+      // the second resolver saves the market as RESOLVED on its way here, and
+      // that save can land just after the first one committed SETTLED. Every
+      // book is settled inside this one transaction, so rows for one book mean
+      // rows for all of them.
+      await em.query(`SELECT id FROM markets WHERE id = $1 FOR UPDATE`, [
+        market.id,
+      ]);
+      const [prior] = await em.query(
+        `SELECT 1 AS settled FROM settlements WHERE "marketId" = $1 LIMIT 1`,
+        [market.id],
+      );
+      if (prior) {
+        const existing = await em.find(Settlement, {
+          where: { marketId: market.id },
+          order: { settledAt: "ASC" },
+        });
+        // Undo that late RESOLVED, so the market does not sit unsettled.
+        await em.query(
+          `UPDATE markets SET status = $2 WHERE id = $1 AND status <> $2`,
+          [market.id, MarketStatus.SETTLED],
+        );
+        run.alreadySettled = true;
+        return existing;
+      }
+
       const books = await em.find(MarketBook, {
         where: { marketId: market.id },
       });

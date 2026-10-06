@@ -6,6 +6,17 @@ import { MarketStatus } from "../entities/market.entity";
 import { MarketBook } from "../entities/market-book.entity";
 
 /**
+ * settleMarket opens with a row lock and a raw "already settled?" query. The
+ * fakes here predate it; give any fake without `query` one that says "never
+ * settled", so each test exercises a first settlement as before.
+ */
+function lockable<T>(em: T): T {
+  const e = em as any;
+  if (e && typeof e.query !== "function") e.query = jest.fn().mockResolvedValue([]);
+  return em;
+}
+
+/**
  * A stake now resolves the per-currency book it belongs to before it is
  * accepted, so `em.findOne` is asked for a MarketBook partway through
  * `placePosition`. These mocks answer `findOne` positionally, which would hand
@@ -259,7 +270,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       findOne: jest.fn().mockResolvedValue(user),
     };
     const mockDataSource = {
-      transaction: jest.fn().mockImplementation((cb: Function) => cb(mockEm)),
+      transaction: jest.fn().mockImplementation((cb: Function) => cb(lockable(mockEm))),
     };
     const mockRedis = {
       acquireLockWithRetry: jest.fn().mockResolvedValue("lock-token"),
@@ -329,7 +340,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       findOne: jest.fn().mockResolvedValue(user),
     };
     const mockDataSource = {
-      transaction: jest.fn().mockImplementation((cb: Function) => cb(mockEm)),
+      transaction: jest.fn().mockImplementation((cb: Function) => cb(lockable(mockEm))),
     };
     const mockRedis = {
       acquireLockWithRetry: jest.fn().mockResolvedValue("lock-token"),
@@ -411,7 +422,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       ),
     };
     const mockDataSource = {
-      transaction: jest.fn().mockImplementation((cb: Function) => cb(mockEm)),
+      transaction: jest.fn().mockImplementation((cb: Function) => cb(lockable(mockEm))),
     };
     const mockRedis = {
       acquireLockWithRetry: jest.fn().mockResolvedValue("lock-token"),
@@ -492,7 +503,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       ),
     };
     const mockDataSource = {
-      transaction: jest.fn().mockImplementation((cb: Function) => cb(mockEm)),
+      transaction: jest.fn().mockImplementation((cb: Function) => cb(lockable(mockEm))),
     };
     const mockRedis = {
       acquireLockWithRetry: jest.fn().mockResolvedValue("lock-token"),
@@ -572,7 +583,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       update: jest.fn().mockResolvedValue(undefined),
     };
     const mockDataSource = {
-      transaction: jest.fn().mockImplementation((cb: Function) => cb(mockEm)),
+      transaction: jest.fn().mockImplementation((cb: Function) => cb(lockable(mockEm))),
     };
     const mockRedis = {
       acquireLockWithRetry: jest.fn().mockResolvedValue("lock-token"),
@@ -642,7 +653,7 @@ describe("ParimutuelEngine.placePosition — pre-flight guards", () => {
       ),
     };
     const mockDataSource = {
-      transaction: jest.fn().mockImplementation((cb: Function) => cb(mockEm)),
+      transaction: jest.fn().mockImplementation((cb: Function) => cb(lockable(mockEm))),
     };
     const mockRedis = {
       acquireLockWithRetry: jest.fn().mockResolvedValue("lock-token"),
@@ -824,7 +835,7 @@ describe("settleMarket — each book settles out of its own pool", () => {
     const engine = new ParimutuelEngine(
       null as any, null as any, null as any, null as any, null as any,
       null as any, null as any,
-      { transaction: (cb: Function) => cb(mockEm) } as any,
+      { transaction: (cb: Function) => cb(lockable(mockEm)) } as any,
       { calculateProbabilities: jest.fn().mockReturnValue([0.5, 0.5]) } as any,
       { del: jest.fn(), pipeline: jest.fn(() => ({ del: jest.fn(), exec: jest.fn() })) } as any,
       null as any, null as any, null as any,
@@ -1055,7 +1066,7 @@ describe("placePosition — a stake enters its own book and no other", () => {
     const engine = new ParimutuelEngine(
       null as any, null as any, null as any, null as any, null as any,
       null as any, null as any,
-      { transaction: (cb: Function) => cb(mockEm) } as any, // 8 dataSource
+      { transaction: (cb: Function) => cb(lockable(mockEm)) } as any, // 8 dataSource
       { calculateProbabilities: jest.fn().mockReturnValue([0.5]) } as any, // 9 lmsr
       {
         acquireLockWithRetry: jest.fn().mockResolvedValue("tok"),
@@ -1275,7 +1286,7 @@ describe("Settlement wallet credit — no DK transfer on market settle", () => {
     };
 
     const mockDataSource = {
-      transaction: jest.fn().mockImplementation((cb: Function) => cb(mockEm)),
+      transaction: jest.fn().mockImplementation((cb: Function) => cb(lockable(mockEm))),
       getRepository: jest.fn().mockReturnValue({
         find: withMarketBooks(jest.fn().mockResolvedValue(positions), () => bookRef.market),
         findOne: jest.fn().mockResolvedValue(null),
@@ -1509,7 +1520,7 @@ describe("Batch payment — NOT triggered on market settlement", () => {
     };
 
     const mockDataSource = {
-      transaction: jest.fn().mockImplementation((cb: Function) => cb(mockEm)),
+      transaction: jest.fn().mockImplementation((cb: Function) => cb(lockable(mockEm))),
       getRepository: jest.fn().mockReturnValue({
         find: withMarketBooks(
           jest.fn().mockResolvedValue(positions),
@@ -1726,7 +1737,7 @@ describe("Batch payment — NOT triggered on market settlement", () => {
       update: jest.fn().mockResolvedValue(undefined),
     };
     const mockDataSource = {
-      transaction: jest.fn().mockImplementation((cb: Function) => cb(mockEm)),
+      transaction: jest.fn().mockImplementation((cb: Function) => cb(lockable(mockEm))),
       getRepository: jest.fn().mockReturnValue({
         save: jest.fn(),
         update: jest.fn(),
@@ -2094,7 +2105,7 @@ describe("ParimutuelEngine.cancelMarket — dispute bond release", () => {
     };
 
     const mockDataSource = {
-      transaction: jest.fn().mockImplementation((cb: Function) => cb(mockEm)),
+      transaction: jest.fn().mockImplementation((cb: Function) => cb(lockable(mockEm))),
     };
     const mockRedis = { del: jest.fn().mockResolvedValue(undefined) };
     const mockChallenges = {
@@ -2392,7 +2403,7 @@ describe("ParimutuelEngine.resolveMarket — contests settle per book", () => {
     };
 
     const mockDataSource = {
-      transaction: jest.fn().mockImplementation((cb: Function) => cb(mockEm)),
+      transaction: jest.fn().mockImplementation((cb: Function) => cb(lockable(mockEm))),
       getRepository: jest.fn().mockImplementation((entity: any) => {
         if (entity?.name === "MarketBook") {
           return {
@@ -2683,7 +2694,7 @@ describe("ParimutuelEngine.settleMarket — challenger reward routing by book", 
     const engine = new ParimutuelEngine(
       null as any, null as any, null as any, null as any, null as any,
       null as any, null as any,
-      { transaction: jest.fn().mockImplementation((cb: Function) => cb(mockEm)) } as any,
+      { transaction: jest.fn().mockImplementation((cb: Function) => cb(lockable(mockEm))) } as any,
       null as any,
       { del: jest.fn().mockResolvedValue(undefined) } as any,
       null as any, null as any, null as any,
@@ -2812,7 +2823,7 @@ describe("ParimutuelEngine.cancelMarket — mixed-currency bond release", () => 
     const engine = new ParimutuelEngine(
       null as any, null as any, null as any, null as any, null as any,
       null as any, null as any,
-      { transaction: jest.fn().mockImplementation((cb: Function) => cb(mockEm)) } as any,
+      { transaction: jest.fn().mockImplementation((cb: Function) => cb(lockable(mockEm))) } as any,
       null as any,
       { del: jest.fn().mockResolvedValue(undefined) } as any,
       null as any, null as any, null as any,
