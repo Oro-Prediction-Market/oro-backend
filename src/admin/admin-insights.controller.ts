@@ -435,4 +435,84 @@ export class AdminInsightsController {
       },
     };
   }
+
+  /**
+   * Everything that is waiting on a human, in one place.
+   *
+   * The home dashboard showed four totals and nothing actionable. Each of these
+   * queues already lives on its own page; the problem was knowing to go and
+   * look. Every item names the admin page that deals with it.
+   *
+   * Thresholds are deliberately past the point where the system would have
+   * handled it on its own — a market closed three hours without a proposed
+   * result, a DK withdrawal still processing after thirty minutes, a market
+   * whose objection window ended fifteen minutes ago and has not settled — so
+   * a non-zero count means something is actually stuck, not merely in flight.
+   */
+  @Get("attention")
+  async attention() {
+    // Midnight in Bhutan, the business day the "today" figures mean.
+    const DAY_START = `(date_trunc('day', now() AT TIME ZONE 'Asia/Thimphu') AT TIME ZONE 'Asia/Thimphu')`;
+    const NOT_SELF_RESOLVING = `COALESCE("externalSource", '') NOT IN ('ter', 'btc')`;
+
+    const [r] = await this.dataSource.query(`
+      SELECT
+        (SELECT COUNT(*) FROM crypto_withdrawals
+          WHERE "approvalStatus" = 'pending_approval')::int AS "usdtWithdrawals",
+        (SELECT COUNT(*) FROM payments
+          WHERE type = 'withdrawal' AND method = 'dkbank' AND status = 'processing'
+            AND "createdAt" < now() - interval '30 minutes')::int AS "dkStuck",
+        (SELECT COUNT(*) FROM disputes WHERE "bondStatus" = 'locked')::int AS "disputes",
+        (SELECT COUNT(*) FROM markets
+          WHERE status = 'closed' AND ${NOT_SELF_RESOLVING}
+            AND "closesAt" < now() - interval '3 hours')::int AS "awaitingResult",
+        (SELECT COUNT(*) FROM markets
+          WHERE status = 'resolving' AND ${NOT_SELF_RESOLVING}
+            AND "disputeDeadlineAt" < now() - interval '15 minutes')::int AS "stuckSettling",
+        (SELECT COUNT(*) FROM revenue_distributions WHERE status = 'pending')::int AS "revenueCount",
+        (SELECT COALESCE(SUM(amount), 0) FROM revenue_distributions
+          WHERE status = 'pending' AND currency = 'BTN') AS "revenueBtn",
+        (SELECT COUNT(*) FROM user_kyc_documents WHERE status = 'pending')::int AS "kyc",
+        (SELECT COUNT(*) FROM crypto_payment_intents
+          WHERE status::text IN ('confirmed', 'confirmed_partial', 'confirmed_overpaid')
+            AND "creditedAt" IS NULL
+            AND "updatedAt" < now() - interval '10 minutes')::int AS "usdtUncredited",
+        (SELECT COUNT(*) FROM transactions
+          WHERE type = 'deposit' AND currency = 'BTN' AND "createdAt" >= ${DAY_START})::int AS "depCount",
+        (SELECT COALESCE(SUM(ABS(amount)), 0) FROM transactions
+          WHERE type = 'deposit' AND currency = 'BTN' AND "createdAt" >= ${DAY_START}) AS "depSum",
+        (SELECT COUNT(*) FROM transactions
+          WHERE type = 'withdrawal' AND currency = 'BTN' AND "createdAt" >= ${DAY_START})::int AS "wdCount",
+        (SELECT COALESCE(SUM(ABS(amount)), 0) FROM transactions
+          WHERE type = 'withdrawal' AND currency = 'BTN' AND "createdAt" >= ${DAY_START}) AS "wdSum"
+    `);
+
+    const jobs = this.jobHealth ? await this.jobHealth.snapshot() : [];
+    const jobProblems = jobs.filter(
+      (j) => j.status === "failing" || j.status === "stale",
+    ).length;
+
+    const n = (v: unknown) => Number(v ?? 0);
+    // `urgent` = someone's money is stuck or a payout is at risk. The rest are
+    // ordinary queues that still need working.
+    const items = [
+      { key: "usdtUncredited", label: "USDT deposits confirmed but not credited", count: n(r?.usdtUncredited), page: "usdt-deposits", urgent: true },
+      { key: "dkStuck", label: "DK withdrawals stuck processing (> 30 min)", count: n(r?.dkStuck), page: "payments", urgent: true },
+      { key: "stuckSettling", label: "Markets past their objection window, not settled", count: n(r?.stuckSettling), page: "markets", urgent: true },
+      { key: "jobProblems", label: "Scheduled jobs failing or stopped", count: jobProblems, page: "keeper", urgent: true },
+      { key: "usdtWithdrawals", label: "USDT withdrawals awaiting approval", count: n(r?.usdtWithdrawals), page: "usdt-withdrawals", urgent: false },
+      { key: "awaitingResult", label: "Markets closed 3h+ with no result proposed", count: n(r?.awaitingResult), page: "markets", urgent: false },
+      { key: "disputes", label: "Open disputes", count: n(r?.disputes), page: "reporting", urgent: false },
+      { key: "kyc", label: "Identity documents to review", count: n(r?.kyc), page: "kyc", urgent: false },
+      { key: "revenue", label: "Revenue distributions not yet transferred", count: n(r?.revenueCount), amountBtn: n(r?.revenueBtn), page: "revenue", urgent: false },
+    ];
+
+    return {
+      items,
+      today: {
+        deposits: { count: n(r?.depCount), sumBtn: n(r?.depSum) },
+        withdrawals: { count: n(r?.wdCount), sumBtn: n(r?.wdSum) },
+      },
+    };
+  }
 }
