@@ -7,6 +7,7 @@ import {
   SEASON_MIN_QUALIFIERS,
   SEASON_PRIZES,
 } from "../users/season.service";
+import { DEFAULT_HOUSE_EDGE_PCT } from "../markets/fee.constants";
 
 const MEDALS = ["🥇", "🥈", "🥉"];
 
@@ -165,6 +166,91 @@ export class AdminInsightsController {
           podium,
         };
       }),
+    };
+  }
+
+  /**
+   * Markets whose house edge is not the standard one.
+   *
+   * fee.constants.ts standardised every market on one flat edge because it had
+   * drifted across 5%, 8% and 10% and made disclosure and reconciliation
+   * inconsistent. But any admin can still set a per-market edge from 0 to 50%,
+   * and nothing listed where that had happened — a market settled at 15% in
+   * production and was only found by hand-written SQL.
+   *
+   * Settlement reads the edge from the BOOK (`book.houseEdgePct`), not the
+   * market row, so both are checked. A market whose row says standard while a
+   * book says otherwise is flagged as a mismatch: it is the one case where the
+   * edge the admin sees is not the edge bettors are charged.
+   */
+  @Get("edge-exceptions")
+  async edgeExceptions() {
+    const rows: Array<{
+      id: string;
+      title: string;
+      status: string;
+      subcategory: string | null;
+      marketEdge: string;
+      createdAt: Date;
+      currency: string | null;
+      bookEdge: string | null;
+      bookPool: string | null;
+    }> = await this.dataSource.query(
+      `SELECT m.id, m.title, m.status, m.subcategory,
+              m."houseEdgePct" AS "marketEdge", m."createdAt",
+              b.currency, b."houseEdgePct" AS "bookEdge", b."totalPool" AS "bookPool"
+         FROM markets m
+         LEFT JOIN market_books b ON b."marketId" = m.id
+        WHERE m."houseEdgePct" <> $1
+           OR b."houseEdgePct" <> $1
+        ORDER BY m."createdAt" DESC
+        LIMIT 500`,
+      [DEFAULT_HOUSE_EDGE_PCT],
+    );
+
+    const byMarket = new Map<
+      string,
+      {
+        id: string;
+        title: string;
+        status: string;
+        subcategory: string | null;
+        marketEdge: number;
+        createdAt: Date;
+        books: { currency: string; edge: number; pool: number }[];
+      }
+    >();
+    for (const r of rows) {
+      let m = byMarket.get(r.id);
+      if (!m) {
+        m = {
+          id: r.id,
+          title: r.title,
+          status: r.status,
+          subcategory: r.subcategory,
+          marketEdge: Number(r.marketEdge),
+          createdAt: r.createdAt,
+          books: [],
+        };
+        byMarket.set(r.id, m);
+      }
+      if (r.currency != null && r.bookEdge != null) {
+        m.books.push({
+          currency: r.currency,
+          edge: Number(r.bookEdge),
+          pool: Number(r.bookPool ?? 0),
+        });
+      }
+    }
+
+    return {
+      standard: DEFAULT_HOUSE_EDGE_PCT,
+      markets: [...byMarket.values()].map((m) => ({
+        ...m,
+        // What a bettor is actually charged differs from what the market row
+        // shows. The row is what an admin reads; the book is what settles.
+        mismatch: m.books.some((b) => b.edge !== m.marketEdge),
+      })),
     };
   }
 }
