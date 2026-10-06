@@ -13,6 +13,7 @@ import { CryptoIntentStatus } from "../entities/crypto-payment-intent.entity";
 import { RedisService } from "../redis/redis.service";
 import { readWebhookRejections } from "../payment/guards/pay21-webhook-health";
 import { JobHealthService } from "../job-health/job-health.service";
+import { roundMoney } from "../shared/utils/money.util";
 
 const MEDALS = ["🥇", "🥈", "🥉"];
 
@@ -620,6 +621,144 @@ export class AdminInsightsController {
       period,
       buckets,
       total: buckets.reduce((sum, b) => sum + b.signups, 0),
+    };
+  }
+
+  /**
+   * What the house earned, per week or month, from all three streams:
+   *
+   *  - edge:  `settlements.houseAmount − houseForfeit` on settled markets
+   *  - bonds: `settlements.houseForfeit`, forfeited dispute bonds. Rows from
+   *           before that column existed have it at 0, so their bonds sit
+   *           inside edge.
+   *  - duels: the duel fee. It has no settlement row; its only record is a
+   *           `revenue_distributions` row with `challengeId` set. BTN only.
+   *
+   * Settlements are deduplicated per market (earliest row), as finance-stats
+   * does, and cancelled ones are excluded. A settlement correction rewrites
+   * `houseAmount` in place, so a corrected market shows its corrected figure
+   * in the period it originally settled.
+   *
+   * `week` is the last 12 weeks, `month` the last 12 months, neither reaching
+   * back before the first income. `all` runs from the first income to now, by
+   * week while that is under a year and by month after. Every bucket is returned, empty ones as zero, and dates are Bhutan
+   * days as YYYY-MM-DD text (see signups). One currency per request.
+   */
+  @Get("income")
+  async income(
+    @Query("period") periodRaw?: string,
+    @Query("currency") currencyRaw?: string,
+  ) {
+    const period: "week" | "month" | "all" =
+      periodRaw === "week" || periodRaw === "month" ? periodRaw : "all";
+    const currency = currencyRaw === "USDT" ? "USDT" : "BTN";
+
+    let unit: "week" | "month" = period === "month" ? "month" : "week";
+    // The first income, so no range starts with empty weeks from before launch.
+    const [row]: Array<{ first: string | null; today: string }> =
+      await this.dataSource.query(
+        `SELECT to_char(MIN(t), 'YYYY-MM-DD') AS first,
+                to_char(now() AT TIME ZONE 'Asia/Thimphu', 'YYYY-MM-DD') AS today
+           FROM (
+             SELECT MIN("settledAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu') AS t
+               FROM settlements
+              WHERE currency = $1 AND "cancelReason" IS NULL
+             UNION ALL
+             SELECT MIN("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu')
+               FROM revenue_distributions
+              WHERE currency = $1 AND "challengeId" IS NOT NULL
+           ) firsts`,
+        [currency],
+      );
+    const first = row?.first ?? null;
+    if (period === "all" && first && row.today) {
+      const day = (s: string) => {
+        const [y, m, d] = s.split("-").map(Number);
+        return Date.UTC(y, m - 1, d) / 86_400_000;
+      };
+      if (day(row.today) - day(first) > 364) unit = "month";
+    }
+
+    const rows: Array<{ start: string; edge: number; bonds: number; duels: number }> =
+      await this.dataSource.query(
+        `WITH buckets AS (
+           SELECT generate_series(
+                    CASE WHEN $4::boolean
+                      THEN date_trunc($2::text, COALESCE($3::timestamp, now() AT TIME ZONE 'Asia/Thimphu'))
+                      ELSE GREATEST(
+                        date_trunc($2::text, now() AT TIME ZONE 'Asia/Thimphu')
+                          - 11 * ('1 ' || $2::text)::interval,
+                        date_trunc($2::text, COALESCE($3::timestamp, now() AT TIME ZONE 'Asia/Thimphu'))
+                      )
+                    END,
+                    date_trunc($2::text, now() AT TIME ZONE 'Asia/Thimphu'),
+                    ('1 ' || $2::text)::interval
+                  ) AS bucket
+         ),
+         settled AS (
+           SELECT DISTINCT ON (s."marketId")
+                  s."houseAmount", s."houseForfeit", s."settledAt"
+             FROM settlements s
+            WHERE s.currency = $1 AND s."cancelReason" IS NULL
+            ORDER BY s."marketId", s."settledAt" ASC
+         ),
+         markets AS (
+           SELECT date_trunc($2::text,
+                    "settledAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu') AS bucket,
+                  SUM("houseAmount" - "houseForfeit") AS edge,
+                  SUM("houseForfeit") AS bonds
+             FROM settled
+            GROUP BY 1
+         ),
+         duels AS (
+           SELECT date_trunc($2::text,
+                    rd."createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu') AS bucket,
+                  SUM(rd.amount) AS duels
+             FROM revenue_distributions rd
+            WHERE rd.currency = $1 AND rd."challengeId" IS NOT NULL
+            GROUP BY 1
+         )
+         SELECT to_char(b.bucket, 'YYYY-MM-DD') AS start,
+                COALESCE(m.edge, 0)::float  AS edge,
+                COALESCE(m.bonds, 0)::float AS bonds,
+                COALESCE(d.duels, 0)::float AS duels
+           FROM buckets b
+           LEFT JOIN markets m ON m.bucket = b.bucket
+           LEFT JOIN duels d ON d.bucket = b.bucket
+          ORDER BY b.bucket`,
+        [currency, unit, first, period === "all"],
+      );
+
+    const r = (n: number) => roundMoney(Number(n) || 0, currency);
+    const buckets = rows.map((row, i) => {
+      const edge = r(row.edge);
+      const bonds = r(row.bonds);
+      const duels = r(row.duels);
+      return {
+        start: row.start,
+        label: bucketLabel(row.start, unit),
+        // The newest bucket is the one still in progress.
+        partial: i === rows.length - 1,
+        edge,
+        bonds,
+        duels,
+        total: r(edge + bonds + duels),
+      };
+    });
+    const sum = (k: "edge" | "bonds" | "duels" | "total") =>
+      r(buckets.reduce((s, b) => s + b[k], 0));
+
+    return {
+      period,
+      bucket: unit,
+      currency,
+      buckets,
+      totals: {
+        edge: sum("edge"),
+        bonds: sum("bonds"),
+        duels: sum("duels"),
+        total: sum("total"),
+      },
     };
   }
 
