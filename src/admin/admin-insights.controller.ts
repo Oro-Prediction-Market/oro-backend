@@ -515,7 +515,7 @@ export class AdminInsightsController {
       { key: "jobProblems", label: "Scheduled jobs failing or stopped", count: jobProblems, page: "keeper", urgent: true },
       { key: "usdtWithdrawals", label: "USDT withdrawals awaiting approval", count: n(r?.usdtWithdrawals), page: "usdt-withdrawals", urgent: false },
       { key: "awaitingResult", label: "Markets closed 3h+ with no result proposed", count: n(r?.awaitingResult), page: "markets", urgent: false },
-      { key: "disputes", label: "Open disputes", count: n(r?.disputes), page: "reporting", urgent: false },
+      { key: "disputes", label: "Open disputes", count: n(r?.disputes), page: "disputes", urgent: false },
       { key: "kyc", label: "Identity documents to review", count: n(r?.kyc), page: "kyc", urgent: false },
       { key: "revenue", label: "Revenue distributions not yet transferred", count: n(r?.revenueCount), amountBtn: n(r?.revenueBtn), page: "revenue", urgent: false },
     ];
@@ -742,5 +742,192 @@ export class AdminInsightsController {
       .sort((a, b) => b.pool - a.pool || b.livePool - a.livePool);
 
     return { currency, from, to, totals: withPct(grand), categories };
+  }
+
+  /**
+   * Every resolution contest, with the detail that makes it understandable.
+   *
+   * The old Reporting tab listed rows of bond and status. It left out the
+   * objector's reason, which side they took, the reward paid, and — the actual
+   * question — what the market was proposed as versus what it settled as.
+   *
+   * One CASE per market: all of its objections and defences together. A case
+   * is open while any bond is still locked. It was OVERTURNED when the market
+   * settled on a different outcome from the one proposed: that is exactly the
+   * comparison the engine makes to decide which side won the contest
+   * (`parimutuel.engine.ts`, proposalChanged), and `proposedOutcomeId` is only
+   * cleared on a reopen, never on settlement, so it still holds the outcome
+   * that was disputed.
+   *
+   * Users are returned as named columns only — never the whole entity, which
+   * the old reporting endpoint sent to the browser in full.
+   */
+  @Get("disputes")
+  async disputes(
+    @Query("status") statusRaw?: string,
+    @Query("verdict") verdictRaw?: string,
+    @Query("from") fromRaw?: string,
+    @Query("to") toRaw?: string,
+    @Query("search") searchRaw?: string,
+    @Query("page") pageRaw?: string,
+    @Query("limit") limitRaw?: string,
+  ) {
+    const status = ["open", "resolved"].includes(statusRaw ?? "") ? statusRaw! : "all";
+    const verdict = ["overturned", "stood"].includes(verdictRaw ?? "") ? verdictRaw! : "all";
+    const day = (v?: string) => (v && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
+    const from = day(fromRaw);
+    const to = day(toRaw);
+    // Same escaping as the user search, so input cannot wildcard-scan.
+    const search =
+      searchRaw && searchRaw.trim()
+        ? `%${searchRaw.trim().toLowerCase().replace(/[%_\\]/g, "\\$&")}%`
+        : null;
+    const limit = clampLimit(limitRaw, 20, 100);
+    const page = Math.max(1, Math.floor(Number(pageRaw) || 1));
+
+    const LOCAL = `(d."createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu')`;
+    const cases: Array<Record<string, any>> = await this.dataSource.query(
+      `WITH cases AS (
+         SELECT d."marketId",
+                MAX(d."createdAt") AS latest,
+                bool_or(d."bondStatus"::text = 'locked') AS open
+           FROM disputes d
+           JOIN markets m ON m.id = d."marketId"
+          WHERE ($1::date IS NULL OR ${LOCAL} >= $1::date)
+            AND ($2::date IS NULL OR ${LOCAL} < $2::date + 1)
+            AND ($3::text IS NULL OR LOWER(m.title) LIKE $3 ESCAPE '\')
+          GROUP BY d."marketId"
+       ),
+       verdicts AS (
+         SELECT c."marketId", c.latest, c.open,
+                m.title, m.subcategory, m.status::text AS "marketStatus",
+                m."disputeDeadlineAt", m."windowMinutes",
+                m."proposedOutcomeId", po.label AS "proposedLabel",
+                s."winningOutcomeId", wo.label AS "finalLabel",
+                (s."winningOutcomeId" IS NOT NULL
+                   AND m."proposedOutcomeId" IS NOT NULL
+                   AND s."winningOutcomeId" <> m."proposedOutcomeId") AS overturned
+           FROM cases c
+           JOIN markets m ON m.id = c."marketId"
+           LEFT JOIN outcomes po ON po.id = m."proposedOutcomeId"
+           LEFT JOIN LATERAL (
+             SELECT "winningOutcomeId" FROM settlements
+              WHERE "marketId" = c."marketId" AND "cancelReason" IS NULL
+              ORDER BY "settledAt" DESC LIMIT 1
+           ) s ON true
+           LEFT JOIN outcomes wo ON wo.id = s."winningOutcomeId"
+       )
+       SELECT v.*, COUNT(*) OVER()::int AS "totalCases"
+         FROM verdicts v
+        WHERE ($4::text = 'all'
+               OR ($4::text = 'open' AND v.open)
+               OR ($4::text = 'resolved' AND NOT v.open))
+          AND ($5::text = 'all'
+               OR ($5::text = 'overturned' AND v.overturned)
+               OR ($5::text = 'stood' AND v."winningOutcomeId" IS NOT NULL AND NOT v.overturned))
+        ORDER BY v.latest DESC
+        LIMIT $6 OFFSET $7`,
+      [from, to, search, status, verdict, limit, (page - 1) * limit],
+    );
+
+    const marketIds = cases.map((c) => c.marketId);
+    const entries: Array<Record<string, any>> = marketIds.length
+      ? await this.dataSource.query(
+          `SELECT d.id, d."marketId", d."userId",
+                  u.username, u."firstName",
+                  d.side::text AS side, d.reason,
+                  d."bondAmount", d.currency, d."bondStatus"::text AS "bondStatus",
+                  d.upheld, d."rewardAmount", d."createdAt"
+             FROM disputes d
+             LEFT JOIN users u ON u.id = d."userId"
+            WHERE d."marketId" = ANY($1)
+            ORDER BY d."createdAt" ASC`,
+          [marketIds],
+        )
+      : [];
+
+    const [stats] = await this.dataSource.query(
+      `SELECT COUNT(DISTINCT d."marketId")::int AS "totalCases",
+              COUNT(DISTINCT d."marketId") FILTER (WHERE d."bondStatus"::text = 'locked')::int AS "openCases",
+              COUNT(*)::int AS "totalDisputes",
+              (SELECT COUNT(*)::int FROM markets m
+                 JOIN LATERAL (
+                   SELECT "winningOutcomeId" FROM settlements
+                    WHERE "marketId" = m.id AND "cancelReason" IS NULL
+                    ORDER BY "settledAt" DESC LIMIT 1) s ON true
+                WHERE m."proposedOutcomeId" IS NOT NULL
+                  AND s."winningOutcomeId" <> m."proposedOutcomeId"
+                  AND EXISTS (SELECT 1 FROM disputes x WHERE x."marketId" = m.id)
+              ) AS "overturnedCases"
+         FROM disputes d`,
+    );
+    const money: Array<Record<string, string>> = await this.dataSource.query(
+      `SELECT currency,
+              COALESCE(SUM("bondAmount") FILTER (WHERE "bondStatus"::text = 'locked'), 0)    AS locked,
+              COALESCE(SUM("bondAmount") FILTER (WHERE "bondStatus"::text = 'forfeited'), 0) AS forfeited,
+              COALESCE(SUM("rewardAmount"), 0) AS rewards
+         FROM disputes
+        GROUP BY currency`,
+    );
+
+    const byMarket = new Map<string, any[]>();
+    for (const e of entries) {
+      const list = byMarket.get(e.marketId) ?? [];
+      list.push({
+        id: e.id,
+        userId: e.userId,
+        name: e.username || e.firstName || null,
+        side: e.side,
+        reason: e.reason,
+        bondAmount: Number(e.bondAmount),
+        currency: e.currency,
+        bondStatus: e.bondStatus,
+        upheld: e.upheld,
+        rewardAmount: Number(e.rewardAmount ?? 0),
+        createdAt: e.createdAt,
+      });
+      byMarket.set(e.marketId, list);
+    }
+
+    const totalCases = Number(cases[0]?.totalCases ?? 0);
+    return {
+      stats: {
+        totalCases: Number(stats?.totalCases ?? 0),
+        openCases: Number(stats?.openCases ?? 0),
+        totalDisputes: Number(stats?.totalDisputes ?? 0),
+        overturnedCases: Number(stats?.overturnedCases ?? 0),
+        // Per currency — bonds are locked in the book they belong to.
+        byCurrency: money.map((r) => ({
+          currency: r.currency,
+          locked: Number(r.locked),
+          forfeited: Number(r.forfeited),
+          rewards: Number(r.rewards),
+        })),
+      },
+      page,
+      limit,
+      total: totalCases,
+      pages: Math.max(1, Math.ceil(totalCases / limit)),
+      cases: cases.map((c) => {
+        const list = byMarket.get(c.marketId) ?? [];
+        return {
+          marketId: c.marketId,
+          title: c.title,
+          subcategory: c.subcategory,
+          marketStatus: c.marketStatus,
+          open: !!c.open,
+          disputeDeadlineAt: c.disputeDeadlineAt,
+          windowMinutes: c.windowMinutes == null ? null : Number(c.windowMinutes),
+          proposed: c.proposedLabel ?? null,
+          final: c.finalLabel ?? null,
+          // null while unsettled: neither overturned nor stood yet.
+          overturned: c.winningOutcomeId ? !!c.overturned : null,
+          objectors: list.filter((e) => e.side === "object").length,
+          supporters: list.filter((e) => e.side === "support").length,
+          latestAt: c.latest,
+          entries: list,
+        };
+      }),
+    };
   }
 }
