@@ -43,9 +43,29 @@ export class RevenueDistribution {
   @Column({ type: "decimal", precision: 28, scale: 9 })
   amount: number;
 
-  /** House edge percentage at time of settlement (for audit) */
+  /**
+   * House edge percentage at time of settlement (for audit).
+   *
+   * Describes POOL money only. `amount` may exceed `totalPool × houseEdgePct`
+   * by `houseForfeit` — see below — so the two are not interchangeable and
+   * this one must not be back-derived from the other.
+   */
   @Column({ type: "decimal", precision: 5, scale: 2 })
   houseEdgePct: number;
+
+  /**
+   * The part of `amount` that came from forfeited dispute bonds rather than
+   * from the pool. Zero for the overwhelming majority of settlements.
+   *
+   * Carried here so the revenue table can show where the money came from
+   * without re-joining settlements, and so `amount` still reconciles:
+   *   amount === totalPool × houseEdgePct / 100 + houseForfeit  (± rounding)
+   *
+   * Rows written before this column existed keep 0 and may still carry a
+   * blended `houseEdgePct`.
+   */
+  @Column({ type: "decimal", precision: 28, scale: 9, default: 0 })
+  houseForfeit: number;
 
   /** Total pool at time of settlement (for audit) */
   @Column({ type: "decimal", precision: 28, scale: 9 })

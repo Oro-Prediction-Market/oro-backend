@@ -40,8 +40,11 @@ describe("RevenueDistributionService.reconcileMissingDistributions", () => {
         { id: "s2", marketId: "m2", houseAmount: "10.00", totalPool: "200.00", currency: "USDT" },
       ],
       [
-        { id: "m1", houseEdgePct: "5" },
-        { id: "m2", houseEdgePct: "8" },
+        // Edges match what the settlements actually took (24/300, 10/200).
+        // They used to read 5 and 8 against those same amounts, which no real
+        // settlement could produce.
+        { id: "m1", houseEdgePct: "8" },
+        { id: "m2", houseEdgePct: "5" },
       ],
     );
 
@@ -49,9 +52,17 @@ describe("RevenueDistributionService.reconcileMissingDistributions", () => {
 
     expect(res).toEqual({ created: 2, scanned: 2 });
     expect(record).toHaveBeenCalledTimes(2);
-    // (marketId, settlementId, houseAmount, houseEdgePct, totalPool, currency)
-    expect(record).toHaveBeenCalledWith("m1", "s1", 24, 5, 300, "BTN");
-    expect(record).toHaveBeenCalledWith("m2", "s2", 10, 8, 200, "USDT");
+    // (marketId, settlementId, houseAmount, houseEdgePct, totalPool, currency,
+    //  houseForfeit)
+    //
+    // The edge is derived from the settlement, not read off the market. This
+    // path used to take the market's configured edge while the engine's own
+    // path computed it from the settlement, so the same settlement got a
+    // different figure depending on which one booked it. The settlement is the
+    // record of what was actually taken; a market's edge can be edited after
+    // it settles.
+    expect(record).toHaveBeenCalledWith("m1", "s1", 24, 8, 300, "BTN", 0);
+    expect(record).toHaveBeenCalledWith("m2", "s2", 10, 5, 200, "USDT", 0);
   });
 
   it("does nothing when every settlement is already booked", async () => {

@@ -110,6 +110,12 @@ export class RevenueDistributionService {
     houseEdgePct: number,
     totalPool: number,
     currency: string,
+    /**
+     * Forfeited dispute bonds inside `houseAmount` that were never pool money.
+     * Split out so `houseEdgePct` can describe the pool alone and the two
+     * revenue streams stay distinguishable after the fact.
+     */
+    houseForfeit = 0,
   ): Promise<RevenueDistribution | null> {
     if (houseAmount <= 0) return null;
 
@@ -128,6 +134,7 @@ export class RevenueDistributionService {
       settlementId,
       amount: houseAmount,
       houseEdgePct,
+      houseForfeit,
       totalPool,
       currency,
       publicAccountNo: await this.getActiveAccountNo(),
@@ -183,12 +190,21 @@ export class RevenueDistributionService {
           s.marketId,
           s.id,
           Number(s.houseAmount),
-          edgeByMarket.get(s.marketId) ?? 0,
+          // Pool-derived revenue only, same rule as the settlement path. The
+          // market's configured edge is the fallback for a zero pool, not the
+          // answer — a market can be settled at an edge it was later edited
+          // away from, and this row is an audit record of what happened.
+          Number(s.totalPool) > 0
+            ? ((Number(s.houseAmount) - Number(s.houseForfeit ?? 0)) /
+                Number(s.totalPool)) *
+              100
+            : (edgeByMarket.get(s.marketId) ?? 0),
           Number(s.totalPool),
           // From the settlement's own book. This path books revenue for a
           // settlement that already exists, so the currency is a fact to read,
           // never one to infer.
           s.currency,
+          Number(s.houseForfeit ?? 0),
         );
         if (rec) created++;
       } catch (err) {

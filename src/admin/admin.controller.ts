@@ -3332,7 +3332,7 @@ export class AdminController {
     // same key `recordDistribution` is idempotent on, both books are booked.
     const missing = await this.dataSource.query(`
       SELECT s.id as "settlementId", s."marketId", s."houseAmount",
-             s.currency, m."houseEdgePct", s."totalPool"
+             s.currency, m."houseEdgePct", s."totalPool", s."houseForfeit"
       FROM settlements s
       INNER JOIN markets m ON m.id = s."marketId"
       WHERE CAST(s."houseAmount" AS float) > 0
@@ -3350,9 +3350,17 @@ export class AdminController {
           row.marketId,
           row.settlementId,
           Number(row.houseAmount),
-          Number(row.houseEdgePct),
+          // Pool-derived revenue only — a forfeited dispute bond sits in
+          // houseAmount but was never in the pool, and blending the two makes
+          // the edge read above the configured one.
+          Number(row.totalPool) > 0
+            ? ((Number(row.houseAmount) - Number(row.houseForfeit ?? 0)) /
+                Number(row.totalPool)) *
+              100
+            : Number(row.houseEdgePct),
           Number(row.totalPool),
           row.currency,
+          Number(row.houseForfeit ?? 0),
         );
         created++;
       } catch (err: any) {

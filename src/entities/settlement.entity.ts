@@ -38,6 +38,30 @@ export class Settlement {
   @Column({ type: "decimal", precision: 28, scale: 9, default: 0 })
   totalPaidOut: number;
 
+  /**
+   * Forfeited dispute bonds booked into `houseAmount`, and NOT part of
+   * `totalPool`.
+   *
+   * Kept separately because the two are different kinds of money. The edge is
+   * taken out of the pool; a forfeit is a losing objector's bond, which the
+   * pool never held. Blending them makes the realised edge read above the
+   * configured one — `houseAmount / totalPool` showed 11.11% on a 10% market
+   * that had taken a single Nu 10 bond — which is exactly the number someone
+   * would reach for to check the edge was applied correctly.
+   *
+   * The settlement already preserves the identity
+   *   totalPool === totalPaidOut + (houseAmount − houseForfeit)
+   * but it was only reconstructable by subtraction, which also swept up
+   * rounding breakage. Storing it makes the split a fact rather than an
+   * inference.
+   *
+   * Rows written before this column existed keep 0: their forfeits are not
+   * recoverable from arithmetic alone, so a historical edge figure may still
+   * be blended. New settlements are exact.
+   */
+  @Column({ type: "decimal", precision: 28, scale: 9, default: 0 })
+  houseForfeit: number;
+
   /** Refund reason, e.g. "thin_pool" or "payout_floor_underfunded"; null for paid settlements. */
   @Column({ type: "varchar", length: 32, nullable: true })
   cancelReason: string | null;

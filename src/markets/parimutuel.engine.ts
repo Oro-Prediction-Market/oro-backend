@@ -1204,11 +1204,18 @@ export class ParimutuelEngine implements OnModuleInit {
           market.id,
           st.id,
           Number(st.houseAmount),
+          // The edge is what came OUT OF THE POOL. A forfeited dispute bond is
+          // in houseAmount but was never pool money, so blending it made this
+          // read above the configured edge — 11.11% on a 10% market that had
+          // taken one Nu 10 bond. Divide the pool-derived part only.
           Number(st.totalPool) > 0
-            ? (Number(st.houseAmount) / Number(st.totalPool)) * 100
+            ? ((Number(st.houseAmount) - Number(st.houseForfeit ?? 0)) /
+                Number(st.totalPool)) *
+              100
             : Number(market.houseEdgePct),
           Number(st.totalPool),
           st.currency,
+          Number(st.houseForfeit ?? 0),
         );
       } catch (err) {
         this.logger.error(
@@ -1934,6 +1941,10 @@ export class ParimutuelEngine implements OnModuleInit {
         winningPositions,
         totalPool,
         houseAmount: bookedHouseAmount,
+        // Stored so the realised edge can be reported on pool money alone.
+        // `bookedHouseAmount` deliberately includes this; dividing the blended
+        // figure by totalPool reads above the configured edge.
+        houseForfeit: roundMoney(houseForfeit, currency),
         payoutPool,
         totalPaidOut,
       });
