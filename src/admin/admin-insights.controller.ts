@@ -510,7 +510,7 @@ export class AdminInsightsController {
     // ordinary queues that still need working.
     const items = [
       { key: "usdtUncredited", label: "USDT deposits confirmed but not credited", count: n(r?.usdtUncredited), page: "usdt-deposits", urgent: true },
-      { key: "dkStuck", label: "DK withdrawals stuck processing (> 30 min)", count: n(r?.dkStuck), page: "payments", urgent: true },
+      { key: "dkStuck", label: "DK withdrawals stuck processing (> 30 min)", count: n(r?.dkStuck), page: "stuck-withdrawals", urgent: true },
       { key: "stuckSettling", label: "Markets past their objection window, not settled", count: n(r?.stuckSettling), page: "markets", urgent: true },
       { key: "jobProblems", label: "Scheduled jobs failing or stopped", count: jobProblems, page: "keeper", urgent: true },
       { key: "usdtWithdrawals", label: "USDT withdrawals awaiting approval", count: n(r?.usdtWithdrawals), page: "usdt-withdrawals", urgent: false },
