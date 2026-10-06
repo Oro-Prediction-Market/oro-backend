@@ -1,4 +1,4 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
 import { Cron, CronExpression } from "@nestjs/schedule";
 import { InjectRepository } from "@nestjs/typeorm";
 import { In, MoreThan, Repository } from "typeorm";
@@ -15,6 +15,10 @@ import {
   buildEplStatMarketDto,
 } from "../epl/epl-stat-markets";
 import { UclService } from "../ucl/ucl.service";
+import {
+  JobHealthService,
+  NOOP_JOB_HEALTH,
+} from "../job-health/job-health.service";
 import {
   UCL_STAT_MARKET_META,
   UclStatKey,
@@ -40,6 +44,41 @@ import {
  * that a daily run stays well inside football-data's rate limit.
  */
 const AUDIT_LOOKBACK_DAYS = 7;
+
+/**
+ * Where each audit run is kept for the admin dashboard. The Telegram DM was the
+ * only output, which left "no DM this morning" meaning either "all correct" or
+ * "never ran" — and once it meant the second.
+ */
+export const SETTLEMENT_AUDIT_LAST_KEY = "oro:settlement-audit:last";
+export const SETTLEMENT_AUDIT_RUNS_KEY = "oro:settlement-audit:runs";
+const SETTLEMENT_AUDIT_TTL_SEC = 45 * 24 * 3600;
+const SETTLEMENT_AUDIT_RUNS_KEPT = 30;
+
+/** A settled market the provider now contradicts. */
+export interface SettlementAuditMismatch {
+  source: "football" | "ucl";
+  marketId: string;
+  title: string;
+  settledAs: { id: string; label: string };
+  shouldBe: { id: string; label: string };
+  /** The score, or "advancing" for a bracket tie. */
+  detail: string;
+}
+
+export interface SettlementAuditRun {
+  ranAt: string;
+  trigger: "schedule" | "manual";
+  lookbackDays: number;
+  checked: number;
+  mismatches: SettlementAuditMismatch[];
+  /** Sources that could not be checked this run, and why. */
+  unavailable: string[];
+}
+
+export type SettlementAuditRunSummary = Omit<SettlementAuditRun, "mismatches"> & {
+  mismatchCount: number;
+};
 
 /**
  * How long an admin actually has to object, read off the market rather than
@@ -212,6 +251,8 @@ export class KeeperService {
     @InjectRepository(Dispute) private readonly disputeRepo: Repository<Dispute>,
     private readonly epl: EplService,
     private readonly ucl: UclService,
+    @Optional()
+    private readonly jobHealth: JobHealthService = NOOP_JOB_HEALTH,
   ) {}
 
   /**
@@ -1369,13 +1410,88 @@ export class KeeperService {
    */
   @Cron("30 9 * * *", { timeZone: "Asia/Thimphu" })
   async auditRecentSettlements() {
-    if (!this.isActive) return;
+    if (!this.isActive) {
+      this.jobHealth.skip("settlement-audit", "keeper paused");
+      return;
+    }
     await this.withClusterLock("keeper:settlement-audit", 300, () =>
-      this.auditRecentSettlementsImpl(),
+      this.jobHealth
+        .track("settlement-audit", () =>
+          this.auditRecentSettlementsImpl("schedule"),
+        )
+        .then(() => undefined),
     );
   }
 
-  private async auditRecentSettlementsImpl() {
+  /**
+   * Run the audit now, from the admin dashboard. Same lock as the schedule, so
+   * a click during the 09:30 run cannot double the provider calls. Returns null
+   * when another run holds the lock.
+   */
+  async runSettlementAuditNow(): Promise<SettlementAuditRun | null> {
+    let run: SettlementAuditRun | null = null;
+    await this.withClusterLock("keeper:settlement-audit", 300, async () => {
+      run = await this.jobHealth.track("settlement-audit", () =>
+        this.auditRecentSettlementsImpl("manual"),
+      );
+    });
+    return run;
+  }
+
+  /**
+   * The most recent run and up to 30 before it, newest first.
+   *
+   * Each of the last run's mismatches says whether it still stands: once a
+   * market has been corrected its result matches `shouldBe`, and it should stop
+   * reading as an open problem without waiting for tomorrow's run.
+   */
+  async getSettlementAuditHistory(): Promise<{
+    last:
+      | (SettlementAuditRun & {
+          mismatches: (SettlementAuditMismatch & { corrected: boolean })[];
+        })
+      | null;
+    runs: SettlementAuditRunSummary[];
+  }> {
+    const stored = await this.redis
+      .getJson<SettlementAuditRun>(SETTLEMENT_AUDIT_LAST_KEY)
+      .catch(() => null);
+    let last = null as Awaited<
+      ReturnType<KeeperService["getSettlementAuditHistory"]>
+    >["last"];
+    if (stored) {
+      const ids = stored.mismatches.map((m) => m.marketId);
+      const now = ids.length
+        ? await this.marketRepo.find({
+            where: { id: In(ids) },
+            select: ["id", "resolvedOutcomeId"],
+          })
+        : [];
+      const current = new Map(now.map((m) => [m.id, m.resolvedOutcomeId]));
+      last = {
+        ...stored,
+        mismatches: stored.mismatches.map((m) => ({
+          ...m,
+          corrected: current.get(m.marketId) === m.shouldBe.id,
+        })),
+      };
+    }
+    const raw = await this.redis.redis
+      .lrange(SETTLEMENT_AUDIT_RUNS_KEY, 0, SETTLEMENT_AUDIT_RUNS_KEPT - 1)
+      .catch(() => [] as string[]);
+    const runs = raw.flatMap((r): SettlementAuditRunSummary[] => {
+      try {
+        return [JSON.parse(r)];
+      } catch {
+        return [];
+      }
+    });
+    return { last, runs };
+  }
+
+  private async auditRecentSettlementsImpl(
+    trigger: SettlementAuditRun["trigger"],
+  ): Promise<SettlementAuditRun> {
     const since = new Date(Date.now() - AUDIT_LOOKBACK_DAYS * 86_400_000);
 
     // Two sources, one report. A split report is one a reader learns to skim.
@@ -1384,14 +1500,28 @@ export class KeeperService {
 
     const checked = league.checked + ucl.checked;
     const mismatches = [...league.mismatches, ...ucl.mismatches];
-    if (!checked && !mismatches.length) return;
+    const run: SettlementAuditRun = {
+      ranAt: new Date().toISOString(),
+      trigger,
+      lookbackDays: AUDIT_LOOKBACK_DAYS,
+      checked,
+      mismatches,
+      unavailable: [league.unavailable, ucl.unavailable].filter(
+        (u): u is string => !!u,
+      ),
+    };
+    // Recorded even when nothing was checked: "ran, found nothing to check"
+    // and "did not run" must look different on the dashboard.
+    await this.recordSettlementAudit(run);
+
+    if (!checked && !mismatches.length) return run;
 
     if (!mismatches.length) {
       this.addLog(
         "success",
         `Settlement Audit: ${checked} settled market(s) re-verified, all correct.`,
       );
-      return;
+      return run;
     }
 
     this.addLog(
@@ -1402,16 +1532,57 @@ export class KeeperService {
       `🚨 <b>Keeper: Wrong Settlement Detected</b>\n\n` +
         `${mismatches.length} of ${checked} market(s) settled in the last ` +
         `${AUDIT_LOOKBACK_DAYS} days no longer match the provider.\n\n` +
-        `${mismatches.join("\n\n")}\n\n` +
+        `${mismatches.map(formatAuditMismatch).join("\n\n")}\n\n` +
         `<b>Payouts have already been made.</b> Review and correct manually.`,
     );
+    return run;
   }
 
-  private async auditFootballSettlements(
-    since: Date,
-  ): Promise<{ checked: number; mismatches: string[] }> {
+  /** Best effort: a Redis failure must not stop the DM that follows. */
+  private async recordSettlementAudit(run: SettlementAuditRun) {
+    try {
+      await this.redis.setJsonEx(
+        SETTLEMENT_AUDIT_LAST_KEY,
+        SETTLEMENT_AUDIT_TTL_SEC,
+        run,
+      );
+      const summary = JSON.stringify({
+        ranAt: run.ranAt,
+        trigger: run.trigger,
+        lookbackDays: run.lookbackDays,
+        checked: run.checked,
+        mismatchCount: run.mismatches.length,
+        unavailable: run.unavailable,
+      });
+      await this.redis.redis.lpush(SETTLEMENT_AUDIT_RUNS_KEY, summary);
+      await this.redis.redis.ltrim(
+        SETTLEMENT_AUDIT_RUNS_KEY,
+        0,
+        SETTLEMENT_AUDIT_RUNS_KEPT - 1,
+      );
+      await this.redis.redis.expire(
+        SETTLEMENT_AUDIT_RUNS_KEY,
+        SETTLEMENT_AUDIT_TTL_SEC,
+      );
+    } catch (e) {
+      this.logger.warn(
+        `[Keeper] could not record settlement audit: ${(e as Error).message}`,
+      );
+    }
+  }
+
+  private async auditFootballSettlements(since: Date): Promise<{
+    checked: number;
+    mismatches: SettlementAuditMismatch[];
+    unavailable?: string;
+  }> {
     const apiKey = this.config.get<string>("FOOTBALL_DATA_API_KEY");
-    if (!apiKey) return { checked: 0, mismatches: [] };
+    if (!apiKey)
+      return {
+        checked: 0,
+        mismatches: [],
+        unavailable: "League results: FOOTBALL_DATA_API_KEY not set",
+      };
 
     const settled = await this.marketRepo.find({
       where: {
@@ -1422,7 +1593,7 @@ export class KeeperService {
       relations: ["outcomes"],
     });
 
-    const mismatches: string[] = [];
+    const mismatches: SettlementAuditMismatch[] = [];
     let checked = 0;
 
     for (const market of settled) {
@@ -1450,13 +1621,17 @@ export class KeeperService {
 
       const label = (id: string) =>
         market.outcomes.find((o) => o.id === id)?.label ?? id;
-      mismatches.push(
-        `📊 <b>${market.title}</b>\n` +
-          `   settled as: <b>${label(market.resolvedOutcomeId)}</b>\n` +
-          `   now reads:  <b>${label(shouldBe)}</b> ` +
-          `(${homeScore}-${awayScore})\n` +
-          `   market <code>${market.id}</code>`,
-      );
+      mismatches.push({
+        source: "football",
+        marketId: market.id,
+        title: market.title,
+        settledAs: {
+          id: market.resolvedOutcomeId,
+          label: label(market.resolvedOutcomeId),
+        },
+        shouldBe: { id: shouldBe, label: label(shouldBe) },
+        detail: `${homeScore}-${awayScore}`,
+      });
     }
 
     return { checked, mismatches };
@@ -1473,9 +1648,11 @@ export class KeeperService {
    * a single call, so this costs one request regardless of how many ties
    * settled that week.
    */
-  private async auditUclSettlements(
-    since: Date,
-  ): Promise<{ checked: number; mismatches: string[] }> {
+  private async auditUclSettlements(since: Date): Promise<{
+    checked: number;
+    mismatches: SettlementAuditMismatch[];
+    unavailable?: string;
+  }> {
     const settled = await this.marketRepo.find({
       where: {
         status: MarketStatus.SETTLED,
@@ -1494,12 +1671,16 @@ export class KeeperService {
         "warn",
         `Settlement Audit: UCL bracket unavailable — ${(e as Error).message}`,
       );
-      return { checked: 0, mismatches: [] };
+      return {
+        checked: 0,
+        mismatches: [],
+        unavailable: `UCL bracket: ${(e as Error).message}`,
+      };
     }
     if (!bracket?.hasData) return { checked: 0, mismatches: [] };
 
     const ties = decidedTiesFrom(bracket);
-    const mismatches: string[] = [];
+    const mismatches: SettlementAuditMismatch[] = [];
     let checked = 0;
 
     for (const market of settled) {
@@ -1513,12 +1694,20 @@ export class KeeperService {
 
       const label = (id: string) =>
         market.outcomes.find((o) => o.id === id)?.label ?? id;
-      mismatches.push(
-        `📊 <b>${market.title}</b>\n` +
-          `   settled as: <b>${label(market.resolvedOutcomeId)}</b>\n` +
-          `   bracket has: <b>${label(hit.winningOutcomeId)}</b> advancing\n` +
-          `   market <code>${market.id}</code>`,
-      );
+      mismatches.push({
+        source: "ucl",
+        marketId: market.id,
+        title: market.title,
+        settledAs: {
+          id: market.resolvedOutcomeId,
+          label: label(market.resolvedOutcomeId),
+        },
+        shouldBe: {
+          id: hit.winningOutcomeId,
+          label: label(hit.winningOutcomeId),
+        },
+        detail: "advancing",
+      });
     }
 
     return { checked, mismatches };
@@ -1755,4 +1944,18 @@ export class KeeperService {
       this.logger.error(`Failed to send propose DM to admin: ${err.message}`);
     }
   }
+}
+
+/** The Telegram line for one mismatch — the same text the DM always carried. */
+export function formatAuditMismatch(m: SettlementAuditMismatch): string {
+  const reads =
+    m.source === "ucl"
+      ? `   bracket has: <b>${m.shouldBe.label}</b> advancing\n`
+      : `   now reads:  <b>${m.shouldBe.label}</b> (${m.detail})\n`;
+  return (
+    `📊 <b>${m.title}</b>\n` +
+    `   settled as: <b>${m.settledAs.label}</b>\n` +
+    reads +
+    `   market <code>${m.marketId}</code>`
+  );
 }

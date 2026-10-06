@@ -53,6 +53,11 @@ export const JOBS = {
     schedule: "every minute",
     staleAfterMs: 5 * 60_000,
   },
+  "settlement-audit": {
+    label: "Re-check last 7 days of results",
+    schedule: "daily 09:30 (Bhutan)",
+    staleAfterMs: 26 * 3600_000,
+  },
   "ter-rounds": {
     label: "TER round settlement",
     schedule: "every 3 s",

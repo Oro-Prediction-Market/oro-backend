@@ -3035,6 +3035,25 @@ export class AdminController {
     return { triggered: job };
   }
 
+  @Get("keeper/settlement-audit")
+  @ApiOperation({
+    summary:
+      "Last settlement audit (settled results re-checked against the provider) and recent runs",
+  })
+  getSettlementAudit() {
+    return this.keeperService.getSettlementAuditHistory();
+  }
+
+  @Post("keeper/settlement-audit/run")
+  @HttpCode(200)
+  @ApiOperation({ summary: "Run the settlement audit now" })
+  async runSettlementAudit() {
+    const run = await this.keeperService.runSettlementAuditNow();
+    // Another replica (or the 09:30 schedule) holds the lock. Not an error;
+    // its result lands in the same place.
+    return run ?? { busy: true };
+  }
+
   // ── Behavioral Analytics ──────────────────────────────────────────────────
   @Get("behavioral-analytics")
   @ApiOperation({
