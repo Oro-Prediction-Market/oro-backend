@@ -25,6 +25,19 @@ function monthLabel(month: number, year: number): string {
   });
 }
 
+/** "Week of 29 Sep 2026" or "September 2026", from a YYYY-MM-DD bucket start. */
+function bucketLabel(start: string, period: "week" | "month"): string {
+  const [y, m, d] = start.split("-").map(Number);
+  if (period === "month") return monthLabel(m, y);
+  const date = new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+  return `Week of ${date}`;
+}
+
 const clampLimit = (raw: unknown, fallback: number, max: number) => {
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), max) : fallback;
@@ -513,6 +526,94 @@ export class AdminInsightsController {
         deposits: { count: n(r?.depCount), sumBtn: n(r?.depSum) },
         withdrawals: { count: n(r?.wdCount), sumBtn: n(r?.wdSum) },
       },
+    };
+  }
+
+  /**
+   * Signups per week or per month, on the Bhutan calendar.
+   *
+   * `user-growth` only buckets by day over a fixed window, which answers "what
+   * happened this week" but not "how does this month compare to the last six".
+   *
+   * `users."createdAt"` is a zoneless timestamp holding UTC, so it takes the
+   * double cast `userGrowth` documents to reach Bhutan wall-clock; `now()` is
+   * already timestamptz and takes one. Weeks are ISO, Monday-start.
+   *
+   * The provider split uses the weekly report's rule — a user's EARLIEST auth
+   * method — so the two never disagree about where someone came from. Users
+   * with no auth method still count toward the total, under "unknown".
+   *
+   * Bucket starts come back as YYYY-MM-DD text, not timestamps: node-postgres
+   * parses a zoneless timestamp in the process's own zone, which would shift a
+   * Monday into a Sunday anywhere that is not Bhutan.
+   */
+  @Get("signups")
+  async signups(
+    @Query("period") periodRaw?: string,
+    @Query("count") countRaw?: string,
+  ) {
+    const period = periodRaw === "month" ? "month" : "week";
+    const count = clampLimit(countRaw, 12, period === "month" ? 24 : 52);
+
+    const rows: Array<{ start: string; provider: string | null; count: number }> =
+      await this.dataSource.query(
+        `WITH buckets AS (
+           SELECT generate_series(
+                    date_trunc($1::text, now() AT TIME ZONE 'Asia/Thimphu')
+                      - ($2::int - 1) * ('1 ' || $1::text)::interval,
+                    date_trunc($1::text, now() AT TIME ZONE 'Asia/Thimphu'),
+                    ('1 ' || $1::text)::interval
+                  ) AS bucket
+         ),
+         first_provider AS (
+           SELECT DISTINCT ON (u.id)
+                  u.id,
+                  date_trunc($1::text,
+                    u."createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu') AS bucket,
+                  am.provider
+             FROM users u
+             LEFT JOIN auth_methods am ON am."userId" = u.id
+            WHERE u."createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu'
+                    >= (SELECT MIN(bucket) FROM buckets)
+            ORDER BY u.id, am."createdAt" ASC
+         )
+         SELECT to_char(b.bucket, 'YYYY-MM-DD') AS start,
+                fp.provider,
+                COUNT(fp.id)::int AS count
+           FROM buckets b
+           LEFT JOIN first_provider fp ON fp.bucket = b.bucket
+          GROUP BY b.bucket, fp.provider
+          ORDER BY b.bucket`,
+        [period, count],
+      );
+
+    // Fold provider rows into one entry per bucket, keeping empty buckets.
+    const byStart = new Map<string, { signups: number; byProvider: Record<string, number> }>();
+    for (const r of rows) {
+      const b = byStart.get(r.start) ?? { signups: 0, byProvider: {} };
+      const n = Number(r.count);
+      // An empty bucket comes back as one row with a null provider and 0.
+      if (n > 0) {
+        b.signups += n;
+        const key = r.provider ?? "unknown";
+        b.byProvider[key] = (b.byProvider[key] ?? 0) + n;
+      }
+      byStart.set(r.start, b);
+    }
+
+    const starts = [...byStart.keys()].sort();
+    const buckets = starts.map((start, i) => ({
+      start,
+      label: bucketLabel(start, period),
+      // The newest bucket is the one still in progress.
+      partial: i === starts.length - 1,
+      ...byStart.get(start)!,
+    }));
+
+    return {
+      period,
+      buckets,
+      total: buckets.reduce((sum, b) => sum + b.signups, 0),
     };
   }
 }
