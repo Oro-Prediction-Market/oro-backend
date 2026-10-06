@@ -616,4 +616,131 @@ export class AdminInsightsController {
       total: buckets.reduce((sum, b) => sum + b.signups, 0),
     };
   }
+
+  /**
+   * Pool money and house edge per category and subcategory.
+   *
+   * Nothing broke revenue down this way; the only category grouping elsewhere
+   * is 30-day bet volume, with no pool and no edge.
+   *
+   * Settled figures come from `settlements`, dated by `settledAt` — the same
+   * basis as the Revenue page and the weekly report, so all three agree.
+   * `from`/`to` are Bhutan calendar days, both inclusive; `settledAt` is a
+   * zoneless UTC timestamp, so it takes the same double cast as signups.
+   *
+   * House edge is `houseAmount − houseForfeit`: pool money only. Forfeited
+   * dispute bonds are reported beside it as `bonds`, never inside it. Rows
+   * settled before that column existed have it at 0, so for them any bond is
+   * still counted as edge — the page says so.
+   *
+   * `livePool` is what is staked right now on markets not yet settled, from
+   * the market books. One currency per request: BTN and USDT are never summed.
+   */
+  @Get("category-revenue")
+  async categoryRevenue(
+    @Query("from") fromRaw?: string,
+    @Query("to") toRaw?: string,
+    @Query("currency") currencyRaw?: string,
+  ) {
+    const currency = currencyRaw === "USDT" ? "USDT" : "BTN";
+    const day = (v?: string) => (v && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
+    const from = day(fromRaw);
+    const to = day(toRaw);
+
+    const LOCAL = `(s."settledAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu')`;
+    const settled: Array<Record<string, string>> = await this.dataSource.query(
+      `SELECT m.category::text AS category,
+              COALESCE(NULLIF(m.subcategory, ''), '(none)') AS subcategory,
+              COUNT(*) FILTER (WHERE s."cancelReason" IS NULL)::int     AS settled,
+              COUNT(*) FILTER (WHERE s."cancelReason" IS NOT NULL)::int AS refunded,
+              COALESCE(SUM(s."totalPool")    FILTER (WHERE s."cancelReason" IS NULL), 0)     AS pool,
+              COALESCE(SUM(s."totalPool")    FILTER (WHERE s."cancelReason" IS NOT NULL), 0) AS "refundedPool",
+              COALESCE(SUM(s."houseAmount" - s."houseForfeit")
+                                              FILTER (WHERE s."cancelReason" IS NULL), 0)     AS edge,
+              COALESCE(SUM(s."houseForfeit") FILTER (WHERE s."cancelReason" IS NULL), 0)     AS bonds,
+              COALESCE(SUM(s."totalPaidOut") FILTER (WHERE s."cancelReason" IS NULL), 0)     AS "paidOut"
+         FROM settlements s
+         JOIN markets m ON m.id = s."marketId"
+        WHERE s.currency = $1
+          AND ($2::date IS NULL OR ${LOCAL} >= $2::date)
+          AND ($3::date IS NULL OR ${LOCAL} < $3::date + 1)
+        GROUP BY 1, 2`,
+      [currency, from, to],
+    );
+
+    const live: Array<Record<string, string>> = await this.dataSource.query(
+      `SELECT m.category::text AS category,
+              COALESCE(NULLIF(m.subcategory, ''), '(none)') AS subcategory,
+              COUNT(DISTINCT m.id)::int AS markets,
+              COALESCE(SUM(b."totalPool"), 0) AS pool
+         FROM market_books b
+         JOIN markets m ON m.id = b."marketId"
+        WHERE b.currency = $1
+          AND m.status IN ('upcoming', 'open', 'closed', 'resolving')
+        GROUP BY 1, 2`,
+      [currency],
+    );
+
+    type Figures = {
+      settled: number; refunded: number; pool: number; refundedPool: number;
+      edge: number; bonds: number; paidOut: number;
+      liveMarkets: number; livePool: number;
+    };
+    const zero = (): Figures => ({
+      settled: 0, refunded: 0, pool: 0, refundedPool: 0,
+      edge: 0, bonds: 0, paidOut: 0, liveMarkets: 0, livePool: 0,
+    });
+    const add = (a: Figures, b: Figures) => {
+      for (const k of Object.keys(a) as (keyof Figures)[]) a[k] += b[k];
+    };
+
+    const cats = new Map<string, { totals: Figures; subs: Map<string, Figures> }>();
+    const slot = (category: string, subcategory: string) => {
+      let c = cats.get(category);
+      if (!c) cats.set(category, (c = { totals: zero(), subs: new Map() }));
+      let sub = c.subs.get(subcategory);
+      if (!sub) c.subs.set(subcategory, (sub = zero()));
+      return sub;
+    };
+
+    for (const r of settled) {
+      const f = slot(r.category, r.subcategory);
+      f.settled += Number(r.settled);
+      f.refunded += Number(r.refunded);
+      f.pool += Number(r.pool);
+      f.refundedPool += Number(r.refundedPool);
+      f.edge += Number(r.edge);
+      f.bonds += Number(r.bonds);
+      f.paidOut += Number(r.paidOut);
+    }
+    for (const r of live) {
+      const f = slot(r.category, r.subcategory);
+      f.liveMarkets += Number(r.markets);
+      f.livePool += Number(r.pool);
+    }
+
+    // Effective edge on pool money only, so it reads ~10% when the edge is
+    // being applied as configured.
+    const withPct = (f: Figures) => ({
+      ...f,
+      edgePct: f.pool > 0 ? Math.round((f.edge / f.pool) * 10000) / 100 : null,
+    });
+
+    const grand = zero();
+    const categories = [...cats.entries()]
+      .map(([category, c]) => {
+        for (const f of c.subs.values()) add(c.totals, f);
+        add(grand, c.totals);
+        return {
+          category,
+          ...withPct(c.totals),
+          subcategories: [...c.subs.entries()]
+            .map(([subcategory, f]) => ({ subcategory, ...withPct(f) }))
+            .sort((a, b) => b.pool - a.pool || b.livePool - a.livePool),
+        };
+      })
+      .sort((a, b) => b.pool - a.pool || b.livePool - a.livePool);
+
+    return { currency, from, to, totals: withPct(grand), categories };
+  }
 }
