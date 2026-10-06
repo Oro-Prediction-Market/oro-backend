@@ -144,6 +144,20 @@ export class ReconciliationController {
     return this.reconciliationService.generateReport();
   }
 
+  /**
+   * The segregation invariants.
+   *
+   * Every check must report zero violations. A non-zero result means money may
+   * already have crossed between the BTN and USDT books, and everything
+   * downstream of it — balances, reports, payouts — is suspect until it is
+   * explained. Wire this to a daily alert; see STAGE-I-ROLLOUT.md §I.4.
+   */
+  @Get("segregation")
+  @ApiOperation({ summary: "Currency-segregation invariants (all must be zero)" })
+  async segregation() {
+    return this.invariants.runAll();
+  }
+
   @Get(":id")
   @ApiOperation({
     summary: "Get reconciliation by ID (Admin only)",
@@ -172,19 +186,5 @@ export class ReconciliationController {
       recordsUpdated: records.length,
       records,
     };
-  }
-
-  /**
-   * The segregation invariants.
-   *
-   * Every check must report zero violations. A non-zero result means money may
-   * already have crossed between the BTN and USDT books, and everything
-   * downstream of it — balances, reports, payouts — is suspect until it is
-   * explained. Wire this to a daily alert; see STAGE-I-ROLLOUT.md §I.4.
-   */
-  @Get("segregation")
-  @ApiOperation({ summary: "Currency-segregation invariants (all must be zero)" })
-  async segregation() {
-    return this.invariants.runAll();
   }
 }
