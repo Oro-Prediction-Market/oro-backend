@@ -1639,14 +1639,31 @@ export class AdminController {
       qb.andWhere("u.dkCid IS NULL AND lba.cid IS NULL");
 
     // ── Sort ────────────────────────────────────────────────────────────────
+    //
+    // Computed sort keys are SELECTED under a plain alias and ordered by that
+    // alias — never ordered by the expression itself. With skip/take and joins,
+    // TypeORM pages through a DISTINCT wrapper query and splits every ORDER BY
+    // key on its first "." to look up a join alias, so ordering by
+    // `COALESCE(u.betStreakCount, 0)` threw `"COALESCE(u" alias was not found`
+    // before a single query ran: sorting the user list by name or by streak
+    // returned an error. A bare alias with no dot takes the branch that matches
+    // it against the select list instead. Aliases are lower-case so Postgres
+    // does not fold them into a name that no longer matches.
+    //
+    // `u.id` breaks ties so a page boundary never falls between equal keys,
+    // which would show one user twice and skip another.
     const dir = sortDir.toUpperCase() as "ASC" | "DESC";
     if (sortField === "name") {
-      qb.orderBy(
+      qb.addSelect(
         "LOWER(COALESCE(u.firstName,'') || ' ' || COALESCE(u.lastName,''))",
-        dir,
-      );
+        "sort_name",
+      )
+        .orderBy("sort_name", dir)
+        .addOrderBy("u.id", "ASC");
     } else if (sortField === "streak") {
-      qb.orderBy("COALESCE(u.betStreakCount, 0)", dir);
+      qb.addSelect("COALESCE(u.betStreakCount, 0)", "sort_streak")
+        .orderBy("sort_streak", dir)
+        .addOrderBy("u.id", "ASC");
     } else {
       // joined (default)
       qb.orderBy("u.createdAt", dir);
