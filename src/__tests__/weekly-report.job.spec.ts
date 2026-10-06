@@ -110,3 +110,46 @@ describe("WeeklyReportJob — settled markets section", () => {
     expect(out.split("\n").every((l) => l.length < 120)).toBe(true);
   });
 });
+
+/**
+ * Placed and settled run on different clocks — placed by when the bet went
+ * in, settled by when its market settled — so a week can settle more than it
+ * took in. The report used to print settled as a sub-line of placed, and a
+ * week with 718 placed and 786 settled read as a bookkeeping error.
+ */
+describe("WeeklyReportJob — predictions lines", () => {
+  const nu = (n: number) =>
+    `Nu. ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  const lines = (over: Record<string, unknown> = {}) =>
+    (new WeeklyReportJob({} as any, {} as any, {} as any) as any).buildPredictionLines(
+      {
+        placed: { count: 718, sum: 40000 },
+        settled: { count: 786, sum: 52000, earlierCount: 300, earlierSum: 21000 },
+        refunded: { count: 4, sum: 400 },
+        inEscrowThisWeek: { count: 232, sum: 9000 },
+        ...over,
+      },
+      nu,
+    ) as string;
+
+  it("does not print settled as a sub-line of placed", () => {
+    expect(lines()).not.toMatch(/^\s+↳ Settled/m);
+    expect(lines()).toMatch(/^Settled This Week: 786 \(Nu\. 52,000\.00\)$/m);
+  });
+
+  it("splits settled into bets placed this week and in earlier weeks", () => {
+    const out = lines();
+    expect(out).toContain("↳ Placed this week: 486 (Nu. 31,000.00)");
+    expect(out).toContain("↳ Placed in earlier weeks: 300 (Nu. 21,000.00)");
+  });
+
+  it("says what settled counts and which currency", () => {
+    expect(lines()).toMatch(/BTN only/);
+    expect(lines()).toMatch(/whenever it was placed/);
+  });
+
+  it("keeps still-open as a sub-line of placed, since it is a subset of it", () => {
+    expect(lines()).toMatch(/^Placed This Week: 718.*\n\s+↳ Still open: 232/m);
+  });
+});

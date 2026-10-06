@@ -278,26 +278,45 @@ export class WeeklyReportJob {
    * created-by-category breakdown, the closest real analogue in Oro's schema.
    */
   private async fetchGameplay(from: Date, to: Date) {
+    // Every figure in this section is printed in Nu, so it counts BTN stakes
+    // only — the refund line below always did, and the rest used to add USDT
+    // stakes into the same "Nu." total.
     const placedRow = await this.dataSource
       .getRepository(Position)
       .createQueryBuilder("p")
       .select("COUNT(*)", "count")
       .addSelect("COALESCE(SUM(p.amount), 0)", "sum")
       .where("p.placedAt >= :from AND p.placedAt < :to", { from, to })
+      .andWhere("p.currency = :currency", { currency: "BTN" })
       .getRawOne<{ count: string; sum: string }>();
 
+    // Settled is keyed on when the MARKET settled, not when the bet was
+    // placed, so it is not a subset of "placed": a week that settles a
+    // fortnight-old market can settle more than it took in. Split it by
+    // placement so the report says so instead of looking like it doesn't add up.
     const settledRow = await this.dataSource
       .getRepository(Position)
       .createQueryBuilder("p")
       .innerJoin(Settlement, "s", "s.marketId = p.marketId")
       .select("COUNT(*)", "count")
       .addSelect("COALESCE(SUM(p.amount), 0)", "sum")
+      .addSelect("COUNT(*) FILTER (WHERE p.placedAt < :from)", "earlierCount")
+      .addSelect(
+        "COALESCE(SUM(p.amount) FILTER (WHERE p.placedAt < :from), 0)",
+        "earlierSum",
+      )
       .where("s.settledAt >= :from AND s.settledAt < :to", { from, to })
       .andWhere("s.cancelReason IS NULL")
+      .andWhere("p.currency = :currency", { currency: "BTN" })
       .andWhere("p.status IN (:...statuses)", {
         statuses: [PositionStatus.WON, PositionStatus.LOST],
       })
-      .getRawOne<{ count: string; sum: string }>();
+      .getRawOne<{
+        count: string;
+        sum: string;
+        earlierCount: string;
+        earlierSum: string;
+      }>();
 
     const refundRow = await this.dataSource
       .getRepository(Transaction)
@@ -316,6 +335,7 @@ export class WeeklyReportJob {
       .addSelect("COALESCE(SUM(p.amount), 0)", "sum")
       .where("p.status = :status", { status: PositionStatus.PENDING })
       .andWhere("p.placedAt >= :from AND p.placedAt < :to", { from, to })
+      .andWhere("p.currency = :currency", { currency: "BTN" })
       .getRawOne<{ count: string; sum: string }>();
 
     const marketsCreatedRows = await this.dataSource
@@ -359,7 +379,12 @@ export class WeeklyReportJob {
 
     return {
       placed: { count: Number(placedRow?.count ?? 0), sum: Number(placedRow?.sum ?? 0) },
-      settled: { count: Number(settledRow?.count ?? 0), sum: Number(settledRow?.sum ?? 0) },
+      settled: {
+        count: Number(settledRow?.count ?? 0),
+        sum: Number(settledRow?.sum ?? 0),
+        earlierCount: Number(settledRow?.earlierCount ?? 0),
+        earlierSum: Number(settledRow?.earlierSum ?? 0),
+      },
       refunded: { count: Number(refundRow?.count ?? 0), sum: Number(refundRow?.sum ?? 0) },
       inEscrowThisWeek: {
         count: Number(escrowThisWeekRow?.count ?? 0),
@@ -523,10 +548,7 @@ export class WeeklyReportJob {
       `📤 Withdrawals: ${nu(moneyFlow.withdrawals.sum)} (${moneyFlow.withdrawals.count} txns)\n\n` +
       `🎫 Predictions\n` +
       `━━━━━━━━━━━━━━━━━━\n` +
-      `Predictions Placed: ${gameplay.placed.count} (${nu(gameplay.placed.sum)})\n` +
-      `  ↳ Settled: ${nu(gameplay.settled.sum)} (${gameplay.settled.count})\n` +
-      `  ↳ Refunded: ${nu(gameplay.refunded.sum)} (${gameplay.refunded.count})\n` +
-      `  ↳ In escrow: ${nu(gameplay.inEscrowThisWeek.sum)} (${gameplay.inEscrowThisWeek.count})\n` +
+      this.buildPredictionLines(gameplay, nu) +
       `Markets Created: ${categoryLine}\n` +
       `Markets Resolved: Completed ${gameplay.resolved.completed} | Cancelled ${gameplay.resolved.cancelled} (${nu(gameplay.resolved.refunded)} refunded)\n\n` +
       `🔒 Escrow\n` +
@@ -542,6 +564,31 @@ export class WeeklyReportJob {
       `Payout Completion: ${winners.payoutsSent}/${winners.winners}`;
 
     return summary + this.buildSettledSection(settledMarkets, nu, summary.length);
+  }
+
+  /**
+   * Placed and settled are counted on different clocks — placed by when the
+   * bet went in, settled by when its market settled — so neither line is a
+   * subset of the other. Printing settled indented under placed made 786
+   * settled out of 718 placed look like an error. Each now stands on its own,
+   * and settled says how much of it came from earlier weeks.
+   */
+  private buildPredictionLines(
+    gameplay: Awaited<ReturnType<WeeklyReportJob["fetchGameplay"]>>,
+    nu: (n: number) => string,
+  ): string {
+    const { placed, settled, refunded, inEscrowThisWeek } = gameplay;
+    const thisWeekCount = settled.count - settled.earlierCount;
+    const thisWeekSum = settled.sum - settled.earlierSum;
+    return (
+      `Placed This Week: ${placed.count} (${nu(placed.sum)})\n` +
+      `  ↳ Still open: ${inEscrowThisWeek.count} (${nu(inEscrowThisWeek.sum)})\n` +
+      `Settled This Week: ${settled.count} (${nu(settled.sum)})\n` +
+      `  ↳ Placed this week: ${thisWeekCount} (${nu(thisWeekSum)})\n` +
+      `  ↳ Placed in earlier weeks: ${settled.earlierCount} (${nu(settled.earlierSum)})\n` +
+      `Refunded This Week: ${refunded.count} (${nu(refunded.sum)})\n` +
+      `(BTN only. Settled counts every bet on a market that settled this week, whenever it was placed.)\n`
+    );
   }
 
   /**
