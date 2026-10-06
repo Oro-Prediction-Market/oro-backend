@@ -128,6 +128,14 @@ export class RevenueDistributionService {
   ): Promise<RevenueDistribution | null> {
     if (houseAmount <= 0) return null;
 
+    // An audit figure in a decimal(5,2) column. An older settlement whose
+    // forfeited bonds were booked inside houseAmount can compute to 1000% or
+    // more, which would fail the insert and leave that revenue unbooked — so
+    // the figure is bounded rather than the money left out.
+    houseEdgePct = Number.isFinite(houseEdgePct)
+      ? Math.min(Math.max(houseEdgePct, 0), 999.99)
+      : 0;
+
     const existing = await this.distributionRepo.findOne({
       where: { settlementId },
     });
