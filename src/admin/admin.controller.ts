@@ -3242,13 +3242,32 @@ export class AdminController {
         FROM users
       `),
 
-      // Daily signups across the window, Thimphu days.
+      // Daily signups across the window, Thimphu days. Every day in the window
+      // gets a row, zero included: skipping empty days squeezed the bars of a
+      // quiet week together, and an all-quiet window drew no chart at all.
+      // All-time starts at the first signup. Dates go out as YYYY-MM-DD text
+      // so the driver never turns them into a server-local midnight.
       db.query(
-        `SELECT DATE(${localDay}) AS date, COUNT(*)::int AS count
-         FROM users u
-         WHERE ${inWindow}
-         GROUP BY 1
-         ORDER BY 1 ASC`,
+        `WITH counts AS (
+           SELECT DATE(${localDay}) AS d, COUNT(*)::int AS c
+           FROM users u
+           WHERE ${inWindow}
+           GROUP BY 1
+         ),
+         bounds AS (
+           SELECT ${
+             days === 0
+               ? `(SELECT MIN(d) FROM counts)`
+               : `DATE((NOW() - make_interval(days => $1::int)) AT TIME ZONE 'Asia/Thimphu')`
+           } AS lo,
+                  DATE(${nowLocalDay}) AS hi
+         )
+         SELECT to_char(g::date, 'YYYY-MM-DD') AS date,
+                COALESCE(c.c, 0)::int AS count
+         FROM bounds b
+         CROSS JOIN LATERAL generate_series(b.lo, b.hi, INTERVAL '1 day') g
+         LEFT JOIN counts c ON c.d = g::date
+         ORDER BY g ASC`,
         windowParams,
       ),
 
