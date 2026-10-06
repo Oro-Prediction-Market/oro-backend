@@ -42,6 +42,7 @@ import { UpdateMarketGroupDto } from "../markets/dto/update-market-group.dto";
 import { SuggestionsService } from "../suggestions/suggestions.service";
 import { SuggestionStatus } from "../entities/market-suggestion.entity";
 import { KeeperService } from "../markets/keeper.service";
+import { DEFAULT_HOUSE_EDGE_PCT } from "../markets/fee.constants";
 import { RevenueDistributionService } from "../markets/revenue-distribution.service";
 import { EplService } from "../epl/epl.service";
 import {
@@ -702,6 +703,7 @@ export class AdminController {
     @Query("category") category?: string,
     @Query("subcategory") subcategory?: string,
     @Query("search") search?: string,
+    @Query("edge") edge?: string,
   ) {
     const take = Math.min(Number(limit) || 20, 500);
     const skip = (Math.max(Number(page), 1) - 1) * take;
@@ -736,6 +738,18 @@ export class AdminController {
       qb.andWhere("LOWER(market.title) LIKE :q", {
         q: `%${q.toLowerCase()}%`,
       });
+    }
+    // Markets not on the standard house edge. Checks the books as well as the
+    // market row: settlement charges the book's edge, so a market can show the
+    // standard edge while its bettors are charged another. Same rule as the
+    // edge-exceptions banner, so the filter lists what the banner counts.
+    if (edge === "nonstandard") {
+      qb.andWhere(
+        `(market.houseEdgePct <> :stdEdge OR EXISTS (
+           SELECT 1 FROM market_books eb
+            WHERE eb."marketId" = market.id AND eb."houseEdgePct" <> :stdEdge))`,
+        { stdEdge: DEFAULT_HOUSE_EDGE_PCT },
+      );
     }
     if (status && status.toLowerCase() !== "all") {
       const s = status.toLowerCase();
