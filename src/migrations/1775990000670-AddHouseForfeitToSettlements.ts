@@ -25,7 +25,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * reason for the column — so historical `houseEdgePct` values stay as they
  * were written. New settlements are exact.
  */
-export class AddHouseForfeitToSettlements1775990000650
+export class AddHouseForfeitToSettlements1775990000670
   implements MigrationInterface
 {
   async up(q: QueryRunner): Promise<void> {
