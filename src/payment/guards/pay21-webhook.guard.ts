@@ -3,9 +3,12 @@ import {
   ExecutionContext,
   Injectable,
   Logger,
+  Optional,
   UnauthorizedException,
 } from "@nestjs/common";
+import { RedisService } from "../../redis/redis.service";
 import { TwentyOnePayClient } from "../services/twentyone-pay/twentyone-pay.client";
+import { recordWebhookRejection } from "./pay21-webhook-health";
 
 /**
  * Verifies a 21Pay webhook before the controller sees it.
@@ -28,7 +31,12 @@ import { TwentyOnePayClient } from "../services/twentyone-pay/twentyone-pay.clie
 export class Pay21WebhookGuard implements CanActivate {
   private readonly logger = new Logger(Pay21WebhookGuard.name);
 
-  constructor(private readonly client: TwentyOnePayClient) {}
+  constructor(
+    private readonly client: TwentyOnePayClient,
+    // Optional so the guard still constructs where Redis is not provided. It
+    // is only ever used to COUNT a rejection, never to decide one.
+    @Optional() private readonly redis?: RedisService,
+  ) {}
 
   canActivate(context: ExecutionContext): boolean {
     const req = context.switchToHttp().getRequest();
@@ -45,6 +53,11 @@ export class Pay21WebhookGuard implements CanActivate {
       this.logger.warn(
         "[21pay] webhook rejected: signature, freshness or raw body invalid",
       );
+      // Counted for the admin Deposits page. Rejected deliveries are never
+      // written to crypto_webhook_events, so without this a misconfigured
+      // secret is invisible there. Fire-and-forget and failure-proof: the
+      // rejection below happens regardless.
+      void recordWebhookRejection(this.redis);
       throw new UnauthorizedException("Invalid signature");
     }
 

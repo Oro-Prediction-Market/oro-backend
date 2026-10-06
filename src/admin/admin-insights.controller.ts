@@ -1,4 +1,5 @@
-import { Controller, Get, Query, UseGuards } from "@nestjs/common";
+import { Controller, Get, Optional, Query, UseGuards } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import { InjectDataSource } from "@nestjs/typeorm";
 import { DataSource } from "typeorm";
@@ -8,6 +9,9 @@ import {
   SEASON_PRIZES,
 } from "../users/season.service";
 import { DEFAULT_HOUSE_EDGE_PCT } from "../markets/fee.constants";
+import { CryptoIntentStatus } from "../entities/crypto-payment-intent.entity";
+import { RedisService } from "../redis/redis.service";
+import { readWebhookRejections } from "../payment/guards/pay21-webhook-health";
 
 const MEDALS = ["🥇", "🥈", "🥉"];
 
@@ -38,7 +42,11 @@ const clampLimit = (raw: unknown, fallback: number, max: number) => {
 @UseGuards(JwtAuthGuard, AdminGuard)
 @Controller("admin/insights")
 export class AdminInsightsController {
-  constructor(@InjectDataSource() private readonly dataSource: DataSource) {}
+  constructor(
+    @InjectDataSource() private readonly dataSource: DataSource,
+    @Optional() private readonly config?: ConfigService,
+    @Optional() private readonly redis?: RedisService,
+  ) {}
 
   /**
    * Each monthly season, its podium, and whether each prize actually landed.
@@ -251,6 +259,128 @@ export class AdminInsightsController {
         // shows. The row is what an admin reads; the book is what settles.
         mismatch: m.books.some((b) => b.edge !== m.marketEdge),
       })),
+    };
+  }
+
+  /**
+   * USDT deposit intents — the deposit side of the USDT rail.
+   *
+   * Withdrawals had a page; deposits had none. The figure that matters most is
+   * `uncredited`: intents the chain says CONFIRMED that have no credit yet,
+   * past a short grace. That is money a user sent which is not in their
+   * balance — the thing a broken webhook plus a stalled poller would produce.
+   */
+  @Get("usdt-deposits")
+  async usdtDeposits(
+    @Query("limit") limit?: string,
+    @Query("status") status?: string,
+  ) {
+    const take = clampLimit(limit, 50, 200);
+    const valid = Object.values(CryptoIntentStatus) as string[];
+    const filter = status && valid.includes(status) ? status : null;
+
+    const rows = await this.dataSource.query(
+      `SELECT i.id, i."userId", u.username, u."firstName", i.network,
+              i."amountUsdt", i."detectedAmountUsdt", i.status, i."txHash",
+              i."failureReason", i."createdAt", i."creditedAt", i."expiresAt"
+         FROM crypto_payment_intents i
+         LEFT JOIN users u ON u.id = i."userId"
+        WHERE ($2::text IS NULL OR i.status::text = $2)
+        ORDER BY i."createdAt" DESC
+        LIMIT $1`,
+      [take, filter],
+    );
+
+    const byStatus = await this.dataSource.query(
+      `SELECT status::text AS status, COUNT(*)::int AS count
+         FROM crypto_payment_intents
+        WHERE "createdAt" > now() - interval '7 days'
+        GROUP BY status`,
+    );
+    const [uncredited] = await this.dataSource.query(
+      `SELECT COUNT(*)::int AS count,
+              COALESCE(SUM(COALESCE("detectedAmountUsdt", "amountUsdt")), 0) AS amount
+         FROM crypto_payment_intents
+        WHERE status::text = ANY($1)
+          AND "creditedAt" IS NULL
+          AND "updatedAt" < now() - interval '10 minutes'`,
+      [
+        [
+          CryptoIntentStatus.CONFIRMED,
+          CryptoIntentStatus.CONFIRMED_PARTIAL,
+          CryptoIntentStatus.CONFIRMED_OVERPAID,
+        ],
+      ],
+    );
+
+    return {
+      statuses: valid,
+      last7DaysByStatus: byStatus as Array<{ status: string; count: number }>,
+      uncredited: {
+        count: Number(uncredited?.count ?? 0),
+        amountUsdt: Number(uncredited?.amount ?? 0),
+      },
+      deposits: (rows as any[]).map((r) => ({
+        ...r,
+        amountUsdt: Number(r.amountUsdt),
+        detectedAmountUsdt:
+          r.detectedAmountUsdt == null ? null : Number(r.detectedAmountUsdt),
+      })),
+    };
+  }
+
+  /**
+   * 21Pay webhook deliveries, and whether they are being turned away.
+   *
+   * `crypto_webhook_events` only ever holds ACCEPTED deliveries — a delivery
+   * that fails verification is rejected before anything records it. So this
+   * also reports the rejection counter the webhook guard keeps, and whether
+   * the verification secret is configured at all (as a yes/no only — never
+   * its value). Without those two, a misnamed secret leaves this table looking
+   * quietly healthy while every delivery bounces.
+   *
+   * `rawPayload` is deliberately not returned.
+   */
+  @Get("pay21-webhooks")
+  async pay21Webhooks(@Query("limit") limit?: string) {
+    const take = clampLimit(limit, 50, 200);
+
+    const [events, [agg], rejections] = await Promise.all([
+      this.dataSource.query(
+        `SELECT id, subject, "eventAction", network, "txHash", amount, currency,
+                "receivedAt", "processedAt", "processError"
+           FROM crypto_webhook_events
+          ORDER BY "receivedAt" DESC
+          LIMIT $1`,
+        [take],
+      ),
+      this.dataSource.query(
+        `SELECT MAX("receivedAt") AS "lastReceivedAt",
+                COUNT(*) FILTER (WHERE "receivedAt" > now() - interval '7 days')::int AS "received7d",
+                COUNT(*) FILTER (WHERE "processError" IS NOT NULL
+                                   AND "receivedAt" > now() - interval '7 days')::int AS "failed7d",
+                COUNT(*) FILTER (WHERE "processedAt" IS NULL
+                                   AND "processError" IS NULL
+                                   AND "receivedAt" < now() - interval '5 minutes')::int AS "unprocessed"
+           FROM crypto_webhook_events`,
+      ),
+      readWebhookRejections(this.redis),
+    ]);
+
+    return {
+      health: {
+        usdtEnabled: this.config?.get<string>("USDT_ENABLED") === "true",
+        // The name the code actually reads. Presence only.
+        secretConfigured: !!this.config?.get<string>("TWENTYONE_PAY_WEBHOOK_SECRET"),
+        lastReceivedAt: agg?.lastReceivedAt ?? null,
+        received7d: Number(agg?.received7d ?? 0),
+        failed7d: Number(agg?.failed7d ?? 0),
+        unprocessed: Number(agg?.unprocessed ?? 0),
+        rejectedToday: rejections.today,
+        rejected7d: rejections.last7Days,
+        lastRejectedAt: rejections.lastRejectedAt,
+      },
+      events,
     };
   }
 }
