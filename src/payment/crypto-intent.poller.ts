@@ -1,4 +1,8 @@
-import { Injectable, Logger } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  Optional,
+} from "@nestjs/common";
 import { Cron, CronExpression } from "@nestjs/schedule";
 import { InjectRepository } from "@nestjs/typeorm";
 import { In, IsNull, LessThan, Not, Repository } from "typeorm";
@@ -10,6 +14,7 @@ import { TwentyOnePayClient } from "./services/twentyone-pay/twentyone-pay.clien
 import { CryptoSettlementService } from "./crypto-settlement.service";
 import { CryptoWithdrawal, TERMINAL_REMOTE_STATUSES } from "../entities/crypto-withdrawal.entity";
 import { CryptoWithdrawalService } from "./crypto-withdrawal.service";
+import { JobHealthService, NOOP_JOB_HEALTH } from "../job-health/job-health.service";
 
 /** How long after a credit a reorg can still take it back. Generous. */
 const REORG_WINDOW_MINUTES = 60;
@@ -47,6 +52,10 @@ export class CryptoIntentPoller {
     private readonly client: TwentyOnePayClient,
     private readonly settlement: CryptoSettlementService,
     private readonly withdrawals: CryptoWithdrawalService,
+    // Records whether this job is alive, for the admin Keeper page. Optional
+    // with a no-op default so direct construction in tests is unaffected.
+    @Optional()
+    private readonly jobHealth: JobHealthService = NOOP_JOB_HEALTH,
   ) {}
 
   /**
@@ -59,7 +68,16 @@ export class CryptoIntentPoller {
    */
   @Cron(CronExpression.EVERY_MINUTE)
   async pollWithdrawals(): Promise<void> {
-    if (!this.client.enabled) return;
+    if (!this.client.enabled) {
+      this.jobHealth.skip("usdt-withdrawal-poller", "USDT disabled");
+      return;
+    }
+    return this.jobHealth.track("usdt-withdrawal-poller", () =>
+      this.runPollWithdrawals(),
+    );
+  }
+
+  private async runPollWithdrawals(): Promise<void> {
 
     // Finished rows are excluded in the query, not skipped after it. Skipping
     // them in the loop let the 20 oldest finished withdrawals fill every batch
@@ -107,7 +125,19 @@ export class CryptoIntentPoller {
   /** Advance intents that are still in flight. */
   @Cron(CronExpression.EVERY_MINUTE)
   async pollOpenIntents(): Promise<void> {
-    if (!this.client.enabled) return;
+    if (!this.client.enabled) {
+      this.jobHealth.skip("usdt-deposit-poller", "USDT disabled");
+      return;
+    }
+    // While the webhook is rejecting deliveries, this poller is the ONLY way a
+    // USDT deposit gets credited — which is why its health is shown beside the
+    // webhook's.
+    return this.jobHealth.track("usdt-deposit-poller", () =>
+      this.runPollOpenIntents(),
+    );
+  }
+
+  private async runPollOpenIntents(): Promise<void> {
 
     // Only rows the webhook has had a fair chance at first, so the common case
     // costs nothing.

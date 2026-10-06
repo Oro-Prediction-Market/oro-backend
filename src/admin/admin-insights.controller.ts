@@ -12,6 +12,7 @@ import { DEFAULT_HOUSE_EDGE_PCT } from "../markets/fee.constants";
 import { CryptoIntentStatus } from "../entities/crypto-payment-intent.entity";
 import { RedisService } from "../redis/redis.service";
 import { readWebhookRejections } from "../payment/guards/pay21-webhook-health";
+import { JobHealthService } from "../job-health/job-health.service";
 
 const MEDALS = ["🥇", "🥈", "🥉"];
 
@@ -46,6 +47,7 @@ export class AdminInsightsController {
     @InjectDataSource() private readonly dataSource: DataSource,
     @Optional() private readonly config?: ConfigService,
     @Optional() private readonly redis?: RedisService,
+    @Optional() private readonly jobHealth?: JobHealthService,
   ) {}
 
   /**
@@ -381,6 +383,56 @@ export class AdminInsightsController {
         lastRejectedAt: rejections.lastRejectedAt,
       },
       events,
+    };
+  }
+
+  /**
+   * Whether the jobs that move money are still running.
+   *
+   * KeeperDashboard covers the keeper only. Nothing showed whether the season
+   * rollover, revenue booking, withdrawal reconcilers or USDT pollers had run,
+   * so "did September roll over?" had no answer short of the logs.
+   *
+   * The monthly rollover gets a second, database-derived check: is the active
+   * season the current month's? A monthly job's own record is empty for weeks
+   * after this was first deployed, and this answers the actual question
+   * immediately.
+   */
+  @Get("jobs")
+  async jobs() {
+    const jobs = this.jobHealth ? await this.jobHealth.snapshot() : [];
+
+    // The month in Bhutan, which is the clock the rollover runs on.
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Thimphu",
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      hourCycle: "h23",
+    }).formatToParts(new Date());
+    const part = (t: string) => Number(parts.find((p) => p.type === t)?.value);
+    const month = part("month");
+    const year = part("year");
+    // The rollover fires at 00:05 on the 1st; allow it the first hours.
+    const withinGrace = part("day") === 1 && part("hour") < 3;
+
+    const [active] = await this.dataSource.query(
+      `SELECT "weekNumber" AS month, year FROM seasons
+        WHERE status = 'active'
+        ORDER BY year DESC, "weekNumber" DESC
+        LIMIT 1`,
+    );
+    const onCurrent =
+      !!active && Number(active.month) === month && Number(active.year) === year;
+
+    return {
+      jobs,
+      seasonRollover: {
+        expected: monthLabel(month, year),
+        active: active ? monthLabel(Number(active.month), Number(active.year)) : null,
+        status: onCurrent ? "ok" : withinGrace ? "pending" : "behind",
+      },
     };
   }
 }

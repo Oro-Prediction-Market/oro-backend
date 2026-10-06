@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnApplicationBootstrap } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  OnApplicationBootstrap,
+  Optional,
+} from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { InjectRepository, InjectDataSource } from "@nestjs/typeorm";
 import { Repository, DataSource, LessThan } from "typeorm";
@@ -11,6 +16,7 @@ import { BhutanAppNotificationService } from "../shared/services/bhutanapp-notif
 import { UserNotificationService } from "./user-notification.service";
 import { RedisService } from "../redis/redis.service";
 import { ledgerBalanceForAccount } from "../shared/utils/ledger.util";
+import { JobHealthService, NOOP_JOB_HEALTH } from "../job-health/job-health.service";
 
 // Real-money prizes paid every month to the top-3 finishers.
 // #1 → Nu 700, #2 → Nu 500, #3 → Nu 350
@@ -69,6 +75,10 @@ export class SeasonService implements OnApplicationBootstrap {
     private readonly bhutanApp: BhutanAppNotificationService,
     private readonly userNotifications: UserNotificationService,
     private readonly redis: RedisService,
+    // Records whether this job is alive, for the admin Keeper page. Optional
+    // with a no-op default so direct construction in tests is unaffected.
+    @Optional()
+    private readonly jobHealth: JobHealthService = NOOP_JOB_HEALTH,
   ) {}
 
   /** Self-heal: if the cron missed a rollover (e.g. pod down on the 1st), catch up on startup. */
@@ -113,8 +123,13 @@ export class SeasonService implements OnApplicationBootstrap {
     }
 
     this.logger.log("Rolling over monthly season…");
-    await this.closeActiveSeason();
-    await this.openNewSeason();
+    // Tracked because a failure here is otherwise silent until someone asks
+    // why last month's winners were never paid. The lock above is not
+    // released, so a failed rollover does not retry by itself this month.
+    await this.jobHealth.track("season-rollover", async () => {
+      await this.closeActiveSeason();
+      await this.openNewSeason();
+    });
   }
 
   async closeActiveSeason(): Promise<void> {

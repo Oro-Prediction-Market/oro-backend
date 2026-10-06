@@ -1,4 +1,8 @@
-import { Injectable, Logger } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  Optional,
+} from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { InjectDataSource } from "@nestjs/typeorm";
 import { DataSource } from "typeorm";
@@ -9,6 +13,7 @@ import { Market } from "../entities/market.entity";
 import { Transaction, TransactionType } from "../entities/transaction.entity";
 import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import { RedisService } from "../redis/redis.service";
+import { JobHealthService, NOOP_JOB_HEALTH } from "../job-health/job-health.service";
 
 /** Telegram rejects a sendMessage body longer than this. */
 const TELEGRAM_MAX_CHARS = 4096;
@@ -29,6 +34,10 @@ export class WeeklyReportJob {
     @InjectDataSource() private dataSource: DataSource,
     private readonly telegram: TelegramSimpleService,
     private readonly redis: RedisService,
+    // Records whether this job is alive, for the admin Keeper page. Optional
+    // with a no-op default so direct construction in tests is unaffected.
+    @Optional()
+    private readonly jobHealth: JobHealthService = NOOP_JOB_HEALTH,
   ) {}
 
   /**
@@ -63,7 +72,9 @@ export class WeeklyReportJob {
     }
 
     try {
-      await this._sendWeeklyReport();
+      await this.jobHealth.track("weekly-report", () =>
+        this._sendWeeklyReport(),
+      );
     } catch (err: any) {
       this.logger.error(`[WeeklyReport] Unhandled error: ${err.message}`, err.stack);
     }

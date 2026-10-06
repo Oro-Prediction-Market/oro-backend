@@ -1,4 +1,8 @@
-import { Injectable, Logger } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  Optional,
+} from "@nestjs/common";
 import { Cron, CronExpression } from "@nestjs/schedule";
 import { InjectDataSource, InjectRepository } from "@nestjs/typeorm";
 import { DataSource, LessThan, Repository } from "typeorm";
@@ -22,6 +26,7 @@ import { SseService } from "../sse/sse.service";
 import { classifyDkStatus } from "./dk-status.util";
 import { WITHDRAWAL_CONFIRMED, WITHDRAWAL_REFUNDED } from "./dk-ledger-notes";
 import { ledgerBalance } from "../shared/utils/ledger.util";
+import { JobHealthService, NOOP_JOB_HEALTH } from "../job-health/job-health.service";
 
 /**
  * A withdrawal is only reconciled once it has had time to settle. Anything
@@ -69,6 +74,10 @@ export class DKWithdrawalReconciler {
     private readonly sse: SseService,
     @InjectRepository(UserNotification)
     private readonly userNotifRepo: Repository<UserNotification>,
+    // Records whether this job is alive, for the admin Keeper page. Optional
+    // with a no-op default so direct construction in tests is unaffected.
+    @Optional()
+    private readonly jobHealth: JobHealthService = NOOP_JOB_HEALTH,
   ) {}
 
   /**
@@ -101,6 +110,12 @@ export class DKWithdrawalReconciler {
 
   @Cron(CronExpression.EVERY_5_MINUTES)
   async reconcileStuckWithdrawals() {
+    return this.jobHealth.track("dk-withdrawal-reconciler", () =>
+      this.runReconcileStuckWithdrawals(),
+    );
+  }
+
+  private async runReconcileStuckWithdrawals() {
     // Overlapping runs would ask DK about the same payment twice and race on
     // the refund. A single-flight flag is enough — this is one process's cron.
     if (this.running) return;

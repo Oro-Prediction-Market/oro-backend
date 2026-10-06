@@ -1,4 +1,8 @@
-import { Injectable, Logger } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  Optional,
+} from "@nestjs/common";
 import { Cron, CronExpression } from "@nestjs/schedule";
 import { InjectRepository, InjectDataSource } from "@nestjs/typeorm";
 import { LessThan, Repository } from "typeorm";
@@ -9,6 +13,7 @@ import { MarketsService } from "../markets/markets.service";
 import { DataSource } from "typeorm";
 import { Inject, forwardRef } from "@nestjs/common";
 import { neverAutoSettles } from "../markets/settlement-sources.util";
+import { JobHealthService, NOOP_JOB_HEALTH } from "../job-health/job-health.service";
 
 /**
  * Auto-resolution cron job.
@@ -34,6 +39,10 @@ export class AutoResolveMarketsJob {
     @Inject(forwardRef(() => MarketsService))
     private marketsService: MarketsService,
     @InjectDataSource() private dataSource: DataSource,
+    // Records whether this job is alive, for the admin Keeper page. Optional
+    // with a no-op default so direct construction in tests is unaffected.
+    @Optional()
+    private readonly jobHealth: JobHealthService = NOOP_JOB_HEALTH,
   ) {}
 
   /**
@@ -46,6 +55,10 @@ export class AutoResolveMarketsJob {
    */
   @Cron(CronExpression.EVERY_5_MINUTES)
   async autoResolveExpiredWindows(): Promise<void> {
+    return this.jobHealth.track("auto-resolve", () => this.runAutoResolve());
+  }
+
+  private async runAutoResolve(): Promise<void> {
     const now = new Date();
 
     // Find all RESOLVING markets whose window has closed

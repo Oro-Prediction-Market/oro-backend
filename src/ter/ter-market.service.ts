@@ -1,4 +1,8 @@
-import { Injectable, Logger } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  Optional,
+} from "@nestjs/common";
 import { Cron, Interval } from "@nestjs/schedule";
 import { InjectRepository, InjectDataSource } from "@nestjs/typeorm";
 import { DEFAULT_HOUSE_EDGE_PCT } from "../markets/fee.constants";
@@ -11,6 +15,7 @@ import {
 import { Outcome } from "../entities/outcome.entity";
 import { TerPriceService, TerPrice } from "./ter-price.service";
 import { ParimutuelEngine } from "../markets/parimutuel.engine";
+import { JobHealthService, NOOP_JOB_HEALTH } from "../job-health/job-health.service";
 
 @Injectable()
 export class TerMarketService {
@@ -29,6 +34,10 @@ export class TerMarketService {
     private readonly terPriceService: TerPriceService,
     private readonly engine: ParimutuelEngine,
     @InjectDataSource() private readonly dataSource: DataSource,
+    // Records whether this job is alive, for the admin Keeper page. Optional
+    // with a no-op default so direct construction in tests is unaffected.
+    @Optional()
+    private readonly jobHealth: JobHealthService = NOOP_JOB_HEALTH,
   ) {}
 
   /**
@@ -49,6 +58,11 @@ export class TerMarketService {
    */
   @Interval(3_000)
   async tick(): Promise<void> {
+    // This loop settles rounds, so "it stopped" means bettors not paid.
+    return this.jobHealth.track("ter-rounds", () => this.runTick());
+  }
+
+  private async runTick(): Promise<void> {
     await this.lockReferencePrices();
     await this.closeAndResolveMarkets();
     await this.ensureBettableMarket();

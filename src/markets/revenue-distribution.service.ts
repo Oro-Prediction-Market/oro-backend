@@ -1,4 +1,8 @@
-import { Injectable, Logger } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  Optional,
+} from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { In, IsNull, Not, Repository } from "typeorm";
 import { ConfigService } from "@nestjs/config";
@@ -12,6 +16,7 @@ import { Settlement } from "../entities/settlement.entity";
 import { Market } from "../entities/market.entity";
 import { DKGatewayService } from "../payment/services/dk-gateway/dk-gateway.service";
 import { RedisService } from "../redis/redis.service";
+import { JobHealthService, NOOP_JOB_HEALTH } from "../job-health/job-health.service";
 
 /**
  * Revenue Distribution Service
@@ -41,6 +46,10 @@ export class RevenueDistributionService {
     private configService: ConfigService,
     private dkGateway: DKGatewayService,
     private redisService: RedisService,
+    // Records whether this job is alive, for the admin Keeper page. Optional
+    // with a no-op default so direct construction in tests is unaffected.
+    @Optional()
+    private readonly jobHealth: JobHealthService = NOOP_JOB_HEALTH,
   ) {}
 
   private get publicAccountNo(): string {
@@ -233,7 +242,9 @@ export class RevenueDistributionService {
       .catch(() => null);
     if (!token) return; // another pod owns the tick, or Redis down (safe: skip)
     try {
-      await this.reconcileMissingDistributions();
+      await this.jobHealth.track("revenue-reconcile", () =>
+        this.reconcileMissingDistributions(),
+      );
     } catch (err) {
       this.logger.error(
         `[Revenue] Reconcile cron failed: ${(err as Error).message}`,
@@ -658,7 +669,9 @@ export class RevenueDistributionService {
       .catch(() => null);
     if (!token) return; // another pod owns the tick, or Redis down (safe: skip)
     try {
-      await this.resolvePendingTransfers();
+      await this.jobHealth.track("revenue-pending-transfers", () =>
+        this.resolvePendingTransfers(),
+      );
     } catch (err) {
       this.logger.error(
         `[Revenue] Pending-transfer resolver failed: ${(err as Error).message}`,

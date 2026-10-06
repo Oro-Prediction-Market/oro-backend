@@ -13,6 +13,7 @@ import { AdminModule } from "./admin/admin.module";
 import { TelegramModule } from "./telegram/telegram.module";
 import { PaymentModule } from "./payment/payment.module";
 import { RedisModule } from "./redis/redis.module";
+import { JobHealthModule } from "./job-health/job-health.module";
 import { KycModule } from "./kyc/kyc.module";
 import { JobsModule } from "./jobs/jobs.module";
 import { User } from "./entities/user.entity";
@@ -90,6 +91,7 @@ import { FriendlyThrottlerGuard } from "./shared/guards/friendly-throttler.guard
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]), // 120 req/min global default
     ScheduleModule.forRoot(),
     RedisModule,
+    JobHealthModule,
     KycModule,
     BullModule.forRootAsync({
       imports: [ConfigModule],
