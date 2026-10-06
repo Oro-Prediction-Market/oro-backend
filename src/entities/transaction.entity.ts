@@ -27,6 +27,12 @@ export enum TransactionType {
   DUEL_WAGER = "duel_wager",
   DUEL_PAYOUT = "duel_payout",
   SEASON_PRIZE = "season_prize",
+  /**
+   * An admin credit or correction — platform money into or out of a wallet
+   * with nothing external behind it. Signed. The reason is on the matching
+   * balance_adjustments row, not here: this row's note is shown to the user.
+   */
+  ADJUSTMENT = "adjustment",
 }
 
 // Back-compat aliases

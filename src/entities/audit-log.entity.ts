@@ -27,6 +27,7 @@ export enum AuditAction {
 
   // Balance / financial
   BALANCE_CREDIT = "balance.credit", // manual admin credit (future)
+  BALANCE_ADJUST = "balance.adjust", // admin credit or correction with a reason
   // Recomputed a wallet's stored running balances from its own rows. Display
   // figures only — no amount changes.
   LEDGER_REBUILD = "ledger.rebuild_running_balances",

@@ -36,6 +36,7 @@ import { OutcomeBook } from "./entities/outcome-book.entity";
 import { Position } from "./entities/position.entity";
 import { Payment } from "./entities/payment.entity";
 import { Transaction } from "./entities/transaction.entity";
+import { BalanceAdjustment } from "./entities/balance-adjustment.entity";
 import { Settlement } from "./entities/settlement.entity";
 import { Dispute } from "./entities/dispute.entity";
 import { DKGatewayAuthToken } from "./entities/dk-gateway-auth-token.entity";
@@ -146,6 +147,7 @@ import { FriendlyThrottlerGuard } from "./shared/guards/friendly-throttler.guard
           Position,
           Payment,
           Transaction,
+          BalanceAdjustment,
           Settlement,
           Dispute,
           DKGatewayAuthToken,

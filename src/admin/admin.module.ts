@@ -18,6 +18,7 @@ import { AdminController } from "./admin.controller";
 import { AdminInsightsController } from "./admin-insights.controller";
 import { AdminLedgerController } from "./admin-ledger.controller";
 import { AdminWithdrawalsController } from "./admin-withdrawals.controller";
+import { AdminAdjustmentsController } from "./admin-adjustments.controller";
 import { PaymentModule } from "../payment/payment.module";
 import { MarketsModule } from "../markets/markets.module";
 import { FixturesService } from "./fixtures.service";
@@ -70,6 +71,7 @@ import { InsightsModule } from "../insights/insights.module";
     AdminInsightsController,
     AdminLedgerController,
     AdminWithdrawalsController,
+    AdminAdjustmentsController,
   ],
   providers: [FixturesService, AuditService, AnnouncementsService],
   exports: [AuditService],

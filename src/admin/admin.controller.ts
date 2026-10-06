@@ -1860,6 +1860,7 @@ export class AdminController {
         -- label that does not exist is a hard error, not an empty result.
         -- (No backticks in here — this is inside a template literal.)
         COALESCE(SUM(CASE WHEN type = 'bet_payout' THEN amount ELSE 0 END), 0) AS "payouts",
+        COALESCE(SUM(CASE WHEN type = 'adjustment' THEN amount ELSE 0 END), 0) AS "adjustments",
         COALESCE(SUM(amount), 0)                                               AS "heldForUsers"
       FROM transactions
       WHERE currency = 'USDT'
@@ -1878,8 +1879,14 @@ export class AdminController {
     const n = (v: unknown) => Number(v) || 0;
 
     const expectedCustody = n(flow.deposits) - n(flow.withdrawals);
+    // An admin credit raises what users hold without anything arriving in
+    // custody: the house paid it out of its income. Net it off there, or every
+    // goodwill credit reads as an unexplained custody gap.
     const accountedFor =
-      n(flow.heldForUsers) + n(active.activePool) + n(settled.houseIncome);
+      n(flow.heldForUsers) +
+      n(active.activePool) +
+      n(settled.houseIncome) -
+      n(flow.adjustments);
 
     return {
       settled: {
@@ -2667,7 +2674,9 @@ export class AdminController {
       SELECT COALESCE(SUM(amount), 0)::float AS total
       FROM transactions
       WHERE currency = 'BTN'
-        AND type IN ('referral_bonus', 'streak_bonus', 'season_prize', 'referral_prize')
+        -- adjustment: admin credits and corrections, signed. Platform money
+        -- with no deposit behind it, exactly like the rewards beside it.
+        AND type IN ('referral_bonus', 'streak_bonus', 'season_prize', 'referral_prize', 'adjustment')
         AND "isBonus" = false
     `,
       )
