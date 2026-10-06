@@ -437,10 +437,12 @@ export class DKWithdrawalReconciler {
       );
     });
 
-    if (!finalized.outcome) return null;
-
+    // Cleared and announced even when another path finalised the row first,
+    // exactly as before the manual close existed.
     await this.redis.del(`oro:cache:balance:${userId}`);
     this.sse.emit(userId, "balance:updated", { paymentId: payment.id });
+
+    if (!finalized.outcome) return null;
 
     // Same messages as the instant path (confirmWithdrawal), so a withdrawal
     // notifies identically whether DK answered at once or was reconciled later.

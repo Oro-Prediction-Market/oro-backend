@@ -70,7 +70,7 @@ function makeReconciler(payment: any) {
     sse,
     userNotifRepo,
   );
-  return { reconciler, paymentRepo, dkGateway, em, userNotifRepo };
+  return { reconciler, paymentRepo, dkGateway, em, userNotifRepo, redis };
 }
 
 const reconcile = (r: any, p: any) => (r as any).reconcileOne(p);
@@ -407,6 +407,20 @@ describe("DKWithdrawalReconciler — manual close", () => {
     await expect(
       reconciler.resolveManually("pay-1", "not_sent", admin),
     ).rejects.toThrow(/not found/);
+  });
+
+  it("still clears the cached balance when another path finalised first, as before", async () => {
+    const payment = dk();
+    const { reconciler, em, redis } = makeReconciler(payment);
+    em.getRepository.mockImplementation(() => ({
+      createQueryBuilder: () => ({
+        setLock: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue({ ...payment, status: PaymentStatus.SUCCESS }),
+      }),
+    }));
+    await (reconciler as any).finalise(payment, "failed", { status: "FAILED" });
+    expect(redis.del).toHaveBeenCalledWith("oro:cache:balance:user-1");
   });
 
   it("reports a close that lost the race to another admin", async () => {
