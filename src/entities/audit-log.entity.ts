@@ -27,6 +27,9 @@ export enum AuditAction {
 
   // Balance / financial
   BALANCE_CREDIT = "balance.credit", // manual admin credit (future)
+  // Recomputed a wallet's stored running balances from its own rows. Display
+  // figures only — no amount changes.
+  LEDGER_REBUILD = "ledger.rebuild_running_balances",
   PAYMENT_VIEW = "payment.view",
   DUEL_VOID = "duel.void", // call a stuck duel off and refund both wagers
 

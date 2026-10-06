@@ -16,6 +16,7 @@ import { Transaction } from "../entities/transaction.entity";
 import { AuditLog } from "../entities/audit-log.entity";
 import { AdminController } from "./admin.controller";
 import { AdminInsightsController } from "./admin-insights.controller";
+import { AdminLedgerController } from "./admin-ledger.controller";
 import { MarketsModule } from "../markets/markets.module";
 import { FixturesService } from "./fixtures.service";
 import { AuditService } from "./audit.service";
@@ -60,7 +61,12 @@ import { InsightsModule } from "../insights/insights.module";
     // numbers rather than keeping its own copy of the query.
     InsightsModule,
   ],
-  controllers: [AdminController, AnnouncementsController, AdminInsightsController],
+  controllers: [
+    AdminController,
+    AnnouncementsController,
+    AdminInsightsController,
+    AdminLedgerController,
+  ],
   providers: [FixturesService, AuditService, AnnouncementsService],
   exports: [AuditService],
 })
