@@ -159,3 +159,43 @@ export async function assertSameCurrency(
   }
   return from;
 }
+
+/**
+ * Recompute one wallet's stored running balances from its own rows.
+ *
+ * `balanceBefore`/`balanceAfter` are what a user's history prints beside each
+ * line; the balance itself is always the SUM. Anything that inserts, deletes or
+ * backdates a ledger row leaves the running figures after it stale, and this
+ * puts them back. It never changes an amount, so it cannot move money.
+ *
+ * Callers hold the user's row lock. Returns how many rows changed.
+ */
+export async function rebuildRunningBalances(
+  em: EntityManager,
+  userId: string,
+  currency: string,
+): Promise<number> {
+  // For UPDATE, the postgres driver returns [rows, affectedCount] rather than
+  // the rows alone.
+  const [, affected]: [unknown[], number] = await em.query(
+    `WITH ordered AS (
+       SELECT t.id,
+              COALESCE(SUM(t.amount) OVER (
+                ORDER BY t."createdAt", t.id
+                ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS bb,
+              SUM(t.amount) OVER (
+                ORDER BY t."createdAt", t.id
+                ROWS UNBOUNDED PRECEDING) AS ba
+         FROM transactions t
+        WHERE t."userId" = $1 AND t.currency = $2
+     )
+     UPDATE transactions t
+        SET "balanceBefore" = o.bb, "balanceAfter" = o.ba
+       FROM ordered o
+      WHERE o.id = t.id
+        AND (t."balanceBefore" IS DISTINCT FROM o.bb
+             OR t."balanceAfter" IS DISTINCT FROM o.ba)`,
+    [userId, currency],
+  );
+  return Number(affected) || 0;
+}

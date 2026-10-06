@@ -19,6 +19,7 @@ import { JwtAuthGuard, AdminGuard } from "../auth/guards";
 import { AuditService } from "./audit.service";
 import { RedisService } from "../redis/redis.service";
 import { AuditAction } from "../entities/audit-log.entity";
+import { rebuildRunningBalances } from "../shared/utils/ledger.util";
 
 const CURRENCIES = new Set(["BTN", "USDT"]);
 
@@ -152,35 +153,14 @@ export class AdminLedgerController {
       );
       if (!user.length) throw new NotFoundException("User not found");
 
-      // For UPDATE, the postgres driver returns [rows, affectedCount] rather
-      // than the rows alone — reading `.length` would always say 2.
-      const [, rowsUpdated]: [unknown[], number] = await em.query(
-        `WITH ordered AS (
-           SELECT t.id,
-                  COALESCE(SUM(t.amount) OVER (
-                    ORDER BY t."createdAt", t.id
-                    ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS bb,
-                  SUM(t.amount) OVER (
-                    ORDER BY t."createdAt", t.id
-                    ROWS UNBOUNDED PRECEDING) AS ba
-             FROM transactions t
-            WHERE t."userId" = $1 AND t.currency = $2
-         )
-         UPDATE transactions t
-            SET "balanceBefore" = o.bb, "balanceAfter" = o.ba
-           FROM ordered o
-          WHERE o.id = t.id
-            AND (t."balanceBefore" IS DISTINCT FROM o.bb
-                 OR t."balanceAfter" IS DISTINCT FROM o.ba)`,
-        [userId, currency],
-      );
+      const rowsUpdated = await rebuildRunningBalances(em, userId, currency);
 
       const [{ balance }] = await em.query(
         `SELECT COALESCE(SUM(amount), 0) AS balance
            FROM transactions WHERE "userId" = $1 AND currency = $2`,
         [userId, currency],
       );
-      return { rowsUpdated: Number(rowsUpdated) || 0, balance: Number(balance) };
+      return { rowsUpdated, balance: Number(balance) };
     });
 
     // The balance itself did not change, but the history endpoint may be

@@ -24,6 +24,8 @@ export enum AuditAction {
   MARKET_AUTO_RESOLVED = "market.auto_resolved", // auto-settled by cron after clean window
   MARKET_DISPUTE = "market.dispute", // user raised an objection
   MARKET_CANCEL = "market.cancel",
+  // A settled market's result corrected after payout (see settlement_corrections).
+  MARKET_SETTLEMENT_CORRECTED = "market.settlement_corrected",
 
   // Balance / financial
   BALANCE_CREDIT = "balance.credit", // manual admin credit (future)
