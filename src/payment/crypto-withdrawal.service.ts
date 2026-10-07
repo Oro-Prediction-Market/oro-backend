@@ -350,6 +350,10 @@ export class CryptoWithdrawalService {
     if (existing) return existing;
 
     const created = await this.dataSource.transaction(async (em) => {
+      // A transaction alone does not stop two requests from both reading the
+      // same SUM and both passing the check. Locking the user row makes the
+      // second wait, then read the already-debited balance and fail.
+      await this.lockUser(em, userId);
       const balance = await ledgerBalance(em, userId, USDT);
       if (balance < amount) {
         throw new BadRequestException("Insufficient balance");
@@ -388,6 +392,17 @@ export class CryptoWithdrawalService {
       withdrawalId: created.id,
     });
     return created;
+  }
+
+  /** Serialises balance-check-then-write on one user's ledger. */
+  private async lockUser(em: EntityManager, userId: string): Promise<void> {
+    const locked = await em
+      .getRepository(User)
+      .createQueryBuilder("u")
+      .setLock("pessimistic_write")
+      .where("u.id = :id", { id: userId })
+      .getOne();
+    if (!locked) throw new NotFoundException("User not found");
   }
 
   private parseAmount(raw: string): number {
@@ -949,6 +964,9 @@ export class CryptoWithdrawalService {
       await this.dataSource.transaction(async (em) => {
         if (inSameTransaction) await inSameTransaction(em);
         const amount = Number(wd.amountUsdt);
+        // Same user-row lock as request(), so balanceBefore/After are not read
+        // from a SUM another debit is about to change.
+        await this.lockUser(em, wd.userId);
         const balance = await ledgerBalance(em, wd.userId, USDT);
         const credit = await em.save(
           Transaction,

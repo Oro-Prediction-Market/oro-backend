@@ -44,10 +44,21 @@ function build(opts: {
   const updates: { entity: string; where: any; patch: any }[] = [];
   const notifications: any[] = [];
 
+  // Order of user-row locks and balance reads, so tests can assert the lock
+  // is taken before the SUM is read.
+  const ledgerOps: string[] = [];
   const mkQb = () => ({
     select: jest.fn().mockReturnThis(),
     where: jest.fn().mockReturnThis(),
-    getRawOne: jest.fn().mockResolvedValue({ balance: opts.balance ?? "100" }),
+    setLock: jest.fn().mockReturnThis(),
+    getOne: jest.fn().mockImplementation(async () => {
+      ledgerOps.push("lock-user");
+      return { id: "u1" };
+    }),
+    getRawOne: jest.fn().mockImplementation(async () => {
+      ledgerOps.push("read-balance");
+      return { balance: opts.balance ?? "100" };
+    }),
   });
 
   const em: any = {
@@ -159,6 +170,7 @@ function build(opts: {
     client,
     withdrawalRepo,
     destRepo,
+    ledgerOps,
   };
 }
 
@@ -232,6 +244,18 @@ describe("request", () => {
     expect(Number(debit.amount)).toBe(-10);
     expect(debit.currency).toBe("USDT");
     expect(debit.type).toBe(TransactionType.WITHDRAWAL);
+  });
+
+  it("locks the user row before reading the balance it checks", async () => {
+    // Without the lock two simultaneous requests both read the same SUM and
+    // both pass the check.
+    const { service, ledgerOps } = build();
+    await service.request("u1", {
+      destinationId: "d1",
+      amountUsdt: "10",
+      clientRequestId: "r1",
+    });
+    expect(ledgerOps).toEqual(["lock-user", "read-balance"]);
   });
 
   it("refreshes the wallet balance after the debit", async () => {
@@ -350,6 +374,12 @@ describe("approve and reject", () => {
     const credit = saved.find((r) => r.entity === "Transaction")!.value;
     expect(Number(credit.amount)).toBe(10);
     expect(credit.currency).toBe("USDT");
+  });
+
+  it("locks the user row before reading the balance for the refund", async () => {
+    const { service, ledgerOps } = build({ withdrawal: pending });
+    await service.reject("admin-1", "w1", "Suspicious pattern");
+    expect(ledgerOps).toEqual(["lock-user", "read-balance"]);
   });
 
   it("refreshes the wallet balance after returning the money", async () => {
