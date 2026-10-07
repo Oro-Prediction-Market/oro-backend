@@ -413,7 +413,11 @@ export class ParimutuelEngine implements OnModuleInit {
         // cannot cover the bet on its own. realBalance is clamped to 0 to handle
         // stale/overcounted bonusBalance values that exceed the ledger balance.
         const realBalance = Math.max(0, balanceBefore - userBonusBalanceAtBet);
+        // Bonus credit and its withdrawable cap are ngultrum. Weighed against a
+        // USDT stake they would be the same numbers in a currency worth ~85x
+        // more, so only a BTN stake can be bonus-funded.
         const isBonusFunded =
+          bookCurrency === BTN_CURRENCY &&
           userBonusBalanceAtBet > 0 &&
           amount <= userBonusBalanceAtBet &&
           realBalance < amount;
@@ -1701,7 +1705,11 @@ export class ParimutuelEngine implements OnModuleInit {
           const bonusRealPayoutRemaining = Number(
             user?.bonusRealPayoutRemaining ?? 0,
           );
-          const betIsBonusFunded = bet.isBonusFunded ?? false;
+          // The cap below is ngultrum (default Nu 50). Placement never marks a
+          // USDT stake bonus-funded; this keeps a stray flag from turning the
+          // cap into 50 USDT.
+          const betIsBonusFunded =
+            (bet.isBonusFunded ?? false) && currency === BTN_CURRENCY;
 
           let withdrawablePayout = effectivePayout;
           if (betIsBonusFunded) {
@@ -1791,7 +1799,8 @@ export class ParimutuelEngine implements OnModuleInit {
           }
         } else {
           bet.status = PositionStatus.LOST;
-          if (bet.isBonusFunded) {
+          // Same guard as the win branch: bonusBalance is ngultrum.
+          if (bet.isBonusFunded && currency === BTN_CURRENCY) {
             const user = userMap.get(bet.userId);
             const currentBonusBalance =
               bonusUpdates.get(bet.userId)?.bonusBalance ??

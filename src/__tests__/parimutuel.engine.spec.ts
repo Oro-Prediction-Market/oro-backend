@@ -980,6 +980,7 @@ describe("placePosition — a stake enters its own book and no other", () => {
     usdtBookExists?: boolean;
     balance?: string;
     noDkAccount?: boolean;
+    bonusBalance?: number;
   }) {
     let usdtBookLookups = 0;
     const market: any = {
@@ -1000,7 +1001,7 @@ describe("placePosition — a stake enters its own book and no other", () => {
       dkAccountNumber: opts.noDkAccount ? null : "ACC001",
       phoneNumber: opts.noDkAccount ? null : "17000001",
       currency: opts.userCurrency,
-      bonusBalance: 0,
+      bonusBalance: opts.bonusBalance ?? 0,
     };
 
     const btnBook = {
@@ -1110,6 +1111,34 @@ describe("placePosition — a stake enters its own book and no other", () => {
     const written = saved.map((r) => r.entity);
     expect(written).not.toContain("Market");
     expect(written).not.toContain("Outcome");
+  });
+
+  // bonusBalance is ngultrum. Measured against a USDT stake it would tag the
+  // bet bonus-funded and, at settlement, cap its win at "50" — 50 USDT.
+  it("never marks a USDT stake bonus-funded, whatever bonusBalance says", async () => {
+    const { engine, saved } = buildStakeEngine({
+      userCurrency: "USDT",
+      balance: "10",
+      bonusBalance: 10,
+    });
+    await engine.placePosition("u1", "m1", "o1", 5);
+
+    const position = saved.find((r) => r.entity === "Position")?.value;
+    const ledger = saved.find((r) => r.entity === "Transaction")?.value;
+    expect(position.isBonusFunded).toBe(false);
+    expect(ledger.isBonus).toBe(false);
+  });
+
+  it("still marks a BTN stake bonus-funded when only bonus credit covers it", async () => {
+    const { engine, saved } = buildStakeEngine({
+      userCurrency: "BTN",
+      balance: "100",
+      bonusBalance: 100,
+    });
+    await engine.placePosition("u1", "m1", "o1", 50);
+
+    const position = saved.find((r) => r.entity === "Position")?.value;
+    expect(position.isBonusFunded).toBe(true);
   });
 
   it("stamps the book's currency on the position and the ledger row", async () => {

@@ -703,3 +703,71 @@ describe("ParimutuelEngine.cancelMarket — error propagation", () => {
     await expect(engine.cancelMarket("m1")).rejects.toThrow("DB connection lost");
   });
 });
+
+// ─── Bonus cap is ngultrum ────────────────────────────────────────────────────
+// bonusRealPayoutRemaining defaults to 50 and means Nu 50. Applied in a USDT
+// book the same number would let a bonus bet withdraw 50 USDT (~Nu 4,250).
+
+describe("ParimutuelEngine — bonus cap only applies in the BTN book", () => {
+  function settleBonusWinner(currency: "BTN" | "USDT") {
+    const positions = [
+      { ...mkPos("p1", "u1", "o-yes", 100), currency, isBonusFunded: true },
+      { ...mkPos("p2", "u2", "o-no", 100), currency },
+    ];
+    const em: any = makeEm(positions);
+    const baseFind = em.find;
+    em.find = jest.fn().mockImplementation((Entity: any, opts: any) => {
+      if (Entity?.name === "MarketBook") {
+        return Promise.resolve([
+          {
+            id: `book-${currency}`,
+            marketId: "m1",
+            currency,
+            totalPool: 200,
+            houseEdgePct: 5,
+            minStake: 1,
+            isEnabled: true,
+          },
+        ]);
+      }
+      if (Entity?.name === "User") {
+        return baseFind(Entity, opts).then((users: any[]) =>
+          users.map((u) => ({
+            ...u,
+            bonusBalance: "100",
+            bonusRealPayoutRemaining: "50",
+          })),
+        );
+      }
+      return baseFind(Entity, opts);
+    });
+    const { engine } = makeEngine(em);
+    return (engine as any)
+      .settleMarket(mkMarket(200), { ...YES, totalBetAmount: "100" }, new Map())
+      .then(() => ({
+        em,
+        payout: em._saved.find(
+          ([, d]: any) => d?.type === TransactionType.POSITION_PAYOUT,
+        )?.[1],
+      }));
+  }
+
+  it("caps a bonus-funded BTN win at Nu 50", async () => {
+    const { payout } = await settleBonusWinner("BTN");
+    expect(payout.currency).toBe("BTN");
+    expect(Number(payout.amount)).toBe(50);
+  });
+
+  it("pays a USDT win in full, with no ngultrum cap and no bonus bookkeeping", async () => {
+    const { em, payout } = await settleBonusWinner("USDT");
+    expect(payout.currency).toBe("USDT");
+    expect(Number(payout.amount)).toBeCloseTo(190, 1);
+    // bonusBalance / bonusRealPayoutRemaining are ngultrum: a USDT book must
+    // not move them.
+    const bonusWrites = em.update.mock.calls.filter(
+      ([, , patch]: any[]) =>
+        patch && ("bonusBalance" in patch || "bonusRealPayoutRemaining" in patch),
+    );
+    expect(bonusWrites).toHaveLength(0);
+  });
+});
