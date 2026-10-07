@@ -5,6 +5,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { User } from "../entities/user.entity";
 import { RedisService } from "../redis/redis.service";
+import { issuedBeforeRevocation } from "./session-revocation";
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
@@ -28,6 +29,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     sub: string;
     isAdmin?: boolean;
     jti?: string;
+    iat?: number;
     exp?: number;
     preKyc?: boolean;
   }) {
@@ -53,6 +55,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     // Always re-check DB so revoked admin rights take effect immediately
     const user = await this.userRepo.findOneBy({ id: payload.sub });
     if (!user) throw new UnauthorizedException("Session invalid - user not found");
+    if (issuedBeforeRevocation(payload.iat, user.sessionsRevokedAt)) {
+      throw new UnauthorizedException("Session has been revoked");
+    }
 
     return {
       userId: user.id,

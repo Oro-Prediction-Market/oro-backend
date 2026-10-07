@@ -398,11 +398,22 @@ export class AuthController {
     return { ok: true };
   }
 
-  /**
-   * Returns whether the account for a given CID has a PWA password set.
-   * Used by the PWA login form to decide whether to show the password field.
-   * Does NOT leak any user data — only returns a boolean.
-   */
+  @Post("logout-all")
+  @HttpCode(200)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiOperation({ summary: "Revoke every session for the current user" })
+  async logoutAll(
+    @Request() req: any,
+    @Response({ passthrough: true }) res: ExpressResponse,
+  ) {
+    const { userId } = req.user as { userId: string };
+    await this.authService.revokeAllSessions(userId, userId);
+    res.clearCookie("oro_auth", { path: "/" });
+    return { ok: true };
+  }
+
   @Get("pwa-status")
   @Public()
   @Throttle({ default: { limit: 5, ttl: 60_000 } })

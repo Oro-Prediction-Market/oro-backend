@@ -127,6 +127,14 @@ export class User {
   telegramLinkedAt: Date | null;
 
   /**
+   * "Sign out everywhere". Every token issued at or before this moment is
+   * rejected, wherever it is held. See issuedBeforeRevocation().
+   */
+  @Exclude()
+  @Column({ type: "timestamptz", nullable: true })
+  sessionsRevokedAt: Date | null;
+
+  /**
    * Set when a user verifies ownership of their DK Bank account via account
    * number (fallback path for users whose Telegram phone differs from their
    * DK Bank registered phone — e.g. Bhutanese users living abroad).

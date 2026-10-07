@@ -13,6 +13,10 @@ import { SseService } from "./sse.service";
 import { JwtService } from "@nestjs/jwt";
 import { RedisService } from "../redis/redis.service";
 import { JwtAuthGuard } from "../auth/guards";
+import { InjectRepository } from "@nestjs/typeorm";
+import { Repository } from "typeorm";
+import { User } from "../entities/user.entity";
+import { issuedBeforeRevocation } from "../auth/session-revocation";
 
 interface MessageEvent {
   data: string | object;
@@ -30,6 +34,8 @@ export class SseController {
     private readonly sseService: SseService,
     private readonly jwtService: JwtService,
     private readonly redis: RedisService,
+    @InjectRepository(User)
+    private readonly userRepo: Repository<User>,
   ) {}
 
   /**
@@ -95,6 +101,10 @@ export class SseController {
         if (revoked) throw new UnauthorizedException("Token has been revoked");
       }
       userId = payload.sub || payload.userId;
+      const user = userId ? await this.userRepo.findOneBy({ id: userId }) : null;
+      if (!user || issuedBeforeRevocation(payload.iat, user.sessionsRevokedAt)) {
+        throw new UnauthorizedException("Token has been revoked");
+      }
     } else {
       throw new UnauthorizedException("Missing ticket");
     }

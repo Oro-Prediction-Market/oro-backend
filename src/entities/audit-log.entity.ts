@@ -77,6 +77,7 @@ export enum AuditAction {
   AUTH_FAIL_PWA = "auth.fail.pwa", // wrong PWA password
   AUTH_FAIL_TELEGRAM = "auth.fail.telegram", // tampered initData
   AUTH_TOKEN_REVOKED = "auth.token_revoked",
+  AUTH_SESSIONS_REVOKED = "auth.sessions_revoked", // sign out everywhere
 
   // Batch payment
   BATCH_PAYMENT_LOGIN = "batch_payment.login",

@@ -6,6 +6,7 @@ import {
   Logger,
   UnauthorizedException,
   BadRequestException,
+  NotFoundException,
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { InjectRepository } from "@nestjs/typeorm";
@@ -22,6 +23,7 @@ import { AuditService } from "../admin/audit.service";
 import { AuditAction, AuditLog, RoleType } from "../entities/audit-log.entity";
 import { RedisService } from "../redis/redis.service";
 import { SmsService } from "../shared/services/sms.service";
+import { issuedBeforeRevocation } from "./session-revocation";
 import {
   assertSameCurrency,
   ledgerBalanceForAccount,
@@ -1111,7 +1113,7 @@ export class AuthService {
   }
 
   async getUserFromToken(token: string) {
-    let payload: { sub?: string; jti?: string };
+    let payload: { sub?: string; jti?: string; iat?: number };
     try {
       payload = this.jwtService.verify(token) as typeof payload;
     } catch {
@@ -1126,7 +1128,36 @@ export class AuthService {
 
     const user = await this.userRepo.findOneBy({ id: payload.sub });
     if (!user) throw new UnauthorizedException("User not found");
+    // Checked here as well as in JwtStrategy: this is the refresh path, and a
+    // stolen cookie that got past it would be re-minted with a fresh iat.
+    if (issuedBeforeRevocation(payload.iat, user.sessionsRevokedAt)) {
+      throw new UnauthorizedException("Session has been revoked");
+    }
     return stripSensitiveFields(user);
+  }
+
+  /**
+   * Sign a user out of every session, everywhere — including the one making
+   * the request. `actorId` is the user themselves, or the admin acting for
+   * them.
+   */
+  async revokeAllSessions(userId: string, actorId: string): Promise<void> {
+    const result = await this.userRepo.update(
+      { id: userId },
+      { sessionsRevokedAt: new Date() },
+    );
+    if (!result.affected) throw new NotFoundException("User not found");
+
+    await this.auditLogRepo.save(
+      this.auditLogRepo.create({
+        adminId: actorId,
+        username: "system",
+        roleType: actorId === userId ? RoleType.USER : RoleType.ADMIN,
+        action: AuditAction.AUTH_SESSIONS_REVOKED,
+        entityType: "user",
+        entityId: userId,
+      }),
+    );
   }
 
   async revokeToken(jti: string, exp: number, userId: string): Promise<void> {

@@ -1959,6 +1959,33 @@ export class AdminController {
     return { userId, isAdmin: dto.isAdmin };
   }
 
+  /** Sign a user out everywhere — e.g. they report a stolen session. */
+  @Post("users/:userId/revoke-sessions")
+  @HttpCode(200)
+  @ApiOperation({ summary: "Revoke every session for a user" })
+  async revokeUserSessions(
+    @Param("userId") userId: string,
+    @Request() req: any,
+  ) {
+    const user = await this.userRepo.findOneBy({ id: userId });
+    if (!user) throw new NotFoundException("User not found");
+
+    const revokedAt = new Date();
+    await this.userRepo.update(userId, { sessionsRevokedAt: revokedAt });
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action: AuditAction.AUTH_SESSIONS_REVOKED,
+      entityType: "user",
+      entityId: userId,
+      before: { sessionsRevokedAt: user.sessionsRevokedAt },
+      after: { sessionsRevokedAt: revokedAt },
+      ipAddress: req.ip,
+    });
+
+    return { userId, sessionsRevokedAt: revokedAt };
+  }
+
   @Post("users/:userId/credit")
   @HttpCode(200)
   @ApiOperation({
