@@ -53,6 +53,12 @@ jobs:
             warn "GOOGLE_CLIENT_SECRET — GOOGLE_CLIENT_ID is set but the secret is not, so the popup code flow (POST /auth/google) will 503"
           fi
           [ -n '${{ vars.MINIO_ENDPOINT }}${{ secrets.MINIO_ENDPOINT }}' ] || warn "MINIO_ENDPOINT (document storage)"
+          # Without the service login the backend falls back to the static
+          # BHUTANAPP_NOTIFICATION_AUTH_TOKEN, which expires an hour after it was
+          # issued — after that every BhutanApp push (withdrawal OTPs included) 401s.
+          if [ -z '${{ secrets.BHUTANAPP_SERVICE_USERNAME }}' ] || [ -z '${{ secrets.BHUTANAPP_SERVICE_PASSWORD }}' ]; then
+            warn "BHUTANAPP_SERVICE_USERNAME / BHUTANAPP_SERVICE_PASSWORD — BhutanApp push falls back to the static token, which expires within an hour"
+          fi
           if [ '${{ vars.USDT_ENABLED }}${{ secrets.USDT_ENABLED }}' = 'true' ]; then
             [ -n '${{ secrets.TWENTY_ONE_PAY_API }}' ] \
               || warn "TWENTY_ONE_PAY_API — USDT is enabled but there is no API token, so every call to 21 Pay will fail"
@@ -125,6 +131,8 @@ jobs:
             --from-literal=DK_USERNAME='${{ secrets.DK_USERNAME }}' \
             --from-literal=BHUTANAPP_JWT_PUBLIC_KEY='${{ secrets.BHUTANAPP_JWT_PUBLIC_KEY }}' \
             --from-literal=BHUTANAPP_NOTIFICATION_AUTH_TOKEN='${{ secrets.BHUTANAPP_NOTIFICATION_AUTH_TOKEN }}' \
+            --from-literal=BHUTANAPP_SERVICE_USERNAME='${{ secrets.BHUTANAPP_SERVICE_USERNAME }}' \
+            --from-literal=BHUTANAPP_SERVICE_PASSWORD='${{ secrets.BHUTANAPP_SERVICE_PASSWORD }}' \
             --from-literal=BHUTANAPP_NOTIFICATION_SERVICE_URL='${{ secrets.BHUTANAPP_NOTIFICATION_SERVICE_URL }}' \
             --from-literal=EMAIL_SMTP_PASSWORD='${{ secrets.EMAIL_SMTP_PASSWORD }}' \
             --from-literal=SMS_PASSWORD='${{ secrets.SMS_PASSWORD }}' \
