@@ -106,17 +106,28 @@ export class MarketsController {
       "majority of the table and are discarded by the feeds anyway. Use it " +
       "for any screen that only renders running markets.",
   })
+  @ApiQuery({
+    name: "groupId",
+    required: false,
+    description:
+      "Only the markets of this grouped event, finished candidates included. " +
+      "Takes precedence over q and scope.",
+  })
   async findAll(
     @Query("q") q?: string,
     @Query("scope") scope?: string,
     @Query("images") images?: string,
+    @Query("groupId") groupId?: string,
   ) {
     // Anything other than the exact string keeps the historic behaviour, so a
     // typo or an old client can never silently lose finished markets.
-    const markets = await this.marketsService.findAll(
-      q,
-      scope === "live" ? "live" : "all",
-    );
+    const markets =
+      groupId !== undefined
+        ? await this.marketsService.findGroupListing(groupId)
+        : await this.marketsService.findAll(
+            q,
+            scope === "live" ? "live" : "all",
+          );
     // Opt-in, so a client deployed before this one keeps receiving the inlined
     // images it knows how to render. A client that asks for references knows
     // to resolve them against its own API base.

@@ -57,6 +57,9 @@ export { OpenPositionDto } from "./dto/open-position.dto";
 export { SubmitDisputeDto } from "./dto/submit-dispute.dto";
 export { ReopenMarketDto } from "./dto/reopen-market.dto";
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 @Injectable()
 export class MarketsService implements OnModuleInit {
   constructor(
@@ -493,6 +496,46 @@ export class MarketsService implements OnModuleInit {
     await Promise.all(markets.map((m) => this.attachSignal(m)));
     await this.attachBooksToMany(markets);
     await this.redis.setJsonEx(cacheKey, 30, markets);
+    return markets;
+  }
+
+  /**
+   * One grouped event's markets, hydrated exactly as {@link findAll} does.
+   *
+   * The group page used to take the whole unfiltered list and keep the few
+   * rows with its groupId — megabytes for five candidates. It cannot use the
+   * live scope instead: a candidate settled ahead of the rest still has to be
+   * shown. Same statuses as the "all" scope, so the page sees exactly what it
+   * saw before.
+   *
+   * Not cached, like {@link findManyByIds}: the page reloads right after a
+   * bet, and a per-group key would need invalidating everywhere the list keys
+   * are, or serve the pre-bet odds for up to 30s.
+   */
+  async findGroupListing(groupId: string): Promise<Market[]> {
+    // The column is uuid; anything else would be a Postgres cast error (500).
+    if (!UUID_RE.test(groupId)) return [];
+
+    const markets = await this.marketRepo
+      .createQueryBuilder("market")
+      .leftJoinAndSelect("market.outcomes", "outcome")
+      .where("market.groupId = :groupId", { groupId })
+      .andWhere("market.status IN (:...statuses)", {
+        statuses: [
+          MarketStatus.UPCOMING,
+          MarketStatus.OPEN,
+          MarketStatus.CLOSED,
+          MarketStatus.RESOLVING,
+          MarketStatus.RESOLVED,
+          MarketStatus.SETTLED,
+        ],
+      })
+      .orderBy("market.createdAt", "DESC")
+      .addOrderBy("outcome.sortOrder", "ASC")
+      .getMany();
+
+    await Promise.all(markets.map((m) => this.attachSignal(m)));
+    await this.attachBooksToMany(markets);
     return markets;
   }
 

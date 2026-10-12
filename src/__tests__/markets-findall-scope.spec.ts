@@ -114,3 +114,61 @@ describe("MarketsService.findAll — scope", () => {
     expect(live.captured.statuses).not.toContain(MarketStatus.SETTLED);
   });
 });
+
+describe("MarketsService.findGroupListing", () => {
+  const GROUP = "fc7a2463-2fe7-47e8-b00c-3b53a83744a2";
+
+  function build() {
+    const conditions: Record<string, any>[] = [];
+    const qb: any = {
+      leftJoinAndSelect: jest.fn().mockReturnThis(),
+      where: jest.fn((_sql: string, p: any) => (conditions.push(p), qb)),
+      andWhere: jest.fn((_sql: string, p: any) => (conditions.push(p), qb)),
+      orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue([]),
+    };
+    const repo = { createQueryBuilder: jest.fn().mockReturnValue(qb) };
+    const redis = { getJson: jest.fn(), setJsonEx: jest.fn(), del: jest.fn() };
+    const svc = new MarketsService(
+      repo as any,
+      null as any,
+      null as any,
+      null as any,
+      { find: jest.fn().mockResolvedValue([]) } as any,
+      { find: jest.fn().mockResolvedValue([]) } as any,
+      null as any,
+      new LMSRService(),
+      null as any,
+      redis as any,
+      {} as any,
+      { postToChannel: jest.fn() } as any,
+    );
+    return { svc, conditions, repo, redis };
+  }
+
+  it("keeps settled candidates — the group page shows them", async () => {
+    const { svc, conditions } = build();
+    await svc.findGroupListing(GROUP);
+
+    expect(conditions).toContainEqual({ groupId: GROUP });
+    const statuses = conditions.find((c) => c.statuses)?.statuses;
+    expect(statuses).toContain(MarketStatus.SETTLED);
+    expect(statuses).toContain(MarketStatus.RESOLVED);
+    expect(statuses).not.toContain(MarketStatus.CANCELLED);
+  });
+
+  it("answers a malformed id with nothing instead of a uuid cast error", async () => {
+    const { svc, repo } = build();
+    await expect(svc.findGroupListing("1' OR 1=1")).resolves.toEqual([]);
+    await expect(svc.findGroupListing("")).resolves.toEqual([]);
+    expect(repo.createQueryBuilder).not.toHaveBeenCalled();
+  });
+
+  it("is not cached, so the page sees its own bet straight away", async () => {
+    const { svc, redis } = build();
+    await svc.findGroupListing(GROUP);
+    expect(redis.getJson).not.toHaveBeenCalled();
+    expect(redis.setJsonEx).not.toHaveBeenCalled();
+  });
+});
