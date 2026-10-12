@@ -48,7 +48,7 @@ export class BhutanAppNotificationService {
     const payload = JSON.stringify({
       target: "specific",
       userIds: [externalUserId],
-      categoryName: "system_critical_notifications",
+      categoryName: "partner_games_notifications",
       title,
       body,
       priorityLevel: 1,
