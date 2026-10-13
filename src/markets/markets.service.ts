@@ -33,6 +33,10 @@ import { User } from "../entities/user.entity";
 import { MarketBook } from "../entities/market-book.entity";
 import { OutcomeBook } from "../entities/outcome-book.entity";
 import {
+  envLimit,
+  mapWithConcurrency,
+} from "../shared/utils/concurrency.util";
+import {
   btnMinStakeFor,
   usdtMinStake,
   minDisputeBondFor,
@@ -492,8 +496,8 @@ export class MarketsService implements OnModuleInit {
     }
 
     const markets = await qb.getMany();
-    // Attach reputation signal to each market's outcomes (fire in parallel)
-    await Promise.all(markets.map((m) => this.attachSignal(m)));
+    // Attach reputation signal to each market's outcomes.
+    await this.attachSignals(markets);
     await this.attachBooksToMany(markets);
     await this.redis.setJsonEx(cacheKey, 30, markets);
     return markets;
@@ -534,7 +538,7 @@ export class MarketsService implements OnModuleInit {
       .addOrderBy("outcome.sortOrder", "ASC")
       .getMany();
 
-    await Promise.all(markets.map((m) => this.attachSignal(m)));
+    await this.attachSignals(markets);
     await this.attachBooksToMany(markets);
     return markets;
   }
@@ -562,7 +566,7 @@ export class MarketsService implements OnModuleInit {
       .addOrderBy("outcome.sortOrder", "ASC")
       .getMany();
 
-    await Promise.all(markets.map((m) => this.attachSignal(m)));
+    await this.attachSignals(markets);
     await this.attachBooksToMany(markets);
     return markets;
   }
@@ -785,6 +789,20 @@ export class MarketsService implements OnModuleInit {
    * signalMeta (composite confidence dimensions) to the market itself.
    * Signal is null when there are fewer than 3 unique bettors.
    */
+  /**
+   * attachSignal for many markets, a few at a time. Each one runs three
+   * position-scanning queries; firing them all at once (thousands on the full
+   * list) queued them on the pod's 15-connection pool ahead of bets and
+   * payments. SIGNAL_CONCURRENCY tunes the cap.
+   */
+  private async attachSignals(markets: Market[]): Promise<void> {
+    await mapWithConcurrency(
+      markets,
+      envLimit(process.env.SIGNAL_CONCURRENCY, 4),
+      (m) => this.attachSignal(m),
+    );
+  }
+
   private async attachSignal(market: Market): Promise<void> {
     if (!market.outcomes?.length || Number(market.totalPool) === 0) return;
     const ids = market.outcomes.map((o) => o.id);
