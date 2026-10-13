@@ -150,6 +150,9 @@ jobs:
             --from-literal=MINIO_SECRET_KEY="$MINIO_SECRET_KEY" \
             --from-literal=MINIO_KYC_BUCKET='${{ vars.MINIO_KYC_BUCKET || 'oro-kyc' }}' \
             --from-literal=MINIO_USE_SSL='${{ vars.MINIO_USE_SSL || 'false' }}' \
+            --from-literal=PERF_TIMING='${{ vars.PERF_TIMING || 'on' }}' \
+            --from-literal=SLOW_REQUEST_MS='${{ vars.SLOW_REQUEST_MS || '2000' }}' \
+            --from-literal=DB_SLOW_QUERY_MS='${{ vars.DB_SLOW_QUERY_MS || '500' }}' \
             | kubectl apply -f -
 
       - name: Roll deployment

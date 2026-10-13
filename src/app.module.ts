@@ -16,6 +16,8 @@ import { RedisModule } from "./redis/redis.module";
 import { JobHealthModule } from "./job-health/job-health.module";
 import { KycModule } from "./kyc/kyc.module";
 import { JobsModule } from "./jobs/jobs.module";
+import { ObservabilityModule } from "./observability/observability.module";
+import { SlowQueryLogger } from "./observability/slow-query.logger";
 import { User } from "./entities/user.entity";
 import { AuthMethod } from "./entities/auth-method.entity";
 import { Market } from "./entities/market.entity";
@@ -188,6 +190,11 @@ import { FriendlyThrottlerGuard } from "./shared/guards/friendly-throttler.guard
         migrations: [__dirname + "/migrations/*{.ts,.js}"],
         migrationsRun: config.get("DB_MIGRATIONS_RUN", "false") === "true",
         logging: false,
+        // Slow and timed-out queries only, SQL without parameters — see
+        // SlowQueryLogger. 0 turns it off.
+        maxQueryExecutionTime:
+          Number(config.get("DB_SLOW_QUERY_MS", 500)) || undefined,
+        logger: new SlowQueryLogger(),
         extra: {
           options: `-c timezone=${config.get("DB_TIMEZONE") || process.env.TZ || "Asia/Thimphu"}`,
           // App connects DIRECTLY to the CNPG primary (no pooler in path).
@@ -227,6 +234,7 @@ import { FriendlyThrottlerGuard } from "./shared/guards/friendly-throttler.guard
     InsightsModule,
     FreeCallsModule,
     SavedMarketsModule,
+    ObservabilityModule,
   ],
   // Subclassed only to answer a 429 in a sentence a user can act on; the
   // limiting behaviour is the stock guard's. See friendly-throttler.guard.ts.
