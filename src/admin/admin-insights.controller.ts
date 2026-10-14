@@ -95,10 +95,17 @@ export class AdminInsightsController {
       status: string;
       winnersSnapshot: Array<Record<string, any>> | null;
     }> = await this.dataSource.query(
+      // Monthly seasons only. Until May 2026 seasons were weekly, and their
+      // rows hold an ISO week in "weekNumber" — read as a month, week 20 of
+      // 2026 rendered as "August 2027". Their prizes were free credit under
+      // a different note ("Week 18/2026 season prize — rank #1"), so this
+      // view could not match them either. Told apart by length (7 days
+      // against 28-31), not by the reused number.
       `SELECT id, "weekNumber" AS month, year, "startsAt", "endsAt", status,
               "winnersSnapshot"
          FROM seasons
-        ORDER BY year DESC, "weekNumber" DESC
+        WHERE "endsAt" - "startsAt" >= INTERVAL '20 days'
+        ORDER BY "startsAt" DESC
         LIMIT $1`,
       [take],
     );

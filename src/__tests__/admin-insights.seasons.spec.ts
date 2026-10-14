@@ -131,4 +131,15 @@ describe("AdminInsightsController.seasons", () => {
       expect((await ctrl.seasons()).seasons[0].podium[0].notified).toBe(false);
     });
   });
+
+  it("leaves out the weekly seasons from before May 2026 and orders by start date", async () => {
+    // Their "weekNumber" is an ISO week: read as a month, week 20 of 2026
+    // showed as "August 2027". Filtered by length in SQL, not by number.
+    const { ctrl, query } = build([september()], []);
+    await ctrl.seasons();
+    const sql: string = query.mock.calls[0][0];
+    expect(sql).toMatch(/"endsAt" - "startsAt" >= INTERVAL '20 days'/);
+    expect(sql).toMatch(/ORDER BY "startsAt" DESC/);
+    expect(sql).not.toMatch(/ORDER BY year DESC/);
+  });
 });
