@@ -844,6 +844,19 @@ export class MarketsService implements OnModuleInit {
     (market as any).signalMeta = signalMeta;
   }
 
+  /**
+   * Pin or unpin a market, touching that one column only.
+   *
+   * Not through {@link update}: that starts from findOne's cached copy (up to
+   * 30s old) and saves the whole row back, outcomes included — so a pin on a
+   * market that is taking bets could write stale pool totals over live ones.
+   */
+  async setFeatured(id: string, isFeatured: boolean): Promise<void> {
+    const result = await this.marketRepo.update({ id }, { isFeatured });
+    if (!result.affected) throw new NotFoundException("Market not found");
+    await this.invalidateMarketCache(id);
+  }
+
   async update(id: string, dto: UpdateMarketDto): Promise<Market> {
     const market = await this.findOne(id);
 

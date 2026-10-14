@@ -967,6 +967,34 @@ export class AdminController {
     return result;
   }
 
+  @Patch("markets/:id/featured")
+  @ApiOperation({
+    summary:
+      "Pin or unpin a market (hub featured slot, or top of the app feed for markets with no hub)",
+  })
+  async setMarketFeatured(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() body: { isFeatured?: unknown },
+    @Request() req: any,
+  ) {
+    if (typeof body?.isFeatured !== "boolean") {
+      throw new BadRequestException("isFeatured must be true or false");
+    }
+    await this.marketsService.setFeatured(id, body.isFeatured);
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action: AuditAction.MARKET_TRANSITION, // closest action; no MARKET_UPDATE exists
+      entityType: "market",
+      entityId: id,
+      before: { isFeatured: !body.isFeatured },
+      after: { isFeatured: body.isFeatured },
+      meta: { fields: ["isFeatured"] },
+      ipAddress: req.ip,
+    });
+    return { id, isFeatured: body.isFeatured };
+  }
+
   @Post("markets/:id/outcomes")
   @ApiOperation({
     summary: "Add a new outcome to a market (allowed while Upcoming or Open)",
