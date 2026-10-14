@@ -70,6 +70,11 @@ import {
   UnlStatKey,
   buildUnlStatMarketDto,
 } from "../unl/unl-stat-markets";
+import {
+  UNL_SEASON_SUBCATEGORY,
+  buildUnlSeasonMarketDto,
+  leagueATeams,
+} from "../unl/unl-season-market";
 import { DistributionStatus } from "../entities/revenue-distribution.entity";
 import { TIER_ORDER, TIER_LABELS } from "../markets/tiers";
 import { FixturesService } from "./fixtures.service";
@@ -3854,6 +3859,101 @@ export class AdminController {
         title: market.title,
         subcategory: meta.subcategory,
         outcomes: players.length,
+        closesAt: dto.closesAt,
+      },
+      ipAddress: req.ip,
+    });
+    return market;
+  }
+
+  // The season market — "who wins it?" — built from League A of the draw, so
+  // nobody types sixteen nations and their flags into the generic form.
+
+  /** The active season market, if there is one. */
+  private findActiveUnlSeasonMarket() {
+    return this.dataSource.getRepository(Market).findOne({
+      where: {
+        subcategory: UNL_SEASON_SUBCATEGORY,
+        status: In([
+          MarketStatus.UPCOMING,
+          MarketStatus.OPEN,
+          MarketStatus.CLOSED,
+          MarketStatus.RESOLVING,
+        ]),
+      },
+      select: ["id", "title", "status", "closesAt"],
+    });
+  }
+
+  @Get("unl/season-market/preview")
+  @ApiOperation({
+    summary: "The nations a Nations League season market would list",
+  })
+  async previewUnlSeasonMarket() {
+    const season = await this.unlService.currentSeason();
+    const teams = leagueATeams(await this.unlService.listTeams()).map((t) => ({
+      groupKey: t.groupKey,
+      name: t.name,
+      flagUrl: t.flagUrl,
+    }));
+    return {
+      season,
+      teams,
+      missingFlags: teams.filter((t) => !t.flagUrl).map((t) => t.name),
+      existing: await this.findActiveUnlSeasonMarket(),
+    };
+  }
+
+  @Post("unl/season-market")
+  @ApiOperation({
+    summary: "Create the Nations League season market from League A",
+  })
+  async createUnlSeasonMarket(
+    @Body() body: { closesAt?: string },
+    @Request() req: any,
+  ) {
+    const closesMs = Date.parse(body?.closesAt ?? "");
+    if (!Number.isFinite(closesMs)) {
+      throw new BadRequestException("closesAt is required");
+    }
+    if (closesMs <= Date.now()) {
+      throw new BadRequestException("closesAt must be in the future");
+    }
+
+    const dup = await this.findActiveUnlSeasonMarket();
+    if (dup) {
+      throw new BadRequestException(
+        `An active Nations League season market already exists (id ${dup.id}). Resolve or cancel it first.`,
+      );
+    }
+
+    const season = await this.unlService.currentSeason();
+    const teams = leagueATeams(
+      season ? await this.unlService.listTeams(season) : [],
+    );
+    if (!season || teams.length < 2) {
+      throw new BadRequestException(
+        `League A has ${teams.length} nation(s) in the draw. ` +
+          `Paste the draw on this page first, then create the market.`,
+      );
+    }
+
+    const dto = buildUnlSeasonMarketDto(
+      season,
+      teams,
+      new Date(closesMs).toISOString(),
+    );
+    const market = await this.marketsService.create(dto);
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action: AuditAction.MARKET_CREATE,
+      entityType: "market",
+      entityId: market.id,
+      after: {
+        title: market.title,
+        subcategory: UNL_SEASON_SUBCATEGORY,
+        outcomes: teams.length,
         closesAt: dto.closesAt,
       },
       ipAddress: req.ip,
