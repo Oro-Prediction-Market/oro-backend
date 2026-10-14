@@ -3,15 +3,28 @@ import { CreateMarketDto } from "../markets/dto/create-market.dto";
 /**
  * The Nations League season market: "who wins it?".
  *
- * Built from the draw already in `unl_teams`, so an admin does not type every
- * nation and flag into the generic form. Only League A is listed — its four
- * group winners play the Finals, so no other nation can lift the trophy, and
- * listing them would put 38 options on the market that cannot win.
+ * Built from the draw already in `unl_teams`, so an admin ticks nations
+ * instead of typing each one and its flag into the generic form. The admin
+ * chooses which nations; the builder lists exactly those.
  */
 export const UNL_SEASON_SUBCATEGORY = "unl-season";
 
-/** League A's groups. Must match `TIERS` in the apps' Nations League hub. */
-export const LEAGUE_A_GROUPS = ["A", "B", "C", "D"];
+/** League per group. Must match `TIERS` in the apps' Nations League hub. */
+const LEAGUE_GROUPS: Record<string, string[]> = {
+  A: ["A", "B", "C", "D"],
+  B: ["E", "F", "G", "H"],
+  C: ["I", "J", "K", "L"],
+  D: ["M", "N"],
+};
+
+/** "A".."D" for a group letter, or null for one outside the four leagues. */
+export function leagueOf(groupKey: string): string | null {
+  const g = (groupKey ?? "").toUpperCase();
+  for (const [league, groups] of Object.entries(LEAGUE_GROUPS)) {
+    if (groups.includes(g)) return league;
+  }
+  return null;
+}
 
 export interface UnlSeasonTeam {
   groupKey: string;
@@ -19,19 +32,12 @@ export interface UnlSeasonTeam {
   flagUrl: string | null;
 }
 
-/** League A nations, in the order `listTeams` returns them (group, then draw). */
-export function leagueATeams<T extends UnlSeasonTeam>(teams: T[]): T[] {
-  return teams.filter((t) =>
-    LEAGUE_A_GROUPS.includes((t.groupKey ?? "").toUpperCase()),
-  );
-}
-
 /** "2026-27" → "2026/27". Anything else is used as it is. */
 export function seasonLabel(season: string): string {
   return season.replace(/^(\d{4})-(\d{2})$/, "$1/$2");
 }
 
-/** Build the CreateMarketDto for the season market from League A's teams. */
+/** Build the CreateMarketDto for the season market from the chosen nations. */
 export function buildUnlSeasonMarketDto(
   season: string,
   teams: UnlSeasonTeam[],
@@ -52,9 +58,6 @@ export function buildUnlSeasonMarketDto(
     // same externalSource keeps it out of the auto-settlers without a new rule.
     externalSource: "unl-manual",
     settlementSource: "Official UEFA Nations League",
-    outcomes: leagueATeams(teams).map((t) => ({
-      label: t.name,
-      imageUrl: t.flagUrl,
-    })),
+    outcomes: teams.map((t) => ({ label: t.name, imageUrl: t.flagUrl })),
   };
 }

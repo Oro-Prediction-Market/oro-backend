@@ -2,19 +2,15 @@ import { BadRequestException } from "@nestjs/common";
 import { AdminController } from "../admin/admin.controller";
 import {
   buildUnlSeasonMarketDto,
-  leagueATeams,
+  leagueOf,
   seasonLabel,
 } from "../unl/unl-season-market";
 
-const team = (
-  groupKey: string,
-  name: string,
-  flagUrl: string | null = null,
-) => ({
+const team = (groupKey: string, name: string) => ({
+  id: `id-${name}`,
   groupKey,
   name,
-  flagUrl:
-    flagUrl ?? `https://flagcdn.com/w320/${name.slice(0, 2).toLowerCase()}.png`,
+  flagUrl: `https://flagcdn.com/w320/${name.slice(0, 2).toLowerCase()}.png`,
 });
 
 // listTeams order: group, then draw position.
@@ -22,23 +18,20 @@ const DRAW = [
   team("A", "Spain"),
   team("A", "Portugal"),
   team("B", "France"),
-  team("D", "Germany"),
   team("E", "Wales"),
   team("N", "San Marino"),
 ];
 
 describe("buildUnlSeasonMarketDto", () => {
-  it("lists League A only, in draw order, each with its flag", () => {
+  it("lists exactly the nations it is given, each with its flag", () => {
     const dto = buildUnlSeasonMarketDto(
       "2026-27",
-      DRAW,
+      [DRAW[0], DRAW[3]],
       "2027-03-01T12:00:00.000Z",
     );
     expect(dto.outcomes).toEqual([
       { label: "Spain", imageUrl: DRAW[0].flagUrl },
-      { label: "Portugal", imageUrl: DRAW[1].flagUrl },
-      { label: "France", imageUrl: DRAW[2].flagUrl },
-      { label: "Germany", imageUrl: DRAW[3].flagUrl },
+      { label: "Wales", imageUrl: DRAW[3].flagUrl },
     ]);
   });
 
@@ -62,14 +55,19 @@ describe("buildUnlSeasonMarketDto", () => {
     expect(seasonLabel("2027")).toBe("2027");
   });
 
-  it("matches group letters in either case", () => {
-    expect(leagueATeams([team("c", "Italy"), team("e", "Wales")])).toHaveLength(
-      1,
-    );
+  it("maps each group to its league, in either case", () => {
+    expect(["a", "D", "E", "l", "N", "Z"].map(leagueOf)).toEqual([
+      "A",
+      "A",
+      "B",
+      "C",
+      "D",
+      null,
+    ]);
   });
 });
 
-describe("AdminController.createUnlSeasonMarket", () => {
+describe("AdminController season market", () => {
   const FUTURE = new Date(Date.now() + 30 * 864e5).toISOString();
   const req = { user: { userId: "admin-1" }, ip: "127.0.0.1" };
 
@@ -94,6 +92,19 @@ describe("AdminController.createUnlSeasonMarket", () => {
     ctrl.auditService = { log: jest.fn().mockResolvedValue(undefined) };
     return ctrl;
   }
+  const ids = (...names: string[]) => names.map((n) => `id-${n}`);
+
+  it("previews every nation in the draw with its league", async () => {
+    const out = await build().previewUnlSeasonMarket();
+    expect(out.teams.map((t: any) => [t.name, t.league])).toEqual([
+      ["Spain", "A"],
+      ["Portugal", "A"],
+      ["France", "A"],
+      ["Wales", "B"],
+      ["San Marino", "D"],
+    ]);
+    expect(out.teams[0]).toMatchObject({ id: "id-Spain", groupKey: "A" });
+  });
 
   it("refuses a missing or past closing date", async () => {
     const ctrl = build();
@@ -104,7 +115,10 @@ describe("AdminController.createUnlSeasonMarket", () => {
       "2020-01-01T00:00:00Z",
     ]) {
       await expect(
-        ctrl.createUnlSeasonMarket({ closesAt }, req),
+        ctrl.createUnlSeasonMarket(
+          { closesAt, teamIds: ids("Spain", "France") },
+          req,
+        ),
       ).rejects.toBeInstanceOf(BadRequestException);
     }
     expect(ctrl.marketsService.create).not.toHaveBeenCalled();
@@ -113,30 +127,62 @@ describe("AdminController.createUnlSeasonMarket", () => {
   it("refuses while a season market is still active", async () => {
     const ctrl = build({ existing: { id: "old" } });
     await expect(
-      ctrl.createUnlSeasonMarket({ closesAt: FUTURE }, req),
+      ctrl.createUnlSeasonMarket(
+        { closesAt: FUTURE, teamIds: ids("Spain", "France") },
+        req,
+      ),
     ).rejects.toThrow(/already exists \(id old\)/);
     expect(ctrl.marketsService.create).not.toHaveBeenCalled();
   });
 
-  it("asks for the draw when League A is empty", async () => {
-    const ctrl = build({ teams: [team("E", "Wales")] });
-    await expect(
-      ctrl.createUnlSeasonMarket({ closesAt: FUTURE }, req),
-    ).rejects.toThrow(/Paste the draw/);
-    const none = build({ season: null });
-    await expect(
-      none.createUnlSeasonMarket({ closesAt: FUTURE }, req),
-    ).rejects.toThrow(/Paste the draw/);
+  it("needs at least two distinct nations", async () => {
+    const ctrl = build();
+    for (const teamIds of [
+      undefined,
+      "id-Spain",
+      [],
+      ids("Spain"),
+      ids("Spain", "Spain"),
+    ]) {
+      await expect(
+        ctrl.createUnlSeasonMarket({ closesAt: FUTURE, teamIds }, req),
+      ).rejects.toThrow(/at least two/);
+    }
     expect(ctrl.marketsService.create).not.toHaveBeenCalled();
   });
 
-  it("creates the market from League A and records who did it", async () => {
+  it("refuses a nation that is not in the current draw", async () => {
     const ctrl = build();
     await expect(
-      ctrl.createUnlSeasonMarket({ closesAt: FUTURE }, req),
+      ctrl.createUnlSeasonMarket(
+        { closesAt: FUTURE, teamIds: [...ids("Spain"), "id-Atlantis"] },
+        req,
+      ),
+    ).rejects.toThrow(/1 of the chosen nations are not in the current draw/);
+    const none = build({ season: null, teams: [] });
+    await expect(
+      none.createUnlSeasonMarket(
+        { closesAt: FUTURE, teamIds: ids("Spain", "France") },
+        req,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(ctrl.marketsService.create).not.toHaveBeenCalled();
+  });
+
+  it("creates the market from the picked nations, in draw order, and audits it", async () => {
+    const ctrl = build();
+    await expect(
+      ctrl.createUnlSeasonMarket(
+        { closesAt: FUTURE, teamIds: ids("Wales", "Spain", "France") },
+        req,
+      ),
     ).resolves.toMatchObject({ id: "m1" });
     const dto = ctrl.marketsService.create.mock.calls[0][0];
-    expect(dto.outcomes).toHaveLength(4);
+    expect(dto.outcomes.map((o: any) => o.label)).toEqual([
+      "Spain",
+      "France",
+      "Wales",
+    ]);
     expect(dto.closesAt).toBe(FUTURE);
     expect(ctrl.unlService.listTeams).toHaveBeenCalledWith("2026-27");
     expect(ctrl.auditService.log).toHaveBeenCalledWith(
@@ -145,7 +191,7 @@ describe("AdminController.createUnlSeasonMarket", () => {
         entityId: "m1",
         after: expect.objectContaining({
           subcategory: "unl-season",
-          outcomes: 4,
+          outcomes: 3,
         }),
       }),
     );

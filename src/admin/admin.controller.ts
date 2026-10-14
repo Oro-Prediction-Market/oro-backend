@@ -73,7 +73,7 @@ import {
 import {
   UNL_SEASON_SUBCATEGORY,
   buildUnlSeasonMarketDto,
-  leagueATeams,
+  leagueOf,
 } from "../unl/unl-season-market";
 import { DistributionStatus } from "../entities/revenue-distribution.entity";
 import { TIER_ORDER, TIER_LABELS } from "../markets/tiers";
@@ -3866,8 +3866,8 @@ export class AdminController {
     return market;
   }
 
-  // The season market — "who wins it?" — built from League A of the draw, so
-  // nobody types sixteen nations and their flags into the generic form.
+  // The season market — "who wins it?" — built from the nations an admin
+  // ticks in the draw, so nobody types each one and its flag into the form.
 
   /** The active season market, if there is one. */
   private findActiveUnlSeasonMarket() {
@@ -3887,29 +3887,30 @@ export class AdminController {
 
   @Get("unl/season-market/preview")
   @ApiOperation({
-    summary: "The nations a Nations League season market would list",
+    summary: "Every nation in the draw, to pick a season market's options from",
   })
   async previewUnlSeasonMarket() {
     const season = await this.unlService.currentSeason();
-    const teams = leagueATeams(await this.unlService.listTeams()).map((t) => ({
-      groupKey: t.groupKey,
-      name: t.name,
-      flagUrl: t.flagUrl,
-    }));
+    const teams = season ? await this.unlService.listTeams(season) : [];
     return {
       season,
-      teams,
-      missingFlags: teams.filter((t) => !t.flagUrl).map((t) => t.name),
+      teams: teams.map((t) => ({
+        id: t.id,
+        groupKey: t.groupKey,
+        league: leagueOf(t.groupKey),
+        name: t.name,
+        flagUrl: t.flagUrl,
+      })),
       existing: await this.findActiveUnlSeasonMarket(),
     };
   }
 
   @Post("unl/season-market")
   @ApiOperation({
-    summary: "Create the Nations League season market from League A",
+    summary: "Create the Nations League season market from chosen nations",
   })
   async createUnlSeasonMarket(
-    @Body() body: { closesAt?: string },
+    @Body() body: { closesAt?: string; teamIds?: unknown },
     @Request() req: any,
   ) {
     const closesMs = Date.parse(body?.closesAt ?? "");
@@ -3927,14 +3928,23 @@ export class AdminController {
       );
     }
 
+    const ids = Array.isArray(body?.teamIds)
+      ? [...new Set(body.teamIds.filter((x): x is string => typeof x === "string"))]
+      : [];
+    if (ids.length < 2) {
+      throw new BadRequestException("Pick at least two nations.");
+    }
+
+    // Only nations in the current draw: an id from an old edition, or a
+    // made-up one, is refused rather than silently dropped from the market.
     const season = await this.unlService.currentSeason();
-    const teams = leagueATeams(
-      season ? await this.unlService.listTeams(season) : [],
-    );
-    if (!season || teams.length < 2) {
+    const draw = season ? await this.unlService.listTeams(season) : [];
+    const picked = new Set(ids);
+    const teams = draw.filter((t) => picked.has(t.id));
+    if (!season || teams.length !== ids.length) {
       throw new BadRequestException(
-        `League A has ${teams.length} nation(s) in the draw. ` +
-          `Paste the draw on this page first, then create the market.`,
+        `${ids.length - teams.length} of the chosen nations are not in the ` +
+          `current draw${season ? ` (${season})` : ""}. Reload the page and pick again.`,
       );
     }
 
