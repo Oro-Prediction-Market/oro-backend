@@ -1,4 +1,12 @@
-import { Controller, Get, Optional, Query, UseGuards } from "@nestjs/common";
+import {
+  Controller,
+  Get,
+  Optional,
+  Param,
+  ParseUUIDPipe,
+  Query,
+  UseGuards,
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import { InjectDataSource } from "@nestjs/typeorm";
@@ -14,6 +22,7 @@ import { RedisService } from "../redis/redis.service";
 import { readWebhookRejections } from "../payment/guards/pay21-webhook-health";
 import { JobHealthService } from "../job-health/job-health.service";
 import { roundMoney } from "../shared/utils/money.util";
+import { ParimutuelEngine } from "../markets/parimutuel.engine";
 
 const MEDALS = ["🥇", "🥈", "🥉"];
 
@@ -46,6 +55,23 @@ const clampLimit = (raw: unknown, fallback: number, max: number) => {
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), max) : fallback;
 };
+
+/** Ledger types that pay a referrer. `referral_prize` is legacy; nothing writes it now. */
+const REFERRAL_TX_TYPES = ["referral_bonus", "referral_prize"];
+
+/**
+ * What the referrer was paid for one friend's first bet, recomputed with the
+ * engine's own constants. The payout row does not record which friend it was
+ * for, so this is the formula's answer, not a ledger read.
+ */
+export function referralBonusFor(firstBet: number): number {
+  const pct =
+    Math.round(firstBet * ParimutuelEngine.REFERRAL_BET_PCT * 100) / 100;
+  return Math.min(
+    ParimutuelEngine.REFERRAL_FLAT_BONUS + pct,
+    ParimutuelEngine.REFERRAL_CAP,
+  );
+}
 
 /**
  * Read-only views over tables the dashboard had no window onto.
@@ -207,6 +233,150 @@ export class AdminInsightsController {
           qualifiers: snapshot.length,
           paysOut,
           podium,
+        };
+      }),
+    };
+  }
+
+  /**
+   * The referral programme: what it has paid out, and who brought whom.
+   *
+   * `users."referredByUserId"` is the only link — there is no referrals table.
+   * A referrer is paid once per friend, on that friend's first bet, as a
+   * `referral_bonus` row on the referrer. Totals and per-referrer earnings are
+   * therefore exact ledger sums; who each payout was for is not recorded, and
+   * `referrals/:userId` recomputes it. Name fields only — no CID, phone or
+   * email.
+   */
+  @Get("referrals")
+  async referrals(@Query("limit") rawLimit?: string) {
+    const limit = clampLimit(rawLimit, 100, 500);
+    const [paid, counts, referrers] = await Promise.all([
+      this.dataSource.query(
+        `SELECT currency,
+                COALESCE(SUM(amount), 0) AS total,
+                COUNT(*) AS payouts,
+                MIN("createdAt") AS "firstPaidAt",
+                MAX("createdAt") AS "lastPaidAt"
+           FROM transactions
+          WHERE type = ANY($1)
+          GROUP BY currency
+          ORDER BY currency`,
+        [REFERRAL_TX_TYPES],
+      ),
+      this.dataSource.query(
+        `SELECT COUNT(*) AS "referredUsers",
+                COUNT(*) FILTER (WHERE "referralBonusTriggered") AS converted,
+                COUNT(DISTINCT "referredByUserId") AS referrers
+           FROM users
+          WHERE "referredByUserId" IS NOT NULL`,
+      ),
+      this.dataSource.query(
+        `WITH brought AS (
+           SELECT "referredByUserId" AS id,
+                  COUNT(*) AS "referredCount",
+                  COUNT(*) FILTER (WHERE "referralBonusTriggered") AS "convertedCount",
+                  MAX("createdAt") AS "lastReferredAt"
+             FROM users
+            WHERE "referredByUserId" IS NOT NULL
+            GROUP BY "referredByUserId"
+         ), earned AS (
+           -- BTN only: the payout is always written in BTN (the column
+           -- default), and currencies are never added together.
+           SELECT "userId" AS id, SUM(amount) AS earned
+             FROM transactions
+            WHERE type = ANY($1) AND currency = 'BTN'
+            GROUP BY "userId"
+         )
+         SELECT r.id AS "userId", r.username, r."firstName", r."lastName",
+                b."referredCount", b."convertedCount", b."lastReferredAt",
+                COALESCE(e.earned, 0) AS earned
+           FROM brought b
+           JOIN users r ON r.id = b.id
+           LEFT JOIN earned e ON e.id = b.id
+          ORDER BY COALESCE(e.earned, 0) DESC, b."referredCount" DESC, r.id
+          LIMIT $2`,
+        [REFERRAL_TX_TYPES, limit],
+      ),
+    ]);
+    const c = (counts ?? [])[0] ?? {};
+    return {
+      summary: {
+        paid: (paid ?? []).map((r: any) => ({
+          currency: r.currency ?? "BTN",
+          total: roundMoney(Number(r.total), r.currency ?? "BTN"),
+          payouts: Number(r.payouts),
+          firstPaidAt: r.firstPaidAt ?? null,
+          lastPaidAt: r.lastPaidAt ?? null,
+        })),
+        referredUsers: Number(c.referredUsers ?? 0),
+        converted: Number(c.converted ?? 0),
+        referrers: Number(c.referrers ?? 0),
+      },
+      referrers: (referrers ?? []).map((r: any) => ({
+        userId: r.userId,
+        username: r.username ?? null,
+        firstName: r.firstName ?? null,
+        lastName: r.lastName ?? null,
+        referredCount: Number(r.referredCount),
+        convertedCount: Number(r.convertedCount),
+        earned: roundMoney(Number(r.earned), "BTN"),
+        lastReferredAt: r.lastReferredAt ?? null,
+      })),
+      limit,
+    };
+  }
+
+  /**
+   * Everyone one referrer brought, newest first, with each friend's first
+   * bet and the bonus that bet paid the referrer (recomputed — see
+   * {@link referralBonusFor}). `earned` is the referrer's exact ledger total,
+   * so the two can be compared.
+   */
+  @Get("referrals/:userId")
+  async referralsOf(@Param("userId", ParseUUIDPipe) userId: string) {
+    const [friends, earned] = await Promise.all([
+      this.dataSource.query(
+        `SELECT u.id AS "userId", u.username, u."firstName", u."lastName",
+                u."createdAt" AS "joinedAt",
+                u."referralBonusTriggered" AS converted,
+                fb."placedAt" AS "firstBetAt",
+                fb.amount AS "firstBetAmount"
+           FROM users u
+           LEFT JOIN LATERAL (
+             SELECT p."placedAt", p.amount
+               FROM positions p
+              WHERE p."userId" = u.id
+              ORDER BY p."placedAt" ASC
+              LIMIT 1
+           ) fb ON true
+          WHERE u."referredByUserId" = $1
+          ORDER BY u."createdAt" DESC`,
+        [userId],
+      ),
+      this.dataSource.query(
+        `SELECT COALESCE(SUM(amount), 0) AS earned
+           FROM transactions
+          WHERE "userId" = $1 AND type = ANY($2) AND currency = 'BTN'`,
+        [userId, REFERRAL_TX_TYPES],
+      ),
+    ]);
+    return {
+      userId,
+      earned: roundMoney(Number((earned ?? [])[0]?.earned ?? 0), "BTN"),
+      friends: (friends ?? []).map((f: any) => {
+        const firstBet = f.firstBetAmount == null ? null : Number(f.firstBetAmount);
+        return {
+          userId: f.userId,
+          username: f.username ?? null,
+          firstName: f.firstName ?? null,
+          lastName: f.lastName ?? null,
+          joinedAt: f.joinedAt ?? null,
+          converted: !!f.converted,
+          firstBetAt: f.firstBetAt ?? null,
+          firstBetAmount: firstBet,
+          bonus:
+            f.converted && firstBet != null ? referralBonusFor(firstBet) : null,
         };
       }),
     };
