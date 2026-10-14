@@ -32,23 +32,37 @@ describe("AdminInsightsController.income", () => {
     const { promise, query } = run([]);
     const out = await promise;
     expect(out).toMatchObject({ period: "all", currency: "BTN", bucket: "week" });
-    expect(query.mock.calls[1][1]).toEqual(["BTN", "week", "2026-05-04", true]);
+    expect(query.mock.calls[1][1]).toEqual(["BTN", "week", "2026-05-04", true, "9 hours"]);
   });
 
   it("switches all time to months once the span passes a year", async () => {
-    const { promise, query } = run([], { first: "2025-09-01", today: "2026-10-06" });
+    const { promise, query } = run([], { first: "2025-09-01 14:30:00", today: "2026-10-06" });
     expect((await promise).bucket).toBe("month");
     expect(query.mock.calls[1][1][1]).toBe("month");
+    expect(query.mock.calls[1][1][4]).toBe("0 hours");
+  });
+
+  it("cuts weeks at Monday 09:00, when the weekly report is sent", async () => {
+    const { promise, query } = run([], { period: "week" });
+    await promise;
+    const sql: string = query.mock.calls[1][0];
+    // Every timestamp is shifted back by the offset before it is truncated,
+    // so the buckets, the settlements and the duel fees all agree.
+    const truncs = sql.match(/date_trunc\(\$2::text/g) ?? [];
+    const shifts = sql.match(/- \$5::interval\)/g) ?? [];
+    expect(truncs).toHaveLength(6);
+    expect(shifts).toHaveLength(6);
+    expect(query.mock.calls[0][0]).toContain("'YYYY-MM-DD HH24:MI:SS'");
   });
 
   it("keeps week and month to their own unit, clipped to the first income", async () => {
     const week = run([], { period: "week" });
     await week.promise;
-    expect(week.query.mock.calls[1][1]).toEqual(["BTN", "week", "2026-05-04", false]);
+    expect(week.query.mock.calls[1][1]).toEqual(["BTN", "week", "2026-05-04", false, "9 hours"]);
 
     const month = run([], { period: "month", first: "2024-01-01" });
     expect((await month.promise).bucket).toBe("month");
-    expect(month.query.mock.calls[1][1]).toEqual(["BTN", "month", "2024-01-01", false]);
+    expect(month.query.mock.calls[1][1]).toEqual(["BTN", "month", "2024-01-01", false, "0 hours"]);
   });
 
   it("only accepts BTN or USDT, never summing the two", async () => {
@@ -76,7 +90,7 @@ describe("AdminInsightsController.income", () => {
       { start: "2026-10-05", edge: 0, bonds: 0, duels: 0 },
     ]).promise;
     expect(out.buckets.map((b) => b.partial)).toEqual([false, true]);
-    expect(out.buckets[0].label).toMatch(/^Week of 28 Sept? 2026$/);
+    expect(out.buckets[0].label).toMatch(/^Week of 28 Sept? 2026, from 09:00$/);
   });
 
   it("dedupes settlements, skips cancelled ones, and takes duel fees from revenue_distributions", async () => {

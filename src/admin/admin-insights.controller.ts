@@ -56,6 +56,9 @@ const clampLimit = (raw: unknown, fallback: number, max: number) => {
   return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), max) : fallback;
 };
 
+/** A profit-chart week starts Monday 09:00, when the weekly report is sent. */
+const INCOME_WEEK_OFFSET = "9 hours";
+
 /** Ledger types that pay a referrer. `referral_prize` is legacy; nothing writes it now. */
 const REFERRAL_TX_TYPES = ["referral_bonus", "referral_prize"];
 
@@ -874,6 +877,11 @@ export class AdminInsightsController {
    * `houseAmount` in place, so a corrected market shows its corrected figure
    * in the period it originally settled.
    *
+   * A week runs Monday 09:00 to Monday 09:00 Bhutan time, the same window the
+   * Monday weekly report covers (see `weekly-report.job.ts`): most Sunday
+   * matches settle on Monday morning, and a midnight cut put them in a
+   * different week from the report. Months are calendar months.
+   *
    * `week` is the last 12 weeks, `month` the last 12 months, neither reaching
    * back before the first income. `all` runs from the first income to now, by
    * week while that is under a year and by month after. Every bucket is returned, empty ones as zero, and dates are Bhutan
@@ -892,7 +900,7 @@ export class AdminInsightsController {
     // The first income, so no range starts with empty weeks from before launch.
     const [row]: Array<{ first: string | null; today: string }> =
       await this.dataSource.query(
-        `SELECT to_char(MIN(t), 'YYYY-MM-DD') AS first,
+        `SELECT to_char(MIN(t), 'YYYY-MM-DD HH24:MI:SS') AS first,
                 to_char(now() AT TIME ZONE 'Asia/Thimphu', 'YYYY-MM-DD') AS today
            FROM (
              SELECT MIN("settledAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu') AS t
@@ -908,7 +916,7 @@ export class AdminInsightsController {
     const first = row?.first ?? null;
     if (period === "all" && first && row.today) {
       const day = (s: string) => {
-        const [y, m, d] = s.split("-").map(Number);
+        const [y, m, d] = s.slice(0, 10).split("-").map(Number);
         return Date.UTC(y, m - 1, d) / 86_400_000;
       };
       if (day(row.today) - day(first) > 364) unit = "month";
@@ -919,14 +927,14 @@ export class AdminInsightsController {
         `WITH buckets AS (
            SELECT generate_series(
                     CASE WHEN $4::boolean
-                      THEN date_trunc($2::text, COALESCE($3::timestamp, now() AT TIME ZONE 'Asia/Thimphu'))
+                      THEN date_trunc($2::text, COALESCE($3::timestamp, now() AT TIME ZONE 'Asia/Thimphu') - $5::interval)
                       ELSE GREATEST(
-                        date_trunc($2::text, now() AT TIME ZONE 'Asia/Thimphu')
+                        date_trunc($2::text, now() AT TIME ZONE 'Asia/Thimphu' - $5::interval)
                           - 11 * ('1 ' || $2::text)::interval,
-                        date_trunc($2::text, COALESCE($3::timestamp, now() AT TIME ZONE 'Asia/Thimphu'))
+                        date_trunc($2::text, COALESCE($3::timestamp, now() AT TIME ZONE 'Asia/Thimphu') - $5::interval)
                       )
                     END,
-                    date_trunc($2::text, now() AT TIME ZONE 'Asia/Thimphu'),
+                    date_trunc($2::text, now() AT TIME ZONE 'Asia/Thimphu' - $5::interval),
                     ('1 ' || $2::text)::interval
                   ) AS bucket
          ),
@@ -939,7 +947,7 @@ export class AdminInsightsController {
          ),
          markets AS (
            SELECT date_trunc($2::text,
-                    "settledAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu') AS bucket,
+                    "settledAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu' - $5::interval) AS bucket,
                   SUM("houseAmount" - "houseForfeit") AS edge,
                   SUM("houseForfeit") AS bonds
              FROM settled
@@ -947,7 +955,7 @@ export class AdminInsightsController {
          ),
          duels AS (
            SELECT date_trunc($2::text,
-                    rd."createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu') AS bucket,
+                    rd."createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu' - $5::interval) AS bucket,
                   SUM(rd.amount) AS duels
              FROM revenue_distributions rd
             WHERE rd.currency = $1 AND rd."challengeId" IS NOT NULL
@@ -961,7 +969,9 @@ export class AdminInsightsController {
            LEFT JOIN markets m ON m.bucket = b.bucket
            LEFT JOIN duels d ON d.bucket = b.bucket
           ORDER BY b.bucket`,
-        [currency, unit, first, period === "all"],
+        // Shifting every timestamp back 9 hours before truncating makes a
+        // "week" Monday 09:00 → Monday 09:00; months are not shifted.
+        [currency, unit, first, period === "all", unit === "week" ? INCOME_WEEK_OFFSET : "0 hours"],
       );
 
     const r = (n: number) => roundMoney(Number(n) || 0, currency);
@@ -971,7 +981,10 @@ export class AdminInsightsController {
       const duels = r(row.duels);
       return {
         start: row.start,
-        label: bucketLabel(row.start, unit),
+        label:
+          unit === "week"
+            ? `${bucketLabel(row.start, unit)}, from 09:00`
+            : bucketLabel(row.start, unit),
         // The newest bucket is the one still in progress.
         partial: i === rows.length - 1,
         edge,
