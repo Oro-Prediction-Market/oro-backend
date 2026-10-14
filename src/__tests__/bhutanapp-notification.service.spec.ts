@@ -42,15 +42,47 @@ function authHeaderOf(call: any[]): string | undefined {
 
 describe("BhutanAppNotificationService", () => {
   let fetchMock: jest.Mock;
+  const savedEnv = {
+    KUBERNETES_SERVICE_HOST: process.env.KUBERNETES_SERVICE_HOST,
+    NODE_ENV: process.env.NODE_ENV,
+  };
 
   beforeEach(() => {
     fetchMock = jest.fn();
     global.fetch = fetchMock as any;
     jest.spyOn(Date, "now").mockReturnValue(1_000_000);
+    // Pushes only leave the production cluster; these tests are about what
+    // happens there.
+    process.env.KUBERNETES_SERVICE_HOST = "10.0.0.1";
+    process.env.NODE_ENV = "production";
   });
 
   afterEach(() => {
     jest.restoreAllMocks();
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it("sends nothing outside the production cluster", async () => {
+    const credentialed = makeConfig({
+      BHUTANAPP_NOTIFICATION_SERVICE_URL: NOTIFY_URL,
+      BHUTANAPP_SERVICE_USERNAME: "user",
+      BHUTANAPP_SERVICE_PASSWORD: "pass",
+    });
+    for (const env of [
+      { KUBERNETES_SERVICE_HOST: undefined, NODE_ENV: "production" },
+      { KUBERNETES_SERVICE_HOST: "10.0.0.1", NODE_ENV: "development" },
+    ]) {
+      for (const [k, v] of Object.entries(env)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      const svc = new BhutanAppNotificationService(credentialed);
+      await expect(svc.sendNotification("ext-1", "t", "b")).resolves.toBe(false);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   const credentialedConfig = makeConfig({

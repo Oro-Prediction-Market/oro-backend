@@ -1,5 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { isProductionCluster } from "../utils/broadcast-guard.util";
 
 /** Refresh the access token this many ms before it actually expires. */
 const TOKEN_REFRESH_SKEW_MS = 60_000;
@@ -26,6 +27,18 @@ export class BhutanAppNotificationService {
     title: string,
     body: string,
   ): Promise<boolean> {
+    // Development machines carry the real BhutanApp service URL and
+    // credentials, and there is no test app to send to instead, so a push
+    // from anywhere but the production cluster lands on a real user's phone.
+    // Callers already treat false as "not delivered" (the withdrawal code
+    // then falls back to Telegram).
+    if (!isProductionCluster()) {
+      this.logger.debug(
+        `BhutanApp push to ${externalUserId} blocked (not the production cluster)`,
+      );
+      return false;
+    }
+
     const serviceUrl = this.config.get<string>(
       "BHUTANAPP_NOTIFICATION_SERVICE_URL",
     );

@@ -78,13 +78,7 @@ export function evaluateFanOut(
 ): FanOutVerdict {
   const botId = (env.TELEGRAM_BOT_TOKEN ?? "").split(":")[0]?.trim() ?? "";
 
-  // Injected into every pod by the kubelet. Nothing else in src/ reads it, and
-  // nobody sets it by hand — unlike NODE_ENV, which is baked into the image at
-  // Dockerfile:36 and is therefore ALSO true for a developer running that image
-  // locally while chasing a production bug. NODE_ENV alone is worth nothing here.
-  const inCluster = !!env.KUBERNETES_SERVICE_HOST;
-
-  if (inCluster && env.NODE_ENV === "production") {
+  if (isProductionCluster(env)) {
     return { allowed: true, mode: "live" };
   }
 
@@ -101,6 +95,35 @@ export function evaluateFanOut(
       "test bot that needs adding to NON_PRODUCTION_BOT_IDS in " +
       "broadcast-guard.util.ts.",
   };
+}
+
+/**
+ * Whether this process is the production cluster.
+ *
+ * KUBERNETES_SERVICE_HOST is injected into every pod by the kubelet and nobody
+ * sets it by hand — unlike NODE_ENV, which is baked into the image at
+ * Dockerfile:36 and is therefore ALSO "production" for a developer running that
+ * image locally while chasing a production bug. NODE_ENV alone is worth nothing.
+ */
+export function isProductionCluster(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return !!env.KUBERNETES_SERVICE_HOST && env.NODE_ENV === "production";
+}
+
+/**
+ * Whether this process may send anything to a user over Telegram at all — a
+ * DM, a channel post, a group message — or take over the bot's update feed.
+ *
+ * Same rule as {@link evaluateFanOut}: the production cluster, or a known
+ * development bot. The broadcast guard only ever covered admin announcements;
+ * the September 2026 DMs came from crons (re-engagement, streak-at-risk),
+ * which go through the ordinary send path. This is that path's guard.
+ */
+export function mayMessageTelegramUsers(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return evaluateFanOut(env).allowed;
 }
 
 /**

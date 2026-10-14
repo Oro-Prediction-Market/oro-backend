@@ -6,6 +6,7 @@ import { User } from "../entities/user.entity";
 import { Market } from "../entities/market.entity";
 import { Position, PositionStatus } from "../entities/position.entity";
 import { RedisService } from "../redis/redis.service";
+import { mayMessageTelegramUsers } from "../shared/utils/broadcast-guard.util";
 
 /**
  * One inline-keyboard button. `url` renders a deep link (e.g.
@@ -83,6 +84,30 @@ export class TelegramSimpleService {
     @InjectRepository(User) private readonly userRepository: Repository<User>,
   ) {
     this.botToken = this.configService.getOrThrow<string>("TELEGRAM_BOT_TOKEN");
+    this.outboundAllowed = mayMessageTelegramUsers();
+    if (!this.outboundAllowed) {
+      this.logger.warn(
+        "[Telegram] Outbound messages are OFF: this is not the production " +
+          "cluster and TELEGRAM_BOT_TOKEN is not a known development bot. " +
+          "Nothing will be sent to users. Use a development bot token (see " +
+          "NON_PRODUCTION_BOT_IDS in broadcast-guard.util.ts).",
+      );
+    }
+  }
+
+  /**
+   * False on a machine that is neither production nor running a development
+   * bot — a laptop holding the production token. Every send below checks it,
+   * so a cron or job running there cannot message real users. In September
+   * 2026 a laptop's crons sent about 4,000 real DMs this way.
+   */
+  private readonly outboundAllowed: boolean;
+
+  /** Logs and returns true when a send must be dropped. */
+  private blocked(what: string, chatId: number | string): boolean {
+    if (this.outboundAllowed) return false;
+    this.logger.debug(`[Telegram] Blocked ${what} to ${chatId} (not production)`);
+    return true;
   }
 
   isEphemeralPhotoUrl(url?: string | null): boolean {
@@ -136,6 +161,7 @@ export class TelegramSimpleService {
     text: string,
     buttons?: InlineButton[][],
   ): Promise<void> {
+    if (this.blocked("sendMessage", chatId)) return;
     try {
       const url = `https://api.telegram.org/bot${this.botToken}/sendMessage`;
       const payload: Record<string, unknown> = {
@@ -191,6 +217,9 @@ export class TelegramSimpleService {
     text: string,
     buttons?: InlineButton[][],
   ): Promise<SendResult> {
+    if (this.blocked("sendMessageChecked", chatId)) {
+      return { ok: false, description: "Blocked: not the production runtime" };
+    }
     try {
       const url = `https://api.telegram.org/bot${this.botToken}/sendMessage`;
       const payload: Record<string, unknown> = {
@@ -345,6 +374,7 @@ export class TelegramSimpleService {
     text: string,
     buttons: Array<Array<{ text: string; callbackData: string }>>,
   ): Promise<void> {
+    if (this.blocked("sendMessageWithButtons", chatId)) return;
     try {
       const url = `https://api.telegram.org/bot${this.botToken}/sendMessage`;
       const inline_keyboard = buttons.map((row) =>
@@ -408,6 +438,7 @@ export class TelegramSimpleService {
       );
       return;
     }
+    if (this.blocked("postToChannel", channelId)) return;
     try {
       const url = `https://api.telegram.org/bot${this.botToken}/sendMessage`;
       const res = await fetch(url, {

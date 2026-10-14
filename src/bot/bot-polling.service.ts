@@ -18,6 +18,7 @@ import { User } from "../entities/user.entity";
 import { Market, MarketStatus } from "../entities/market.entity";
 import { Outcome } from "../entities/outcome.entity";
 import { tierLabel as formatTier } from "../markets/tiers";
+import { mayMessageTelegramUsers } from "../shared/utils/broadcast-guard.util";
 
 /**
  * BotPollingService
@@ -67,6 +68,17 @@ export class BotPollingService
       "";
     if (!this.botToken) {
       this.logger.warn("[Bot] TELEGRAM_BOT_TOKEN not set — bot disabled.");
+      return;
+    }
+    // A laptop holding the production token must not touch the bot at all:
+    // setWebhook would point production's updates at the laptop, and the
+    // polling path's deleteWebhook would cut production off entirely. Both
+    // have happened (September 2026).
+    if (!mayMessageTelegramUsers()) {
+      this.logger.warn(
+        "[Bot] Not the production cluster and not a development bot — " +
+          "leaving the webhook alone and not polling.",
+      );
       return;
     }
 
