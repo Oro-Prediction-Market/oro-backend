@@ -104,6 +104,7 @@ import {
   attachParticipationTo,
   fetchMarketParticipation,
 } from "./market-participation";
+import { fetchMarketParticipants } from "./market-participants";
 import { BTN_CURRENCY } from "../entities/transaction.entity";
 import { MarketBookService } from "../markets/market-book.service";
 import { accountCurrency, ledgerBalance } from "../shared/utils/ledger.util";
@@ -1411,6 +1412,18 @@ export class AdminController {
         isWinner: o.isWinner,
       })),
     };
+  }
+
+  // ── Participants ──────────────────────────────────────────────────────────
+  @Get("markets/:id/participants")
+  @ApiOperation({
+    summary:
+      "Who bet on each outcome and how much (one row per person per outcome), plus winners' payouts and refunds",
+  })
+  async marketParticipants(@Param("id", ParseUUIDPipe) id: string) {
+    const result = await fetchMarketParticipants(this.dataSource, id);
+    if (!result) throw new NotFoundException("Market not found");
+    return result;
   }
 
   // ── Settlements ───────────────────────────────────────────────────────────
