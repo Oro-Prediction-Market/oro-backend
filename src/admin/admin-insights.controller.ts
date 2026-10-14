@@ -109,7 +109,13 @@ export class AdminInsightsController {
         LIMIT $1`,
       [take],
     );
-    if (seasons.length === 0) return { prizes: SEASON_PRIZES, seasons: [] };
+    if (seasons.length === 0) {
+      return {
+        prizes: SEASON_PRIZES,
+        seasons: [],
+        paid: await this.seasonPrizesPaid(),
+      };
+    }
 
     // Every prize note in one query, keyed by note.
     const labels = seasons.map((s) => monthLabel(s.month, s.year));
@@ -149,9 +155,12 @@ export class AdminInsightsController {
       noticeRows.map((r) => [`${r.month}|${r.userId}`, r]),
     );
 
+    const paid = await this.seasonPrizesPaid();
+
     return {
       prizes: SEASON_PRIZES,
       minQualifiers: SEASON_MIN_QUALIFIERS,
+      paid,
       seasons: seasons.map((s) => {
         const label = monthLabel(s.month, s.year);
         const snapshot = Array.isArray(s.winnersSnapshot) ? s.winnersSnapshot : [];
@@ -201,6 +210,55 @@ export class AdminInsightsController {
         };
       }),
     };
+  }
+
+  /**
+   * Every season prize actually credited, whatever is listed above — the
+   * ledger's answer to "how much have we paid in prizes so far".
+   *
+   * `season_prize` rows only: that type began with the monthly seasons
+   * (June 2026 was the first paid). The weekly test-period prizes were
+   * `free_credit` and are deliberately not counted. Per currency, never
+   * summed across.
+   */
+  private async seasonPrizesPaid(): Promise<
+    Array<{
+      currency: string;
+      total: number;
+      payments: number;
+      winners: number;
+      months: number;
+      lastPaidAt: Date | null;
+    }>
+  > {
+    const rows: Array<{
+      currency: string | null;
+      total: string;
+      payments: string;
+      winners: string;
+      months: string;
+      lastPaidAt: Date | null;
+    }> =
+      (await this.dataSource.query(
+        `SELECT currency,
+                COALESCE(SUM(amount), 0) AS total,
+                COUNT(*) AS payments,
+                COUNT(DISTINCT "userId") AS winners,
+                COUNT(DISTINCT substring(note from '— (.+) #')) AS months,
+                MAX("createdAt") AS "lastPaidAt"
+           FROM transactions
+          WHERE type = 'season_prize'
+          GROUP BY currency
+          ORDER BY currency`,
+      )) ?? [];
+    return rows.map((r) => ({
+      currency: r.currency ?? "BTN",
+      total: Number(r.total),
+      payments: Number(r.payments),
+      winners: Number(r.winners),
+      months: Number(r.months),
+      lastPaidAt: r.lastPaidAt ?? null,
+    }));
   }
 
   /**

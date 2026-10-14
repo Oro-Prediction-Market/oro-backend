@@ -95,11 +95,47 @@ describe("AdminInsightsController.seasons", () => {
     expect(res.seasons[0].podium).toEqual([]);
   });
 
-  it("skips the prize query entirely when there are no seasons", async () => {
+  it("skips the per-season prize lookups when there are no seasons", async () => {
     const { ctrl, query } = build([], []);
     const res = await ctrl.seasons();
     expect(res.seasons).toEqual([]);
-    expect(query).toHaveBeenCalledTimes(1);
+    // Seasons, then only the all-time paid totals for the summary card.
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(query.mock.calls[1][0]).toMatch(/GROUP BY currency/);
+  });
+
+  it("totals every season_prize credited, per currency, and only that type", async () => {
+    const query = jest
+      .fn()
+      .mockResolvedValueOnce([september()])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          currency: "BTN",
+          total: "6200.000000000",
+          payments: "12",
+          winners: "11",
+          months: "4",
+          lastPaidAt: new Date("2026-10-01T00:05:00Z"),
+        },
+      ]);
+    const ctrl = new AdminInsightsController({ query } as any);
+    const res: any = await ctrl.seasons();
+    expect(res.paid).toEqual([
+      {
+        currency: "BTN",
+        total: 6200,
+        payments: 12,
+        winners: 11,
+        months: 4,
+        lastPaidAt: new Date("2026-10-01T00:05:00Z"),
+      },
+    ]);
+    const sql: string = query.mock.calls[3][0];
+    // The weekly test-period prizes were free_credit; they must not count.
+    expect(sql).toMatch(/WHERE type = 'season_prize'/);
+    expect(sql).not.toMatch(/free_credit/);
   });
 
   describe("notification read receipts", () => {
