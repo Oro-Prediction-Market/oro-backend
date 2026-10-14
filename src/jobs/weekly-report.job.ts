@@ -15,9 +15,6 @@ import { TelegramSimpleService } from "../telegram/telegram.service.simple";
 import { RedisService } from "../redis/redis.service";
 import { JobHealthService, NOOP_JOB_HEALTH } from "../job-health/job-health.service";
 
-/** Telegram rejects a sendMessage body longer than this. */
-const TELEGRAM_MAX_CHARS = 4096;
-
 interface ProviderCounts {
   [provider: string]: number;
 }
@@ -99,7 +96,7 @@ export class WeeklyReportJob {
     const weekStart = new Date(weekEnd);
     weekStart.setDate(weekEnd.getDate() - 7);
 
-    const [growth, revenue, moneyFlow, gameplay, escrow, winners, settledMarkets] =
+    const [growth, revenue, moneyFlow, gameplay, escrow, winners] =
       await Promise.all([
         this.fetchGrowth(weekStart, weekEnd),
         this.fetchRevenue(weekStart, weekEnd),
@@ -107,7 +104,6 @@ export class WeeklyReportJob {
         this.fetchGameplay(weekStart, weekEnd),
         this.fetchEscrow(),
         this.fetchWinners(weekStart, weekEnd),
-        this.fetchSettledMarkets(weekStart, weekEnd),
       ]);
 
     const message = this.buildMessage(weekStart, weekEnd, {
@@ -117,7 +113,6 @@ export class WeeklyReportJob {
       gameplay,
       escrow,
       winners,
-      settledMarkets,
     });
 
     // Send to every admin with a linked Telegram account
@@ -399,45 +394,6 @@ export class WeeklyReportJob {
     };
   }
 
-  /**
-   * Every market that actually paid out this week, biggest pool first.
-   *
-   * The counts above say 27 markets settled; they do not say which, and "which"
-   * is the part a human can check. In September two EPL markets settled against
-   * the wrong team and went unnoticed for fifteen days, because nothing ever
-   * put the result in front of anyone — the totals looked entirely normal, and
-   * they were: a wrong winner moves the same money as a right one.
-   *
-   * So each line carries what it settled AS. Reading "Arsenal vs Spurs → Spurs"
-   * once a week is the cheapest check there is against that happening again.
-   *
-   * Cancelled settlements are left out. They paid nobody, their refunds are
-   * already reported on the Markets Resolved line, and there are frequently
-   * over a thousand of them a week — the auto-generated TER and BTC price
-   * markets expire unbet every five minutes — so listing them would bury the
-   * handful of lines worth reading.
-   */
-  private async fetchSettledMarkets(from: Date, to: Date) {
-    return this.dataSource
-      .getRepository(Settlement)
-      .createQueryBuilder("s")
-      .innerJoin(Market, "m", "m.id = s.marketId")
-      .leftJoin("outcomes", "o", "o.id = s.winningOutcomeId")
-      .select("m.title", "title")
-      .addSelect("o.label", "winner")
-      .addSelect("s.totalPool", "pool")
-      .addSelect("s.totalPaidOut", "paidOut")
-      .where("s.settledAt >= :from AND s.settledAt < :to", { from, to })
-      .andWhere("s.cancelReason IS NULL")
-      .orderBy("s.totalPool", "DESC")
-      .getRawMany<{
-        title: string;
-        winner: string | null;
-        pool: string;
-        paidOut: string;
-      }>();
-  }
-
   /** All-time open exposure — how much is sitting in markets that haven't settled yet. */
   private async fetchEscrow() {
     const row = await this.dataSource
@@ -498,13 +454,11 @@ export class WeeklyReportJob {
       gameplay: Awaited<ReturnType<WeeklyReportJob["fetchGameplay"]>>;
       escrow: Awaited<ReturnType<WeeklyReportJob["fetchEscrow"]>>;
       winners: Awaited<ReturnType<WeeklyReportJob["fetchWinners"]>>;
-      settledMarkets: Awaited<
-        ReturnType<WeeklyReportJob["fetchSettledMarkets"]>
-      >;
     },
   ): string {
-    const { growth, revenue, moneyFlow, gameplay, escrow, winners, settledMarkets } =
-      data;
+    // No list of the week's settled markets: the totals are the report, and
+    // the per-market list made it long without being read.
+    const { growth, revenue, moneyFlow, gameplay, escrow, winners } = data;
     const displayEnd = new Date(to.getTime() - 24 * 3600 * 1000);
     const fmt = (d: Date) =>
       d.toLocaleDateString("en-CA", { timeZone: "Asia/Thimphu" }); // YYYY-MM-DD
@@ -528,7 +482,7 @@ export class WeeklyReportJob {
       ? `\nTop market: ${nu(revenue.topMarket.pool)} — ${revenue.topMarket.title}`
       : "";
 
-    const summary =
+    return (
       `📅 Oro Weekly Report\n` +
       `${fmt(from)} to ${fmt(displayEnd)} | Asia/Thimphu\n\n` +
       `👥 Growth\n` +
@@ -561,9 +515,8 @@ export class WeeklyReportJob {
       `Winners: ${winners.winners}\n` +
       `Gross Prize: ${nu(winners.grossPrize)}\n` +
       `Net Payout: ${nu(winners.netPayout)}\n` +
-      `Payout Completion: ${winners.payoutsSent}/${winners.winners}`;
-
-    return summary + this.buildSettledSection(settledMarkets, nu, summary.length);
+      `Payout Completion: ${winners.payoutsSent}/${winners.winners}`
+    );
   }
 
   /**
@@ -589,43 +542,5 @@ export class WeeklyReportJob {
       `Refunded This Week: ${refunded.count} (${nu(refunded.sum)})\n` +
       `(BTN only. Settled counts every bet on a market that settled this week, whenever it was placed.)\n`
     );
-  }
-
-  /**
-   * The settled list, trimmed to whatever Telegram will still accept.
-   *
-   * Everything above this is fixed-size; this is the one section with no upper
-   * bound, and a busy week settles over a hundred markets. Telegram rejects a
-   * sendMessage body past 4096 characters outright, so an untrimmed list would
-   * not mean a long report — it would mean no report at all, on exactly the
-   * weeks worth reading. The biggest pools are listed first, so what gets cut
-   * is always the least consequential end.
-   */
-  private buildSettledSection(
-    rows: Awaited<ReturnType<WeeklyReportJob["fetchSettledMarkets"]>>,
-    nu: (n: number) => string,
-    used: number,
-  ): string {
-    const header = `\n\n✅ Settled This Week (${rows.length})\n━━━━━━━━━━━━━━━━━━\n`;
-    if (rows.length === 0) return `${header}Nothing settled this week.`;
-
-    // Room for the "…and N more" line, so the trim can always announce itself.
-    const RESERVE = 32;
-    const truncate = (s: string, max: number) =>
-      s.length <= max ? s : `${s.slice(0, max - 1).trimEnd()}…`;
-
-    let body = "";
-    let shown = 0;
-    for (const row of rows) {
-      const winner = row.winner ? ` → ${row.winner}` : "";
-      const line = `• ${truncate(row.title, 48)}${winner} · ${nu(Number(row.pool))}`;
-      if (used + header.length + body.length + line.length + 1 + RESERVE > TELEGRAM_MAX_CHARS)
-        break;
-      body += (shown > 0 ? "\n" : "") + line;
-      shown++;
-    }
-
-    const omitted = rows.length - shown;
-    return header + body + (omitted > 0 ? `\n…and ${omitted} more` : "");
   }
 }
