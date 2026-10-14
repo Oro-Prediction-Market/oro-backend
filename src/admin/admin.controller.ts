@@ -3866,12 +3866,13 @@ export class AdminController {
     return market;
   }
 
-  // The season market — "who wins it?" — built from the nations an admin
-  // ticks in the draw, so nobody types each one and its flag into the form.
+  // Season markets, built from the nations an admin ticks in the draw, so
+  // nobody types each one and its flag into the form. The admin names each
+  // one, so several can run at once ("who wins it", "who tops Group A").
 
-  /** The active season market, if there is one. */
-  private findActiveUnlSeasonMarket() {
-    return this.dataSource.getRepository(Market).findOne({
+  /** Season markets still running: upcoming through resolving. */
+  private findActiveUnlSeasonMarkets() {
+    return this.dataSource.getRepository(Market).find({
       where: {
         subcategory: UNL_SEASON_SUBCATEGORY,
         status: In([
@@ -3881,7 +3882,8 @@ export class AdminController {
           MarketStatus.RESOLVING,
         ]),
       },
-      select: ["id", "title", "status", "closesAt"],
+      select: ["id", "title", "status", "opensAt", "closesAt"],
+      order: { createdAt: "DESC" },
     });
   }
 
@@ -3901,18 +3903,33 @@ export class AdminController {
         name: t.name,
         flagUrl: t.flagUrl,
       })),
-      existing: await this.findActiveUnlSeasonMarket(),
+      existing: await this.findActiveUnlSeasonMarkets(),
     };
   }
 
   @Post("unl/season-market")
   @ApiOperation({
-    summary: "Create the Nations League season market from chosen nations",
+    summary: "Create a named Nations League season market from chosen nations",
   })
   async createUnlSeasonMarket(
-    @Body() body: { closesAt?: string; teamIds?: unknown },
+    @Body()
+    body: {
+      title?: unknown;
+      opensAt?: string;
+      closesAt?: string;
+      teamIds?: unknown;
+    },
     @Request() req: any,
   ) {
+    const title =
+      typeof body?.title === "string" ? body.title.trim().replace(/\s+/g, " ") : "";
+    if (title.length < 3) {
+      throw new BadRequestException("Type a name for the market.");
+    }
+    if (title.length > 200) {
+      throw new BadRequestException("The name can be at most 200 characters.");
+    }
+
     const closesMs = Date.parse(body?.closesAt ?? "");
     if (!Number.isFinite(closesMs)) {
       throw new BadRequestException("closesAt is required");
@@ -3920,11 +3937,23 @@ export class AdminController {
     if (closesMs <= Date.now()) {
       throw new BadRequestException("closesAt must be in the future");
     }
+    // No opening date means it opens now. A future one leaves the market
+    // upcoming until the keeper opens it at that time.
+    const opensMs = body?.opensAt ? Date.parse(body.opensAt) : Date.now();
+    if (!Number.isFinite(opensMs)) {
+      throw new BadRequestException("opensAt is not a valid date");
+    }
+    if (opensMs >= closesMs) {
+      throw new BadRequestException("The opening date must be before the closing date.");
+    }
 
-    const dup = await this.findActiveUnlSeasonMarket();
+    // Several can run at once, but not two with the same name.
+    const dup = (await this.findActiveUnlSeasonMarkets()).find(
+      (m) => m.title.trim().toLowerCase() === title.toLowerCase(),
+    );
     if (dup) {
       throw new BadRequestException(
-        `An active Nations League season market already exists (id ${dup.id}). Resolve or cancel it first.`,
+        `A season market called "${dup.title}" is already running (id ${dup.id}). Use a different name, or resolve or cancel that one first.`,
       );
     }
 
@@ -3948,11 +3977,11 @@ export class AdminController {
       );
     }
 
-    const dto = buildUnlSeasonMarketDto(
-      season,
-      teams,
-      new Date(closesMs).toISOString(),
-    );
+    const dto = buildUnlSeasonMarketDto(season, teams, {
+      title,
+      opensAt: new Date(opensMs).toISOString(),
+      closesAt: new Date(closesMs).toISOString(),
+    });
     const market = await this.marketsService.create(dto);
     await this.auditService.log({
       adminId: req.user.userId,
@@ -3964,6 +3993,7 @@ export class AdminController {
         title: market.title,
         subcategory: UNL_SEASON_SUBCATEGORY,
         outcomes: teams.length,
+        opensAt: dto.opensAt,
         closesAt: dto.closesAt,
       },
       ipAddress: req.ip,

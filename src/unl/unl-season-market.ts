@@ -1,11 +1,11 @@
 import { CreateMarketDto } from "../markets/dto/create-market.dto";
 
 /**
- * The Nations League season market: "who wins it?".
+ * Nations League season markets, built from the draw.
  *
- * Built from the draw already in `unl_teams`, so an admin ticks nations
- * instead of typing each one and its flag into the generic form. The admin
- * chooses which nations; the builder lists exactly those.
+ * The nations come from `unl_teams`, so an admin ticks them instead of typing
+ * each one and its flag into the generic form. The admin chooses the nations,
+ * the name and the dates; the builder lists exactly the nations chosen.
  */
 export const UNL_SEASON_SUBCATEGORY = "unl-season";
 
@@ -37,23 +37,31 @@ export function seasonLabel(season: string): string {
   return season.replace(/^(\d{4})-(\d{2})$/, "$1/$2");
 }
 
-/** Build the CreateMarketDto for the season market from the chosen nations. */
+/** What the admin types in before the market is created. */
+export interface UnlSeasonMarketInput {
+  title: string;
+  opensAt: string;
+  closesAt: string;
+}
+
+/** Build the CreateMarketDto for a season market from the chosen nations. */
 export function buildUnlSeasonMarketDto(
   season: string,
   teams: UnlSeasonTeam[],
-  closesAt: string,
+  input: UnlSeasonMarketInput,
 ): CreateMarketDto {
-  const label = seasonLabel(season);
   return {
-    title: `Who wins the ${label} UEFA Nations League?`,
-    description: `Pick the nation that lifts the ${label} UEFA Nations League trophy.`,
+    // The admin names it, so it can be any season question — "who wins it",
+    // "who tops Group A", "who is relegated from League A" — not just one.
+    title: input.title,
+    description: `${input.title} (UEFA Nations League ${seasonLabel(season)})`,
     category: "sports",
     subcategory: UNL_SEASON_SUBCATEGORY,
     resolutionCriteria:
-      `Resolved to the nation that wins the ${label} UEFA Nations League Finals, ` +
-      `per UEFA's official result.`,
-    opensAt: new Date().toISOString(),
-    closesAt,
+      `Resolved to the nation that answers "${input.title}", per UEFA's official ` +
+      `${seasonLabel(season)} Nations League results.`,
+    opensAt: input.opensAt,
+    closesAt: input.closesAt,
     // Settled by a person, like every other market in this competition. The
     // same externalSource keeps it out of the auto-settlers without a new rule.
     externalSource: "unl-manual",
