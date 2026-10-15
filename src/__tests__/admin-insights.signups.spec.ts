@@ -75,11 +75,15 @@ describe("AdminInsightsController.signups", () => {
   });
 
   /** The bug this guards: one cast instead of two puts signups in the wrong week. */
-  it("double-casts the zoneless createdAt but single-casts now()", async () => {
+  // createdAt already holds Bhutan wall-clock time (the session timezone is
+  // Asia/Thimphu); treating it as UTC put evening signups on the next day.
+  it("uses the zoneless createdAt as Bhutan time and single-casts now()", async () => {
     const r = run([]);
     await r.promise;
     const sql: string = r.query.mock.calls[0][0];
-    expect(sql).toContain(`u."createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu'`);
+    expect(sql).toContain(`date_trunc($1::text,\n                    u."createdAt") AS bucket`);
+    expect(sql).not.toMatch(/"createdAt" AT TIME ZONE/);
+    expect(sql).toContain(`now() AT TIME ZONE 'Asia/Thimphu'`);
     expect(sql).not.toContain(`now() AT TIME ZONE 'UTC'`);
   });
 });

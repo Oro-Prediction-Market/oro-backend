@@ -101,6 +101,9 @@ describe("AdminInsightsController.income", () => {
     expect(sql).toMatch(/"cancelReason" IS NULL/);
     expect(sql).toMatch(/"houseAmount" - "houseForfeit"/);
     expect(sql).toMatch(/revenue_distributions rd[\s\S]*"challengeId" IS NOT NULL/);
-    expect(sql).toMatch(/AT TIME ZONE 'UTC' AT TIME ZONE 'Asia\/Thimphu'/);
+    // settledAt and createdAt already hold Bhutan wall-clock time; only the
+    // timestamptz now() is converted.
+    expect(sql).not.toMatch(/AT TIME ZONE 'UTC'/);
+    expect(sql).toMatch(/now\(\) AT TIME ZONE 'Asia\/Thimphu'/);
   });
 });

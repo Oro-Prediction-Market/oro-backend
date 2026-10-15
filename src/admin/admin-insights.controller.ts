@@ -56,6 +56,18 @@ const clampLimit = (raw: unknown, fallback: number, max: number) => {
   return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), max) : fallback;
 };
 
+/**
+ * BHUTAN_WALL_CLOCK_NOTE — the bare `timestamp` columns (users."createdAt",
+ * settlements."settledAt", disputes."createdAt", revenue_distributions.
+ * "createdAt", …) hold Bhutan wall-clock time, not UTC: the connection's
+ * session timezone is Asia/Thimphu (app.module.ts) and now() is stored in it.
+ * Use them as they are for Bhutan days and weeks. Double-casting them
+ * (`AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu'`) shifts everything six
+ * hours late. Verified against prod 2026-10-15: settledAt sits six hours
+ * ahead of the timestamptz markets."resolvedAt" every day since 2026-08-15.
+ * timestamptz columns and now() still take the single cast.
+ */
+
 /** A profit-chart week starts Monday 09:00, when the weekly report is sent. */
 const INCOME_WEEK_OFFSET = "9 hours";
 
@@ -814,12 +826,11 @@ export class AdminInsightsController {
            SELECT DISTINCT ON (u.id)
                   u.id,
                   date_trunc($1::text,
-                    u."createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu') AS bucket,
+                    u."createdAt") AS bucket,
                   am.provider
              FROM users u
              LEFT JOIN auth_methods am ON am."userId" = u.id
-            WHERE u."createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu'
-                    >= (SELECT MIN(bucket) FROM buckets)
+            WHERE u."createdAt" >= (SELECT MIN(bucket) FROM buckets)
             ORDER BY u.id, am."createdAt" ASC
          )
          SELECT to_char(b.bucket, 'YYYY-MM-DD') AS start,
@@ -903,11 +914,11 @@ export class AdminInsightsController {
         `SELECT to_char(MIN(t), 'YYYY-MM-DD HH24:MI:SS') AS first,
                 to_char(now() AT TIME ZONE 'Asia/Thimphu', 'YYYY-MM-DD') AS today
            FROM (
-             SELECT MIN("settledAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu') AS t
+             SELECT MIN("settledAt") AS t
                FROM settlements
               WHERE currency = $1 AND "cancelReason" IS NULL
              UNION ALL
-             SELECT MIN("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu')
+             SELECT MIN("createdAt")
                FROM revenue_distributions
               WHERE currency = $1 AND "challengeId" IS NOT NULL
            ) firsts`,
@@ -947,7 +958,7 @@ export class AdminInsightsController {
          ),
          markets AS (
            SELECT date_trunc($2::text,
-                    "settledAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu' - $5::interval) AS bucket,
+                    "settledAt" - $5::interval) AS bucket,
                   SUM("houseAmount" - "houseForfeit") AS edge,
                   SUM("houseForfeit") AS bonds
              FROM settled
@@ -955,7 +966,7 @@ export class AdminInsightsController {
          ),
          duels AS (
            SELECT date_trunc($2::text,
-                    rd."createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu' - $5::interval) AS bucket,
+                    rd."createdAt" - $5::interval) AS bucket,
                   SUM(rd.amount) AS duels
              FROM revenue_distributions rd
             WHERE rd.currency = $1 AND rd."challengeId" IS NOT NULL
@@ -1040,7 +1051,8 @@ export class AdminInsightsController {
     const from = day(fromRaw);
     const to = day(toRaw);
 
-    const LOCAL = `(s."settledAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu')`;
+    // Already Bhutan wall-clock — see BHUTAN_WALL_CLOCK_NOTE.
+    const LOCAL = `(s."settledAt")`;
     const settled: Array<Record<string, string>> = await this.dataSource.query(
       `SELECT m.category::text AS category,
               COALESCE(NULLIF(m.subcategory, ''), '(none)') AS subcategory,
@@ -1178,7 +1190,8 @@ export class AdminInsightsController {
     const limit = clampLimit(limitRaw, 20, 100);
     const page = Math.max(1, Math.floor(Number(pageRaw) || 1));
 
-    const LOCAL = `(d."createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu')`;
+    // Already Bhutan wall-clock — see BHUTAN_WALL_CLOCK_NOTE.
+    const LOCAL = `(d."createdAt")`;
     const cases: Array<Record<string, any>> = await this.dataSource.query(
       `WITH cases AS (
          SELECT d."marketId",

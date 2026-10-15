@@ -3282,13 +3282,19 @@ export class AdminController {
           `u."createdAt" >= NOW() - make_interval(days => $1::int)`;
     const windowParams = days === 0 ? [] : [days];
 
-    // Signups are bucketed by BHUTAN day, not UTC. users."createdAt" is a bare
-    // TIMESTAMP (no zone) holding UTC, so it needs the double cast — unlike the
-    // timestamptz columns in aml-detector.service.ts, which take a single one.
+    // Signups are bucketed by BHUTAN day. users."createdAt" is a bare TIMESTAMP
+    // (no zone) that already holds Bhutan wall-clock time: the connection's
+    // session timezone is Asia/Thimphu (app.module.ts), and now() is stored in
+    // it. So it is used as it is. It used to be double-cast as if it held UTC,
+    // which pushed every signup six hours later — an 8 pm signup counted on
+    // the next day. Checked against prod on 2026-10-15: the newest signup was
+    // stamped ahead of UTC now, and settlements.settledAt (written the same
+    // way) has sat six hours ahead of the timestamptz markets.resolvedAt every
+    // day since at least 2026-08-15.
     // Note the DAU chart in behavioral-analytics buckets in UTC, so the two
     // charts' day boundaries differ by six hours. That is deliberate: DAU reads
     // from user_events, and re-bucketing it is out of scope here.
-    const localDay = `("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Thimphu')`;
+    const localDay = `("createdAt")`;
     // NOW() is already timestamptz, so it takes a SINGLE cast to reach Thimphu
     // wall-clock. Double-casting it like the column above would round-trip the
     // offset and land six hours off — which near midnight is the wrong day.
