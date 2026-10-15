@@ -110,6 +110,11 @@ import {
   fetchMarketParticipation,
 } from "./market-participation";
 import { fetchMarketParticipants } from "./market-participants";
+import {
+  TELEGRAM_CAPTION_MAX,
+  TELEGRAM_MESSAGE_MAX,
+  buildMarketAnnouncement,
+} from "../telegram/market-announcement";
 import { BTN_CURRENCY } from "../entities/transaction.entity";
 import { MarketBookService } from "../markets/market-book.service";
 import { accountCurrency, ledgerBalance } from "../shared/utils/ledger.util";
@@ -664,28 +669,42 @@ export class AdminController {
     const marketLink = botUsername
       ? `https://t.me/${botUsername}?startapp=m_${market.id}`
       : miniAppUrl;
-    const outcomes = (market.outcomes ?? [])
-      .map((o) => `• ${o.label}`)
-      .join("\n");
-    const closesAt = market.closesAt
-      ? new Date(market.closesAt).toLocaleString("en-US", {
-          dateStyle: "medium",
-          timeStyle: "short",
-        })
-      : "TBD";
-    await this.telegramSimple.postToChannel(
-      `🚀 <b>NEW MARKET</b>\n\n📊 <b>${market.title}</b>\n\n🎲 <b>Outcomes:</b>\n${outcomes}\n\n⏰ Closes: ${closesAt}\n\n👉 <a href="${marketLink}">Predict Now</a>`,
-    );
+    const announcement = {
+      title: market.title,
+      outcomes: (market.outcomes ?? []).map((o) => o.label),
+      closesAt: market.closesAt
+        ? new Date(market.closesAt).toLocaleString("en-US", {
+            dateStyle: "medium",
+            timeStyle: "short",
+          })
+        : "TBD",
+      link: marketLink,
+    };
+    // With the market's image when it has one. A photo's caption is capped
+    // at 1,024 characters, so its outcome list may be shortened; if the photo
+    // is refused for any reason, the full text post goes out instead.
+    const image = (market.imageUrl ?? "").trim();
+    const withImage =
+      !!image &&
+      (await this.telegramSimple.postPhotoToChannel(
+        image,
+        buildMarketAnnouncement(announcement, TELEGRAM_CAPTION_MAX),
+      ));
+    if (!withImage) {
+      await this.telegramSimple.postToChannel(
+        buildMarketAnnouncement(announcement, TELEGRAM_MESSAGE_MAX),
+      );
+    }
     await this.auditService.log({
       adminId: req.user.userId,
       isAdmin: true,
       action: AuditAction.MARKET_UPDATE,
       entityType: "market",
       entityId: market.id,
-      after: { announced: true, title: market.title },
+      after: { announced: true, title: market.title, withImage },
       ipAddress: req.ip,
     });
-    return { success: true };
+    return { success: true, withImage };
   }
 
   @Get("markets")

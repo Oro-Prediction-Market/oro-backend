@@ -7,6 +7,7 @@ import { Market } from "../entities/market.entity";
 import { Position, PositionStatus } from "../entities/position.entity";
 import { RedisService } from "../redis/redis.service";
 import { mayMessageTelegramUsers } from "../shared/utils/broadcast-guard.util";
+import { decodeDataUri, isDataUri } from "../markets/outcome-image.util";
 
 /**
  * One inline-keyboard button. `url` renders a deep link (e.g.
@@ -427,6 +428,65 @@ export class TelegramSimpleService {
     await this.sendMessage(123456789, message);
 
     this.logger.log(`Market announcement sent: ${market.title}`);
+  }
+
+  /**
+   * Post a photo with an HTML caption to the configured channel.
+   *
+   * `photo` is either a public image URL, which Telegram fetches itself, or a
+   * `data:image/...;base64,` URI, which is uploaded as a file. Returns whether
+   * Telegram accepted it, so the caller can fall back to a text post — a URL
+   * Telegram cannot fetch, or an image it will not take, must not lose the
+   * announcement. Never throws.
+   */
+  async postPhotoToChannel(photo: string, caption: string): Promise<boolean> {
+    const channelId = process.env.TELEGRAM_CHANNEL_ID;
+    if (!channelId) {
+      this.logger.warn(
+        "[Channel] TELEGRAM_CHANNEL_ID not set — skipping channel photo",
+      );
+      return false;
+    }
+    if (this.blocked("postPhotoToChannel", channelId)) return false;
+    try {
+      const url = `https://api.telegram.org/bot${this.botToken}/sendPhoto`;
+      let res: Response;
+      if (isDataUri(photo)) {
+        const decoded = decodeDataUri(photo);
+        if (!decoded) return false;
+        const ext = decoded.mime.split("/")[1]?.split("+")[0] || "png";
+        const form = new FormData();
+        form.append("chat_id", channelId);
+        form.append("caption", caption);
+        form.append("parse_mode", "HTML");
+        form.append(
+          "photo",
+          new Blob([decoded.body], { type: decoded.mime }),
+          `market.${ext}`,
+        );
+        res = await fetch(url, { method: "POST", body: form });
+      } else {
+        res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: channelId,
+            photo,
+            caption,
+            parse_mode: "HTML",
+          }),
+        });
+      }
+      if (!res.ok) {
+        const body = await res.text();
+        this.logger.warn(`[Channel] sendPhoto HTTP ${res.status}: ${body}`);
+        return false;
+      }
+      return true;
+    } catch (error: any) {
+      this.logger.warn(`[Channel] Failed to post photo: ${error.message}`);
+      return false;
+    }
   }
 
   /** Post a message to the configured Telegram channel. */
