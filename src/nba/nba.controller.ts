@@ -25,7 +25,13 @@ export class NbaController {
     @Query("from") from?: string,
     @Query("days") days?: string,
   ): Promise<NbaGame[]> {
-    if (from !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(from)) {
+    // The shape AND a real date: "2026-99-99" passes the pattern but would
+    // throw deep in the date maths, answering a typo with a 500.
+    if (
+      from !== undefined &&
+      (!/^\d{4}-\d{2}-\d{2}$/.test(from) ||
+        Number.isNaN(Date.parse(`${from}T00:00:00Z`)))
+    ) {
       throw new BadRequestException("from must be YYYY-MM-DD");
     }
     return this.nba.getGames(from, days === undefined ? 9 : Number(days));

@@ -19,7 +19,7 @@ export const ESPN_NBA_STANDINGS =
 /** Our externalSource / settlementSource for NBA markets. */
 export const ESPN_NBA_SOURCE = "espn-nba";
 
-/** ESPN season types. Preseason (1) never gets markets. */
+/** ESPN season types. Which ones get markets is NBA_MARKET_SEASON_TYPES. */
 export const NBA_SEASON_TYPE = {
   PRE: 1,
   REGULAR: 2,
