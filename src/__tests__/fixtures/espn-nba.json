@@ -1,0 +1,681 @@
+{
+ "_note": "Trimmed real ESPN responses fetched 2026-10-16: scoreboard 2026-10-22 (opening night), scoreboard 2026-02-10 game 401810626 (IND 137 at NY 134, OT), summary 401869369 (TOR 105 at CLE 115), standings 2025-26 regular season (top 3 per conference).",
+ "scheduled": [
+  {
+   "id": "401909093",
+   "date": "2026-10-22T23:00Z",
+   "season": {
+    "year": 2027,
+    "type": 2,
+    "slug": "regular-season"
+   },
+   "status": {
+    "clock": 0,
+    "displayClock": "0.0",
+    "period": 0,
+    "type": {
+     "id": "1",
+     "name": "STATUS_SCHEDULED",
+     "state": "pre",
+     "completed": false,
+     "description": "Scheduled",
+     "detail": "Thu, October 22nd at 7:00 PM EDT",
+     "shortDetail": "10/22 - 7:00 PM EDT"
+    }
+   },
+   "competitions": [
+    {
+     "id": "401909093",
+     "date": "2026-10-22T23:00Z",
+     "status": {
+      "clock": 0,
+      "displayClock": "0.0",
+      "period": 0,
+      "type": {
+       "id": "1",
+       "name": "STATUS_SCHEDULED",
+       "state": "pre",
+       "completed": false,
+       "description": "Scheduled",
+       "detail": "Thu, October 22nd at 7:00 PM EDT",
+       "shortDetail": "10/22 - 7:00 PM EDT"
+      }
+     },
+     "competitors": [
+      {
+       "homeAway": "home",
+       "score": "0",
+       "team": {
+        "id": "20",
+        "displayName": "Philadelphia 76ers",
+        "abbreviation": "PHI",
+        "logo": "https://a.espncdn.com/i/teamlogos/nba/500/scoreboard/phi.png"
+       }
+      },
+      {
+       "homeAway": "away",
+       "score": "0",
+       "team": {
+        "id": "5",
+        "displayName": "Cleveland Cavaliers",
+        "abbreviation": "CLE",
+        "logo": "https://a.espncdn.com/i/teamlogos/nba/500/scoreboard/cle.png"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "401909094",
+   "date": "2026-10-23T01:30Z",
+   "season": {
+    "year": 2027,
+    "type": 2,
+    "slug": "regular-season"
+   },
+   "status": {
+    "clock": 0,
+    "displayClock": "0.0",
+    "period": 0,
+    "type": {
+     "id": "1",
+     "name": "STATUS_SCHEDULED",
+     "state": "pre",
+     "completed": false,
+     "description": "Scheduled",
+     "detail": "Thu, October 22nd at 9:30 PM EDT",
+     "shortDetail": "10/22 - 9:30 PM EDT"
+    }
+   },
+   "competitions": [
+    {
+     "id": "401909094",
+     "date": "2026-10-23T01:30Z",
+     "status": {
+      "clock": 0,
+      "displayClock": "0.0",
+      "period": 0,
+      "type": {
+       "id": "1",
+       "name": "STATUS_SCHEDULED",
+       "state": "pre",
+       "completed": false,
+       "description": "Scheduled",
+       "detail": "Thu, October 22nd at 9:30 PM EDT",
+       "shortDetail": "10/22 - 9:30 PM EDT"
+      }
+     },
+     "competitors": [
+      {
+       "homeAway": "home",
+       "score": "0",
+       "team": {
+        "id": "25",
+        "displayName": "Oklahoma City Thunder",
+        "abbreviation": "OKC",
+        "logo": "https://a.espncdn.com/i/teamlogos/nba/500/scoreboard/okc.png"
+       }
+      },
+      {
+       "homeAway": "away",
+       "score": "0",
+       "team": {
+        "id": "7",
+        "displayName": "Denver Nuggets",
+        "abbreviation": "DEN",
+        "logo": "https://a.espncdn.com/i/teamlogos/nba/500/scoreboard/den.png"
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "overtime": {
+  "id": "401810626",
+  "date": "2026-02-11T00:30Z",
+  "season": {
+   "year": 2026,
+   "type": 2,
+   "slug": "regular-season"
+  },
+  "status": {
+   "clock": 0,
+   "displayClock": "0.0",
+   "period": 5,
+   "type": {
+    "id": "3",
+    "name": "STATUS_FINAL",
+    "state": "post",
+    "completed": true,
+    "description": "Final",
+    "detail": "Final/OT",
+    "shortDetail": "Final/OT",
+    "altDetail": "OT"
+   }
+  },
+  "competitions": [
+   {
+    "id": "401810626",
+    "date": "2026-02-11T00:30Z",
+    "status": {
+     "clock": 0,
+     "displayClock": "0.0",
+     "period": 5,
+     "type": {
+      "id": "3",
+      "name": "STATUS_FINAL",
+      "state": "post",
+      "completed": true,
+      "description": "Final",
+      "detail": "Final/OT",
+      "shortDetail": "Final/OT",
+      "altDetail": "OT"
+     }
+    },
+    "competitors": [
+     {
+      "homeAway": "home",
+      "winner": false,
+      "score": "134",
+      "team": {
+       "id": "18",
+       "displayName": "New York Knicks",
+       "abbreviation": "NY",
+       "logo": "https://a.espncdn.com/i/teamlogos/nba/500/scoreboard/ny.png"
+      }
+     },
+     {
+      "homeAway": "away",
+      "winner": true,
+      "score": "137",
+      "team": {
+       "id": "11",
+       "displayName": "Indiana Pacers",
+       "abbreviation": "IND",
+       "logo": "https://a.espncdn.com/i/teamlogos/nba/500/scoreboard/ind.png"
+      }
+     }
+    ]
+   }
+  ]
+ },
+ "summary": {
+  "header": {
+   "id": "401869369",
+   "season": {
+    "year": 2026,
+    "current": false,
+    "type": 3
+   },
+   "competitions": [
+    {
+     "id": "401869369",
+     "date": "2026-04-20T23:00Z",
+     "status": {
+      "type": {
+       "id": "3",
+       "name": "STATUS_FINAL",
+       "state": "post",
+       "completed": true,
+       "description": "Final",
+       "detail": "Final",
+       "shortDetail": "Final"
+      }
+     },
+     "competitors": [
+      {
+       "homeAway": "home",
+       "winner": true,
+       "score": "115",
+       "team": {
+        "id": "5",
+        "displayName": "Cleveland Cavaliers",
+        "abbreviation": "CLE",
+        "logos": [
+         {
+          "href": "https://a.espncdn.com/i/teamlogos/nba/500/cle.png",
+          "width": 500,
+          "height": 500,
+          "alt": "",
+          "rel": [
+           "full",
+           "default"
+          ],
+          "lastUpdated": "2024-06-25T21:17Z"
+         }
+        ]
+       }
+      },
+      {
+       "homeAway": "away",
+       "winner": false,
+       "score": "105",
+       "team": {
+        "id": "28",
+        "displayName": "Toronto Raptors",
+        "abbreviation": "TOR",
+        "logos": [
+         {
+          "href": "https://a.espncdn.com/i/teamlogos/nba/500/tor.png",
+          "width": 500,
+          "height": 500,
+          "alt": "",
+          "rel": [
+           "full",
+           "default"
+          ],
+          "lastUpdated": "2024-06-25T21:17Z"
+         }
+        ]
+       }
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "standings": {
+  "children": [
+   {
+    "name": "Eastern Conference",
+    "standings": {
+     "entries": [
+      {
+       "team": {
+        "id": "8",
+        "displayName": "Detroit Pistons",
+        "abbreviation": "DET",
+        "logos": [
+         {
+          "href": "https://a.espncdn.com/i/teamlogos/nba/500/det.png",
+          "width": 500,
+          "height": 500,
+          "alt": "",
+          "rel": [
+           "full",
+           "default"
+          ],
+          "lastUpdated": "2024-06-25T21:17Z"
+         }
+        ]
+       },
+       "stats": [
+        {
+         "name": "gamesBehind",
+         "value": 0,
+         "displayValue": "-"
+        },
+        {
+         "name": "losses",
+         "value": 22,
+         "displayValue": "22"
+        },
+        {
+         "name": "playoffSeed",
+         "value": 1,
+         "displayValue": "1"
+        },
+        {
+         "name": "streak",
+         "value": 3,
+         "displayValue": "W3"
+        },
+        {
+         "name": "winPercent",
+         "value": 0.73170733,
+         "displayValue": ".732"
+        },
+        {
+         "name": "wins",
+         "value": 60,
+         "displayValue": "60"
+        },
+        {
+         "name": "Home",
+         "displayValue": "31-9"
+        },
+        {
+         "name": "Road",
+         "displayValue": "28-13"
+        },
+        {
+         "name": "Last Ten Games",
+         "displayValue": "8-2"
+        }
+       ]
+      },
+      {
+       "team": {
+        "id": "1",
+        "displayName": "Atlanta Hawks",
+        "abbreviation": "ATL",
+        "logos": [
+         {
+          "href": "https://a.espncdn.com/i/teamlogos/nba/500/atl.png",
+          "width": 500,
+          "height": 500,
+          "alt": "",
+          "rel": [
+           "full",
+           "default"
+          ],
+          "lastUpdated": "2024-06-25T21:17Z"
+         }
+        ]
+       },
+       "stats": [
+        {
+         "name": "gamesBehind",
+         "value": 14,
+         "displayValue": "14"
+        },
+        {
+         "name": "losses",
+         "value": 36,
+         "displayValue": "36"
+        },
+        {
+         "name": "playoffSeed",
+         "value": 6,
+         "displayValue": "6"
+        },
+        {
+         "name": "streak",
+         "value": -1,
+         "displayValue": "L1"
+        },
+        {
+         "name": "winPercent",
+         "value": 0.5609756,
+         "displayValue": ".561"
+        },
+        {
+         "name": "wins",
+         "value": 46,
+         "displayValue": "46"
+        },
+        {
+         "name": "Home",
+         "displayValue": "24-17"
+        },
+        {
+         "name": "Road",
+         "displayValue": "22-19"
+        },
+        {
+         "name": "Last Ten Games",
+         "displayValue": "6-4"
+        }
+       ]
+      },
+      {
+       "team": {
+        "id": "2",
+        "displayName": "Boston Celtics",
+        "abbreviation": "BOS",
+        "logos": [
+         {
+          "href": "https://a.espncdn.com/i/teamlogos/nba/500/bos.png",
+          "width": 500,
+          "height": 500,
+          "alt": "",
+          "rel": [
+           "full",
+           "default"
+          ],
+          "lastUpdated": "2024-06-25T21:17Z"
+         }
+        ]
+       },
+       "stats": [
+        {
+         "name": "gamesBehind",
+         "value": 4,
+         "displayValue": "4"
+        },
+        {
+         "name": "losses",
+         "value": 26,
+         "displayValue": "26"
+        },
+        {
+         "name": "playoffSeed",
+         "value": 2,
+         "displayValue": "2"
+        },
+        {
+         "name": "streak",
+         "value": 2,
+         "displayValue": "W2"
+        },
+        {
+         "name": "winPercent",
+         "value": 0.68292683,
+         "displayValue": ".683"
+        },
+        {
+         "name": "wins",
+         "value": 56,
+         "displayValue": "56"
+        },
+        {
+         "name": "Home",
+         "displayValue": "30-11"
+        },
+        {
+         "name": "Road",
+         "displayValue": "26-15"
+        },
+        {
+         "name": "Last Ten Games",
+         "displayValue": "8-2"
+        }
+       ]
+      }
+     ]
+    }
+   },
+   {
+    "name": "Western Conference",
+    "standings": {
+     "entries": [
+      {
+       "team": {
+        "id": "13",
+        "displayName": "Los Angeles Lakers",
+        "abbreviation": "LAL",
+        "logos": [
+         {
+          "href": "https://a.espncdn.com/i/teamlogos/nba/500/lal.png",
+          "width": 500,
+          "height": 500,
+          "alt": "",
+          "rel": [
+           "full",
+           "default"
+          ],
+          "lastUpdated": "2024-06-25T21:17Z"
+         }
+        ]
+       },
+       "stats": [
+        {
+         "name": "gamesBehind",
+         "value": 11,
+         "displayValue": "11"
+        },
+        {
+         "name": "losses",
+         "value": 29,
+         "displayValue": "29"
+        },
+        {
+         "name": "playoffSeed",
+         "value": 4,
+         "displayValue": "4"
+        },
+        {
+         "name": "streak",
+         "value": 3,
+         "displayValue": "W3"
+        },
+        {
+         "name": "winPercent",
+         "value": 0.64634144,
+         "displayValue": ".646"
+        },
+        {
+         "name": "wins",
+         "value": 53,
+         "displayValue": "53"
+        },
+        {
+         "name": "Home",
+         "displayValue": "28-13"
+        },
+        {
+         "name": "Road",
+         "displayValue": "25-16"
+        },
+        {
+         "name": "Last Ten Games",
+         "displayValue": "7-3"
+        }
+       ]
+      },
+      {
+       "team": {
+        "id": "24",
+        "displayName": "San Antonio Spurs",
+        "abbreviation": "SA",
+        "logos": [
+         {
+          "href": "https://a.espncdn.com/i/teamlogos/nba/500/sa.png",
+          "width": 500,
+          "height": 500,
+          "alt": "",
+          "rel": [
+           "full",
+           "default"
+          ],
+          "lastUpdated": "2024-06-25T21:17Z"
+         }
+        ]
+       },
+       "stats": [
+        {
+         "name": "gamesBehind",
+         "value": 2,
+         "displayValue": "2"
+        },
+        {
+         "name": "losses",
+         "value": 20,
+         "displayValue": "20"
+        },
+        {
+         "name": "playoffSeed",
+         "value": 2,
+         "displayValue": "2"
+        },
+        {
+         "name": "streak",
+         "value": -1,
+         "displayValue": "L1"
+        },
+        {
+         "name": "winPercent",
+         "value": 0.75609756,
+         "displayValue": ".756"
+        },
+        {
+         "name": "wins",
+         "value": 62,
+         "displayValue": "62"
+        },
+        {
+         "name": "Home",
+         "displayValue": "32-8"
+        },
+        {
+         "name": "Road",
+         "displayValue": "29-12"
+        },
+        {
+         "name": "Last Ten Games",
+         "displayValue": "8-2"
+        }
+       ]
+      },
+      {
+       "team": {
+        "id": "22",
+        "displayName": "Portland Trail Blazers",
+        "abbreviation": "POR",
+        "logos": [
+         {
+          "href": "https://a.espncdn.com/i/teamlogos/nba/500/por.png",
+          "width": 500,
+          "height": 500,
+          "alt": "",
+          "rel": [
+           "full",
+           "default"
+          ],
+          "lastUpdated": "2024-06-25T21:17Z"
+         }
+        ]
+       },
+       "stats": [
+        {
+         "name": "gamesBehind",
+         "value": 22,
+         "displayValue": "22"
+        },
+        {
+         "name": "losses",
+         "value": 40,
+         "displayValue": "40"
+        },
+        {
+         "name": "playoffSeed",
+         "value": 7,
+         "displayValue": "7"
+        },
+        {
+         "name": "streak",
+         "value": 2,
+         "displayValue": "W2"
+        },
+        {
+         "name": "winPercent",
+         "value": 0.5121951,
+         "displayValue": ".512"
+        },
+        {
+         "name": "wins",
+         "value": 42,
+         "displayValue": "42"
+        },
+        {
+         "name": "Home",
+         "displayValue": "24-17"
+        },
+        {
+         "name": "Road",
+         "displayValue": "18-23"
+        },
+        {
+         "name": "Last Ten Games",
+         "displayValue": "7-3"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  ]
+ }
+}

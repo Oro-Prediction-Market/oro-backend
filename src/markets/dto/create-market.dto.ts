@@ -145,4 +145,14 @@ export class CreateMarketDto {
   @IsOptional()
   @IsString()
   unlFixtureId?: string;
+
+  /**
+   * ESPN's id for an NBA game (stored in `metadata.espnGameId`). The dedupe
+   * key for NBA markets and how settlement finds the game. Not stored in
+   * `externalMatchId`, which the keeper treats as a football-data.org id.
+   */
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  espnGameId?: string;
 }
