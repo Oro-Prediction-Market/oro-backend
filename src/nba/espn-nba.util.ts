@@ -36,6 +36,10 @@ export interface NbaTeamSide {
   score: number | null;
   /** ESPN's own verdict; only meaningful once the game is final. */
   winner: boolean;
+  /** "Cavaliers"; null when ESPN leaves it out. */
+  shortName: string | null;
+  /** Overall win-loss for the current season type, "8-4"; null when missing. */
+  record: string | null;
 }
 
 export interface NbaGame {
@@ -61,6 +65,17 @@ const num = (v: unknown): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
+function overallRecord(records: unknown): string | null {
+  if (!Array.isArray(records)) return null;
+  const r =
+    records.find((x: any) => x?.type === "total" || x?.name === "overall") ??
+    null;
+  const summary = r?.summary;
+  return typeof summary === "string" && /^\d+-\d+$/.test(summary)
+    ? summary
+    : null;
+}
+
 function side(c: any): NbaTeamSide | null {
   const t = c?.team;
   if (!t?.id || !t?.displayName) return null;
@@ -71,6 +86,8 @@ function side(c: any): NbaTeamSide | null {
     logo: t.logo ?? t.logos?.[0]?.href ?? null,
     score: num(c.score),
     winner: c.winner === true,
+    shortName: t.shortDisplayName ? String(t.shortDisplayName) : null,
+    record: overallRecord(c.records),
   };
 }
 

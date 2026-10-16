@@ -64,6 +64,49 @@ afterEach(() => {
 });
 
 describe("reading ESPN games", () => {
+  it("reads a team's short name and overall record when ESPN sends them", () => {
+    const [e] = fx.scheduled;
+    const comp = e.competitions[0];
+    const withExtras = {
+      ...e,
+      competitions: [
+        {
+          ...comp,
+          competitors: comp.competitors.map((c: any, i: number) => ({
+            ...c,
+            team: { ...c.team, shortDisplayName: i ? "Cavaliers" : "76ers" },
+            records: [
+              { name: "Home", type: "home", summary: "5-1" },
+              { name: "overall", type: "total", summary: i ? "8-4" : "7-5" },
+            ],
+          })),
+        },
+      ],
+    };
+    const g = parseEspnGame(withExtras)!;
+    const sides = [g.home, g.away].sort((a, b) => a.name.localeCompare(b.name));
+    expect(sides.map((t) => [t.shortName, t.record])).toEqual([
+      ["Cavaliers", "8-4"],
+      ["76ers", "7-5"],
+    ]);
+    // Missing or malformed: null, not a guess.
+    const [plain] = scheduled();
+    expect(plain.home.record).toBeNull();
+    const odd = parseEspnGame({
+      ...e,
+      competitions: [
+        {
+          ...comp,
+          competitors: comp.competitors.map((c: any) => ({
+            ...c,
+            records: [{ type: "total", summary: "n/a" }],
+          })),
+        },
+      ],
+    })!;
+    expect(odd.home.record).toBeNull();
+  });
+
   it("parses a scheduled game: teams, tip-off, season type", () => {
     const [g] = scheduled();
     expect(g.home.name).toBe("Philadelphia 76ers");
