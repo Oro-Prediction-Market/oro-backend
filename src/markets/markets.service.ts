@@ -341,6 +341,121 @@ export class MarketsService implements OnModuleInit {
     return markets;
   }
 
+  // ── Whole-group actions ────────────────────────────────────────────────────
+  // A group is one Yes/No market per option, so every action an admin takes on
+  // "the market" has to reach all of them. Each one goes through the same
+  // single-market path as before (transition, cancel, delete), so a group gets
+  // exactly the rules and money handling a single market does.
+
+  /** The name of a group's option: metadata.candidate, else the title after "—". */
+  static optionName(m: Pick<Market, "title" | "metadata">): string {
+    const meta = (m.metadata as { candidate?: unknown } | null)?.candidate;
+    if (typeof meta === "string" && meta.trim()) return meta.trim();
+    const parts = m.title.split("—");
+    return parts.length > 1 ? parts[parts.length - 1].trim() : m.title;
+  }
+
+  /** Close every option still taking predictions. */
+  async closeGroup(
+    groupId: string,
+  ): Promise<{ closed: number; skipped: number; failed: string[] }> {
+    const members = await this.findGroup(groupId);
+    let closed = 0;
+    const failed: string[] = [];
+    for (const m of members) {
+      if (m.status !== MarketStatus.OPEN) continue;
+      try {
+        await this.transition(m.id, MarketStatus.CLOSED);
+        closed++;
+      } catch (err) {
+        failed.push(
+          `${MarketsService.optionName(m)}: ${(err as Error).message}`,
+        );
+      }
+    }
+    return { closed, skipped: members.length - closed - failed.length, failed };
+  }
+
+  /**
+   * Cancel every option that has not finished and refund its predictions, with
+   * one channel post for the group. Settled, resolved and already-cancelled
+   * options are left alone: the engine's cancel refunds whatever positions it
+   * finds, so running it on a paid-out market would pay those bettors twice.
+   */
+  async cancelGroup(
+    groupId: string,
+  ): Promise<{ cancelled: number; skipped: number; failed: string[] }> {
+    const members = await this.findGroup(groupId);
+    const cancellable = new Set<MarketStatus>([
+      MarketStatus.UPCOMING,
+      MarketStatus.OPEN,
+      MarketStatus.CLOSED,
+      MarketStatus.RESOLVING,
+    ]);
+    let cancelled = 0;
+    const failed: string[] = [];
+    for (const m of members) {
+      if (!cancellable.has(m.status)) continue;
+      try {
+        await this.cancel(m.id, { channelPost: false });
+        cancelled++;
+      } catch (err) {
+        failed.push(
+          `${MarketsService.optionName(m)}: ${(err as Error).message}`,
+        );
+      }
+    }
+    if (cancelled > 0) {
+      const title =
+        members[0].groupTitle ?? members[0].title.split("—")[0].trim();
+      this.telegram
+        .postToChannel(
+          `❌ <b>Market Cancelled: ${title}</b>\n\nAll pending predictions on every option have been fully refunded.`,
+        )
+        .catch(() => undefined);
+    }
+    return {
+      cancelled,
+      skipped: members.length - cancelled - failed.length,
+      failed,
+    };
+  }
+
+  /**
+   * Delete the whole group, or nothing. Checked up front against the same
+   * rule as a single delete (no bets, unless cancelled or not yet open), so a
+   * group is never left half deleted.
+   */
+  async deleteGroup(groupId: string): Promise<{ deleted: number }> {
+    const members = await this.findGroup(groupId);
+    const blocked = members.filter(
+      (m) =>
+        parseFloat(String(m.totalPool ?? 0)) !== 0 &&
+        m.status !== MarketStatus.CANCELLED &&
+        m.status !== MarketStatus.UPCOMING,
+    );
+    if (blocked.length) {
+      throw new ForbiddenException(
+        `${blocked.length} option(s) have predictions on them ` +
+          `(${blocked.map((m) => MarketsService.optionName(m)).join(", ")}). ` +
+          `Cancel the group first, which refunds them, then delete it.`,
+      );
+    }
+    for (const m of members) await this.delete(m.id);
+    return { deleted: members.length };
+  }
+
+  /** Pin or unpin every option, so the group moves as one. */
+  async setGroupFeatured(
+    groupId: string,
+    isFeatured: boolean,
+  ): Promise<number> {
+    const members = await this.findGroup(groupId);
+    await this.marketRepo.update({ groupId }, { isFeatured });
+    for (const m of members) await this.invalidateMarketCache(m.id);
+    return members.length;
+  }
+
   /**
    * Edit a whole grouped event at once. Shared fields fan out to every sibling;
    * per-candidate name/image are applied individually. Renaming the umbrella
@@ -1169,7 +1284,7 @@ export class MarketsService implements OnModuleInit {
     }
   }
 
-  async cancel(marketId: string) {
+  async cancel(marketId: string, opts: { channelPost?: boolean } = {}) {
     // Load market + affected positions BEFORE cancelling so we can notify bettors
     const market = await this.marketRepo.findOne({
       where: { id: marketId },
@@ -1190,12 +1305,14 @@ export class MarketsService implements OnModuleInit {
     await this.invalidateMarketCache(marketId);
 
     if (market) {
-      // 1. Channel announcement
-      this.telegram
-        .postToChannel(
-          `❌ <b>Market Cancelled: ${market.title}</b>\n\nAll pending predictions have been fully refunded.`,
-        )
-        .catch(() => undefined);
+      // 1. Channel announcement. A group cancel turns this off and posts once
+      //    for the whole group instead of once per option.
+      if (opts.channelPost !== false)
+        this.telegram
+          .postToChannel(
+            `❌ <b>Market Cancelled: ${market.title}</b>\n\nAll pending predictions have been fully refunded.`,
+          )
+          .catch(() => undefined);
 
       // 2. Individual DM to every unique bettor whose position was refunded
       const seenUsers = new Set<string>();

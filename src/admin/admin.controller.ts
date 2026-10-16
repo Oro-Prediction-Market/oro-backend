@@ -572,6 +572,179 @@ export class AdminController {
     return markets;
   }
 
+  // ── Whole-group actions: close, cancel, delete, pin, announce ──────────────
+  // A group is one Yes/No market per option; these act on all of them at once,
+  // each through the same path a single market uses. One audit entry per group.
+
+  private async auditGroup(
+    req: any,
+    groupId: string,
+    action: AuditAction,
+    after: Record<string, unknown>,
+    members: Market[],
+  ) {
+    await this.auditService.log({
+      adminId: req.user.userId,
+      isAdmin: true,
+      action,
+      entityType: "market-group",
+      entityId: groupId,
+      before: {
+        title: members[0]?.groupTitle,
+        statuses: members.map((m) => `${m.title}: ${m.status}`),
+      },
+      after,
+      ipAddress: req.ip,
+    });
+  }
+
+  @Post("markets/group/:groupId/close")
+  @HttpCode(200)
+  @ApiOperation({ summary: "Close every open option in a group" })
+  async closeMarketGroup(
+    @Param("groupId", ParseUUIDPipe) groupId: string,
+    @Request() req: any,
+  ) {
+    const before = await this.marketsService.findGroup(groupId);
+    const result = await this.marketsService.closeGroup(groupId);
+    await this.auditGroup(
+      req,
+      groupId,
+      AuditAction.MARKET_TRANSITION,
+      { status: "closed", ...result },
+      before,
+    );
+    return result;
+  }
+
+  @Post("markets/group/:groupId/cancel")
+  @HttpCode(200)
+  @ApiOperation({
+    summary: "Cancel every unfinished option in a group and refund it",
+  })
+  async cancelMarketGroup(
+    @Param("groupId", ParseUUIDPipe) groupId: string,
+    @Request() req: any,
+  ) {
+    const before = await this.marketsService.findGroup(groupId);
+    const result = await this.marketsService.cancelGroup(groupId);
+    await this.auditGroup(
+      req,
+      groupId,
+      AuditAction.MARKET_CANCEL,
+      { status: "cancelled", ...result },
+      before,
+    );
+    return result;
+  }
+
+  @Delete("markets/group/:groupId")
+  @HttpCode(200)
+  @ApiOperation({
+    summary: "Delete a whole group (refused if any option still has bets)",
+  })
+  async deleteMarketGroup(
+    @Param("groupId", ParseUUIDPipe) groupId: string,
+    @Request() req: any,
+  ) {
+    const before = await this.marketsService.findGroup(groupId);
+    // Audited before the delete, as a single delete is: afterwards there is
+    // nothing left to describe.
+    await this.auditGroup(
+      req,
+      groupId,
+      AuditAction.MARKET_DELETE,
+      { deleted: before.length },
+      before,
+    );
+    return this.marketsService.deleteGroup(groupId);
+  }
+
+  @Patch("markets/group/:groupId/featured")
+  @ApiOperation({ summary: "Pin or unpin a whole group" })
+  async setMarketGroupFeatured(
+    @Param("groupId", ParseUUIDPipe) groupId: string,
+    @Body() body: { isFeatured?: unknown },
+    @Request() req: any,
+  ) {
+    if (typeof body?.isFeatured !== "boolean") {
+      throw new BadRequestException("isFeatured must be true or false");
+    }
+    const before = await this.marketsService.findGroup(groupId);
+    const count = await this.marketsService.setGroupFeatured(
+      groupId,
+      body.isFeatured,
+    );
+    await this.auditGroup(
+      req,
+      groupId,
+      AuditAction.MARKET_TRANSITION,
+      { isFeatured: body.isFeatured },
+      before,
+    );
+    return { groupId, isFeatured: body.isFeatured, count };
+  }
+
+  // One post for the whole group, linking to the group page, instead of one
+  // announcement per option.
+  @Post("markets/group/:groupId/announce")
+  @ApiOperation({ summary: "Announce a whole group to the Telegram channel" })
+  async announceMarketGroup(
+    @Param("groupId", ParseUUIDPipe) groupId: string,
+    @Request() req: any,
+  ) {
+    const members = await this.marketsService.findGroup(groupId);
+    const first = members[0];
+    const botUsername = (
+      process.env.TELEGRAM_BOT_USERNAME ||
+      process.env.BOT_USERNAME ||
+      ""
+    ).replace(/^@/, "");
+    // `g_<groupId>` opens the group page in the mini app.
+    const link = botUsername
+      ? `https://t.me/${botUsername}?startapp=g_${groupId}`
+      : process.env.TELEGRAM_MINI_APP_URL || "";
+    const closes = members
+      .map((m) => m.closesAt)
+      .filter((d): d is Date => !!d)
+      .sort((a, b) => new Date(a).getTime() - new Date(b).getTime())[0];
+    const announcement = {
+      title: first.groupTitle ?? first.title.split("—")[0].trim(),
+      outcomes: members.map((m) => MarketsService.optionName(m)),
+      outcomesHeading: "Options",
+      closesAt: closes
+        ? new Date(closes).toLocaleString("en-US", {
+            dateStyle: "medium",
+            timeStyle: "short",
+          })
+        : "TBD",
+      link,
+    };
+    // A picture only when every option shares one: that is the group's own
+    // image. Options with their own photos would make any single one wrong.
+    const images = new Set(members.map((m) => (m.imageUrl ?? "").trim()));
+    const image = images.size === 1 ? [...images][0] : "";
+    const withImage =
+      !!image &&
+      (await this.telegramSimple.postPhotoToChannel(
+        image,
+        buildMarketAnnouncement(announcement, TELEGRAM_CAPTION_MAX),
+      ));
+    if (!withImage) {
+      await this.telegramSimple.postToChannel(
+        buildMarketAnnouncement(announcement, TELEGRAM_MESSAGE_MAX),
+      );
+    }
+    await this.auditGroup(
+      req,
+      groupId,
+      AuditAction.MARKET_UPDATE,
+      { announced: true, withImage },
+      members,
+    );
+    return { success: true, withImage };
+  }
+
   // ── Market suggestions (Oracle Orbit review + publish) ──────────────────────
 
   @Get("suggestions")

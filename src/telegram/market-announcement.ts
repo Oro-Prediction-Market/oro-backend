@@ -27,6 +27,8 @@ export interface AnnouncementInput {
   /** Already formatted for display, e.g. "Oct 26, 2026, 8:00 PM", or "TBD". */
   closesAt: string;
   link: string;
+  /** The list's heading; "Outcomes" unless given. A group lists "Options". */
+  outcomesHeading?: string;
 }
 
 /**
@@ -53,7 +55,7 @@ export function buildMarketAnnouncement(
       ...lines.slice(0, shown),
       ...(hidden > 0 ? [`+${hidden} more`] : []),
     ].join("\n");
-    return `${head}🎲 <b>Outcomes:</b>\n${list}${tail}`;
+    return `${head}🎲 <b>${escapeTelegramHtml(input.outcomesHeading ?? "Outcomes")}:</b>\n${list}${tail}`;
   };
 
   for (let shown = lines.length; shown >= 0; shown--) {
