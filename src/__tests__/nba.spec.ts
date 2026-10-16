@@ -211,7 +211,8 @@ describe("NBA market shape", () => {
     const [g] = scheduled();
     const before = Date.parse("2026-10-20T00:00:00Z");
     expect(wantsNbaMarket(g, before)).toBe(true);
-    expect(wantsNbaMarket({ ...g, seasonType: 1 }, before)).toBe(false); // preseason
+    expect(wantsNbaMarket({ ...g, seasonType: 1 }, before)).toBe(true); // preseason
+    expect(wantsNbaMarket({ ...g, seasonType: 4 }, before)).toBe(false); // off-season / unknown
     expect(wantsNbaMarket(g, Date.parse(g.tipoff) + 1)).toBe(false);
     expect(
       wantsNbaMarket({ ...g, statusName: "STATUS_POSTPONED" }, before),
@@ -313,12 +314,14 @@ describe("NbaJobsService", () => {
     expect(dto.espnGameId).toBe(games[1].id);
   });
 
-  it("skips preseason games", async () => {
+  it("makes preseason markets too, labelled as preseason", async () => {
     const { svc, marketsService } = make({
       games: scheduled().map((g) => ({ ...g, seasonType: 1 })),
     });
     await svc.runCreateMarkets(now);
-    expect(marketsService.create).not.toHaveBeenCalled();
+    expect(marketsService.create).toHaveBeenCalled();
+    const dto = (marketsService.create.mock.calls[0] as any[])[0];
+    expect(dto.metadata?.matchLabel ?? dto.matchLabel).toBe("Preseason");
   });
 
   it("moves an open market's close time when tip-off moves", async () => {

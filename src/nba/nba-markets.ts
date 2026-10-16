@@ -12,6 +12,9 @@ export const NBA_MATCH_SUBCATEGORY = "nba-match";
 
 /** Season types that get markets: regular season, play-in, playoffs. */
 export const NBA_MARKET_SEASON_TYPES: readonly number[] = [
+  // Preseason too: teams rest starters so results are near coin-flips, but
+  // users want to predict them. They settle exactly like the rest.
+  NBA_SEASON_TYPE.PRE,
   NBA_SEASON_TYPE.REGULAR,
   NBA_SEASON_TYPE.PLAY_IN,
   NBA_SEASON_TYPE.POST,
@@ -20,6 +23,7 @@ export const NBA_MARKET_SEASON_TYPES: readonly number[] = [
 export function nbaMatchLabel(seasonType: number): string {
   if (seasonType === NBA_SEASON_TYPE.PLAY_IN) return "Play-In";
   if (seasonType === NBA_SEASON_TYPE.POST) return "Playoffs";
+  if (seasonType === NBA_SEASON_TYPE.PRE) return "Preseason";
   return "Regular Season";
 }
 
