@@ -64,7 +64,7 @@ const SETTLEMENT_AUDIT_RUNS_KEPT = 30;
 
 /** A settled market the provider now contradicts. */
 export interface SettlementAuditMismatch {
-  source: "football" | "ucl";
+  source: "football" | "ucl" | "nba";
   marketId: string;
   title: string;
   settledAs: { id: string; label: string };
@@ -625,19 +625,7 @@ export class KeeperService {
         // and got paid out anyway. One more call closes that gap. A market that
         // now disagrees is left RESOLVING for a human rather than settled on
         // either answer.
-        const recheck = await this.recheckProposal(market);
-        if (recheck.verdict === "disagrees") {
-          this.addLog(
-            "warn",
-            `Auto-settle BLOCKED for "${market.title}" — ${recheck.reason}`,
-          );
-          await this.notifyAdmin(
-            `🛑 <b>Keeper: Auto-Settle Blocked</b>\n\n` +
-              `📊 <b>${market.title}</b>\n${recheck.reason}\n\n` +
-              `Left RESOLVING — please resolve manually in the admin panel.`,
-          );
-          continue;
-        }
+        if (!(await this.mayAutoSettle(market))) continue;
 
         try {
           this.addLog(
@@ -1506,16 +1494,21 @@ export class KeeperService {
     // Two sources, one report. A split report is one a reader learns to skim.
     const league = await this.auditFootballSettlements(since);
     const ucl = await this.auditUclSettlements(since);
+    const nba = await this.auditNbaSettlements(since);
 
-    const checked = league.checked + ucl.checked;
-    const mismatches = [...league.mismatches, ...ucl.mismatches];
+    const checked = league.checked + ucl.checked + nba.checked;
+    const mismatches = [
+      ...league.mismatches,
+      ...ucl.mismatches,
+      ...nba.mismatches,
+    ];
     const run: SettlementAuditRun = {
       ranAt: new Date().toISOString(),
       trigger,
       lookbackDays: AUDIT_LOOKBACK_DAYS,
       checked,
       mismatches,
-      unavailable: [league.unavailable, ucl.unavailable].filter(
+      unavailable: [league.unavailable, ucl.unavailable, nba.unavailable].filter(
         (u): u is string => !!u,
       ),
     };
@@ -1723,18 +1716,6 @@ export class KeeperService {
   }
 
   /**
-   * Ask the provider again, just before settling, whether the proposal still
-   * holds.
-   *
-   * Only `"disagrees"` blocks a settlement. `"unverified"` — football-data
-   * unreachable, or still not carrying a final verdict — deliberately does not:
-   * blocking there would freeze every settlement behind someone else's outage
-   * and hand a pile of manual work to an admin, while settling is no worse than
-   * what we did before this check existed. The proposal already passed the
-   * readiness checks in `readFixtureResult` when it was made, so it is stale at
-   * worst, never unchecked. The daily audit is what covers the remainder.
-   */
-  /**
    * NBA: re-read the game from ESPN and confirm the proposed team still won.
    * Same verdicts as football: a different winner blocks the payout for a
    * human; an unreadable or not-yet-final record is "unverified", which (as
@@ -1770,6 +1751,136 @@ export class KeeperService {
     return { verdict: "agrees", reason: `ESPN final ${score}` };
   }
 
+  /**
+   * The same sweep for NBA games, against ESPN.
+   *
+   * One summary call per settled game, made one after another: a week of NBA
+   * is around a hundred games, well within what ESPN serves without a key.
+   * Like the others it only reports what it can positively contradict: a game
+   * ESPN no longer shows as a clean final, or whose winner no outcome names,
+   * is skipped rather than flagged.
+   */
+  private async auditNbaSettlements(since: Date): Promise<{
+    checked: number;
+    mismatches: SettlementAuditMismatch[];
+    unavailable?: string;
+  }> {
+    const settled = await this.marketRepo.find({
+      where: {
+        status: MarketStatus.SETTLED,
+        externalSource: ESPN_NBA_SOURCE,
+        resolvedAt: MoreThan(since),
+      },
+      relations: ["outcomes"],
+    });
+    if (!settled.length) return { checked: 0, mismatches: [] };
+
+    const mismatches: SettlementAuditMismatch[] = [];
+    let checked = 0;
+    let unreachable = 0;
+
+    for (const market of settled) {
+      const gameId = market.metadata?.espnGameId;
+      if (!gameId || !market.resolvedOutcomeId) continue;
+      const game = await fetchNbaGame(String(gameId));
+      if (!game) {
+        unreachable++;
+        continue;
+      }
+      const result = nbaFinalResult(game);
+      if (!result) continue;
+      const winner = nbaWinnerOutcome(market.outcomes ?? [], game);
+      if (!winner) continue;
+
+      checked++;
+      if (winner.id === market.resolvedOutcomeId) continue;
+
+      const label = (id: string) =>
+        market.outcomes.find((o) => o.id === id)?.label ?? id;
+      mismatches.push({
+        source: "nba",
+        marketId: market.id,
+        title: market.title,
+        settledAs: {
+          id: market.resolvedOutcomeId,
+          label: label(market.resolvedOutcomeId),
+        },
+        shouldBe: { id: winner.id, label: winner.label },
+        detail: `${game.away.abbr} ${result.away}–${result.home} ${game.home.abbr}`,
+      });
+    }
+
+    return {
+      checked,
+      mismatches,
+      ...(unreachable
+        ? { unavailable: `ESPN: ${unreachable} NBA game(s) could not be read` }
+        : {}),
+    };
+  }
+
+  /**
+   * The pre-payout re-check, shared by both settlers.
+   *
+   * Two jobs settle a market once its objection window expires: this keeper
+   * (every minute) and AutoResolveMarketsJob (every five). Only the keeper used
+   * to re-check, so whenever the other one got there first the payout went out
+   * on the proposal alone. Both now call this, so whichever settles, the result
+   * has been read again first.
+   *
+   * Returns false when the provider now disagrees; the market is left
+   * RESOLVING for an admin. The DM is sent once per market and proposal, not
+   * on every tick of both jobs while it waits.
+   */
+  async mayAutoSettle(market: Market): Promise<boolean> {
+    if (!market.outcomes) {
+      market.outcomes =
+        (
+          await this.marketRepo.findOne({
+            where: { id: market.id },
+            relations: ["outcomes"],
+          })
+        )?.outcomes ?? [];
+    }
+    const recheck = await this.recheckProposal(market);
+    if (recheck.verdict !== "disagrees") return true;
+
+    this.addLog(
+      "warn",
+      `Auto-settle BLOCKED for "${market.title}" — ${recheck.reason}`,
+    );
+    // "OK" means this is the first report of this block; null means it was
+    // already sent. A Redis failure reports again rather than staying silent.
+    const first = await this.redis.redis
+      .set(
+        `oro:settle-blocked:${market.id}:${market.proposedOutcomeId}`,
+        "1",
+        "EX",
+        7 * 24 * 3600,
+        "NX",
+      )
+      .catch(() => "redis-down");
+    if (first !== null)
+      await this.notifyAdmin(
+        `🛑 <b>Keeper: Auto-Settle Blocked</b>\n\n` +
+          `📊 <b>${market.title}</b>\n${recheck.reason}\n\n` +
+          `Left RESOLVING — please resolve manually in the admin panel.`,
+      );
+    return false;
+  }
+
+  /**
+   * Ask the provider again, just before settling, whether the proposal still
+   * holds.
+   *
+   * Only `"disagrees"` blocks a settlement. `"unverified"` — football-data
+   * unreachable, or still not carrying a final verdict — deliberately does not:
+   * blocking there would freeze every settlement behind someone else's outage
+   * and hand a pile of manual work to an admin, while settling is no worse than
+   * what we did before this check existed. The proposal already passed the
+   * readiness checks in `readFixtureResult` when it was made, so it is stale at
+   * worst, never unchecked. The daily audit is what covers the remainder.
+   */
   private async recheckProposal(
     market: Market,
   ): Promise<{ verdict: "agrees" | "disagrees" | "unverified"; reason: string }> {

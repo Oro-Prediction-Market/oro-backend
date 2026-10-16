@@ -72,6 +72,9 @@ describe("KeeperService — settlement audit record", () => {
     (svc as any).auditUclSettlements = jest
       .fn()
       .mockResolvedValue({ checked: 0, mismatches: [] });
+    (svc as any).auditNbaSettlements = jest
+      .fn()
+      .mockResolvedValue({ checked: 0, mismatches: [] });
   }
 
   it("records a clean run, so 'ran and found nothing' is visible", async () => {

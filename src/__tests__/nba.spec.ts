@@ -356,12 +356,15 @@ describe("NbaJobsService", () => {
     ...extra,
   });
 
-  it("proposes only after the same final is read twice 30 minutes apart", async () => {
+  it("proposes only after the same final is read twice an hour apart", async () => {
     mockEspn({ "summary?event=401869369": fx.summary });
     const { svc, marketsService } = make({ closed: [closedMarket()] });
     const t0 = Date.parse("2026-04-21T03:00:00Z");
     expect(await svc.runProposeResults(t0)).toBe(0); // first sighting
     expect(await svc.runProposeResults(t0 + 10 * 60_000)).toBe(0); // too soon
+    // The old 30-minute rule would have proposed here; football waits an hour.
+    expect(await svc.runProposeResults(t0 + 45 * 60_000)).toBe(0);
+    expect(await svc.runProposeResults(t0 + 59 * 60_000)).toBe(0);
     expect(await svc.runProposeResults(t0 + NBA_FINAL_STABLE_MS)).toBe(1);
     expect(marketsService.proposeResolution).toHaveBeenCalledWith(
       "m9",
@@ -474,5 +477,174 @@ describe("keeper pre-payout re-check for NBA", () => {
     mockEspn({});
     const r = await keeper().recheckProposal(market("o-cle"));
     expect(r.verdict).toBe("unverified");
+  });
+});
+
+describe("keeper settlement guard shared by both settlers", () => {
+  function keeper(setResult: () => Promise<string | null>) {
+    const redis = { redis: { set: jest.fn(setResult) } };
+    const marketRepo = { findOne: jest.fn() };
+    const svc: any = new KeeperService(
+      {} as any,
+      {} as any,
+      { get: () => undefined } as any,
+      redis as any,
+      marketRepo as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+    const notify = jest.spyOn(svc, "notifyAdmin").mockResolvedValue(undefined);
+    return { svc, redis, notify };
+  }
+  const market = (proposedOutcomeId: string) => ({
+    id: "m9",
+    title: "Cleveland Cavaliers vs Toronto Raptors",
+    externalSource: ESPN_NBA_SOURCE,
+    proposedOutcomeId,
+    metadata: { espnGameId: "401869369" },
+    outcomes: [
+      { id: "o-cle", label: "Cleveland Cavaliers" },
+      { id: "o-tor", label: "Toronto Raptors" },
+    ],
+  });
+
+  it("allows the payout when the provider agrees, without a DM", async () => {
+    mockEspn({ "summary?event=401869369": fx.summary });
+    const { svc, notify } = keeper(async () => "OK");
+    expect(await svc.mayAutoSettle(market("o-cle"))).toBe(true);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("allows it when the provider cannot be read, as football does", async () => {
+    mockEspn({});
+    const { svc } = keeper(async () => "OK");
+    expect(await svc.mayAutoSettle(market("o-cle"))).toBe(true);
+  });
+
+  it("blocks a disagreeing result and tells an admin once, not every tick", async () => {
+    mockEspn({ "summary?event=401869369": fx.summary });
+    const replies = ["OK", null, null];
+    const { svc, notify, redis } = keeper(async () => replies.shift()!);
+    for (let i = 0; i < 3; i++)
+      expect(await svc.mayAutoSettle(market("o-tor"))).toBe(false);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify.mock.calls[0][0]).toContain("Auto-Settle Blocked");
+    expect(redis.redis.set).toHaveBeenCalledWith(
+      "oro:settle-blocked:m9:o-tor",
+      "1",
+      "EX",
+      expect.any(Number),
+      "NX",
+    );
+  });
+
+  it("still tells an admin when Redis is down", async () => {
+    mockEspn({ "summary?event=401869369": fx.summary });
+    const { svc, notify } = keeper(async () => {
+      throw new Error("redis down");
+    });
+    expect(await svc.mayAutoSettle(market("o-tor"))).toBe(false);
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads outcomes when the caller did not", async () => {
+    mockEspn({ "summary?event=401869369": fx.summary });
+    const { svc } = keeper(async () => "OK");
+    const m: any = { ...market("o-tor"), outcomes: undefined };
+    svc.marketRepo.findOne.mockResolvedValue({ outcomes: market("o-tor").outcomes });
+    expect(await svc.mayAutoSettle(m)).toBe(false);
+    expect(svc.marketRepo.findOne).toHaveBeenCalled();
+  });
+});
+
+describe("daily settlement audit for NBA", () => {
+  function keeper(settled: any[]) {
+    const marketRepo = { find: jest.fn().mockResolvedValue(settled) };
+    const svc: any = new KeeperService(
+      {} as any,
+      {} as any,
+      { get: () => undefined } as any,
+      {} as any,
+      marketRepo as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+    return { svc, marketRepo };
+  }
+  const settledAs = (resolvedOutcomeId: string, espnGameId = "401869369") => ({
+    id: "m9",
+    title: "Cleveland Cavaliers vs Toronto Raptors",
+    externalSource: ESPN_NBA_SOURCE,
+    status: MarketStatus.SETTLED,
+    resolvedOutcomeId,
+    metadata: { espnGameId },
+    outcomes: [
+      { id: "o-cle", label: "Cleveland Cavaliers" },
+      { id: "o-tor", label: "Toronto Raptors" },
+    ],
+  });
+
+  it("only looks at settled NBA markets inside the lookback", async () => {
+    mockEspn({});
+    const { svc, marketRepo } = keeper([]);
+    await svc.auditNbaSettlements(new Date("2026-10-01"));
+    expect(marketRepo.find.mock.calls[0][0].where).toMatchObject({
+      status: MarketStatus.SETTLED,
+      externalSource: ESPN_NBA_SOURCE,
+    });
+  });
+
+  it("passes a market that was settled on the right team", async () => {
+    mockEspn({ "summary?event=401869369": fx.summary });
+    const r = await keeper([settledAs("o-cle")]).svc.auditNbaSettlements(new Date(0));
+    expect(r).toEqual({ checked: 1, mismatches: [] });
+  });
+
+  it("reports a market that was paid to the wrong team, with the score", async () => {
+    mockEspn({ "summary?event=401869369": fx.summary });
+    const r = await keeper([settledAs("o-tor")]).svc.auditNbaSettlements(new Date(0));
+    expect(r.checked).toBe(1);
+    expect(r.mismatches).toEqual([
+      expect.objectContaining({
+        source: "nba",
+        marketId: "m9",
+        settledAs: { id: "o-tor", label: "Toronto Raptors" },
+        shouldBe: { id: "o-cle", label: "Cleveland Cavaliers" },
+        detail: "TOR 105–115 CLE",
+      }),
+    ]);
+  });
+
+  it("says ESPN could not be read rather than reporting all-clear", async () => {
+    mockEspn({});
+    const r = await keeper([settledAs("o-tor")]).svc.auditNbaSettlements(new Date(0));
+    expect(r.checked).toBe(0);
+    expect(r.mismatches).toEqual([]);
+    expect(r.unavailable).toMatch(/ESPN/);
+  });
+
+  it("is part of the daily run", async () => {
+    const { svc } = keeper([]);
+    const nbaMismatch = {
+      source: "nba",
+      marketId: "m9",
+      title: "x",
+      settledAs: { id: "a", label: "A" },
+      shouldBe: { id: "b", label: "B" },
+      detail: "1–2",
+    };
+    svc.auditFootballSettlements = jest.fn().mockResolvedValue({ checked: 2, mismatches: [] });
+    svc.auditUclSettlements = jest.fn().mockResolvedValue({ checked: 0, mismatches: [] });
+    svc.auditNbaSettlements = jest
+      .fn()
+      .mockResolvedValue({ checked: 3, mismatches: [nbaMismatch] });
+    svc.recordSettlementAudit = jest.fn();
+    const notify = jest.spyOn(svc, "notifyAdmin").mockResolvedValue(undefined);
+    const run = await svc.auditRecentSettlementsImpl("manual");
+    expect(run.checked).toBe(5);
+    expect(run.mismatches).toEqual([nbaMismatch]);
+    expect(notify.mock.calls[0][0]).toContain("Wrong Settlement Detected");
   });
 });

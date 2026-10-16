@@ -22,8 +22,11 @@ import {
 } from "./nba-markets";
 import { NbaService } from "./nba.service";
 
-/** A final must read the same this long apart before it is proposed. */
-export const NBA_FINAL_STABLE_MS = 30 * 60 * 1000;
+/**
+ * A final must read the same this long apart before it is proposed. One hour,
+ * the same quiet period football waits for before trusting a result.
+ */
+export const NBA_FINAL_STABLE_MS = 60 * 60 * 1000;
 /** Statuses that mean the game will not finish as scheduled. */
 const NOT_PLAYED = new Set([
   "STATUS_POSTPONED",

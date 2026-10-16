@@ -17,7 +17,11 @@ describe("AutoResolveMarketsJob", () => {
     externalSource: null,
   };
 
-  function build(overrides: Partial<typeof baseMarket>[] = [{}], objections = 0) {
+  function build(
+    overrides: Partial<typeof baseMarket>[] = [{}],
+    objections = 0,
+    mayAutoSettle: jest.Mock = jest.fn().mockResolvedValue(true),
+  ) {
     const markets = overrides.map((o) => ({ ...baseMarket, ...o }));
     const marketRepo = { find: jest.fn().mockResolvedValue(markets) };
     const disputeRepo = { count: jest.fn().mockResolvedValue(objections) };
@@ -26,14 +30,16 @@ describe("AutoResolveMarketsJob", () => {
       save: jest.fn().mockResolvedValue(undefined),
     };
     const marketsService = { resolve: jest.fn().mockResolvedValue(undefined) };
+    const keeper = { mayAutoSettle };
     const job = new AutoResolveMarketsJob(
       marketRepo as any,
       disputeRepo as any,
       auditRepo as any,
       marketsService as any,
       {} as any,
+      keeper as any,
     );
-    return { job, marketRepo, disputeRepo, auditRepo, marketsService };
+    return { job, marketRepo, disputeRepo, auditRepo, marketsService, keeper };
   }
 
   it("settles an unobjected expired market through MarketsService.resolve", async () => {
@@ -131,5 +137,66 @@ describe("AutoResolveMarketsJob", () => {
       "o1",
       "system:auto-resolve",
     );
+  });
+
+  /**
+   * The keeper re-reads the provider before paying; this job settles the same
+   * markets and used to skip that, so whichever ran first decided whether the
+   * check happened. Both now ask the keeper's guard.
+   */
+  describe("pre-payout re-check", () => {
+    it("asks the keeper's guard before settling, with outcomes loaded", async () => {
+      const { job, marketRepo, marketsService, keeper } = build();
+
+      await job.autoResolveExpiredWindows();
+
+      expect(marketRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({ relations: ["outcomes"] }),
+      );
+      expect(keeper.mayAutoSettle).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "m1" }),
+      );
+      expect(keeper.mayAutoSettle.mock.invocationCallOrder[0]).toBeLessThan(
+        marketsService.resolve.mock.invocationCallOrder[0],
+      );
+    });
+
+    it("does not settle when the provider now disagrees", async () => {
+      const { job, marketsService, auditRepo } = build(
+        [{}],
+        0,
+        jest.fn().mockResolvedValue(false),
+      );
+
+      await job.autoResolveExpiredWindows();
+
+      expect(marketsService.resolve).not.toHaveBeenCalled();
+      expect(auditRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("waits for the next run when the re-check throws, and carries on with the rest", async () => {
+      const guard = jest
+        .fn()
+        .mockRejectedValueOnce(new Error("ESPN exploded"))
+        .mockResolvedValueOnce(true);
+      const { job, marketsService } = build([{}, { id: "m2" }], 0, guard);
+
+      await job.autoResolveExpiredWindows();
+
+      expect(marketsService.resolve).toHaveBeenCalledTimes(1);
+      expect(marketsService.resolve).toHaveBeenCalledWith(
+        "m2",
+        "o1",
+        "system:auto-resolve",
+      );
+    });
+
+    it("never re-checks a market it would not settle anyway", async () => {
+      const { job, keeper } = build([{}], 1);
+
+      await job.autoResolveExpiredWindows();
+
+      expect(keeper.mayAutoSettle).not.toHaveBeenCalled();
+    });
   });
 });

@@ -10,6 +10,7 @@ import { Market, MarketStatus } from "../entities/market.entity";
 import { Dispute } from "../entities/dispute.entity";
 import { AuditLog, AuditAction, RoleType } from "../entities/audit-log.entity";
 import { MarketsService } from "../markets/markets.service";
+import { KeeperService } from "../markets/keeper.service";
 import { DataSource } from "typeorm";
 import { Inject, forwardRef } from "@nestjs/common";
 import { neverAutoSettles } from "../markets/settlement-sources.util";
@@ -39,6 +40,11 @@ export class AutoResolveMarketsJob {
     @Inject(forwardRef(() => MarketsService))
     private marketsService: MarketsService,
     @InjectDataSource() private dataSource: DataSource,
+    // For the pre-payout re-check. The keeper settles the same markets and
+    // re-reads the provider first; this job has to as well, or whichever of
+    // the two gets there first decides whether the check happens at all.
+    @Inject(forwardRef(() => KeeperService))
+    private keeper: KeeperService,
     // Records whether this job is alive, for the admin Keeper page. Optional
     // with a no-op default so direct construction in tests is unaffected.
     @Optional()
@@ -67,6 +73,8 @@ export class AutoResolveMarketsJob {
         status: MarketStatus.RESOLVING,
         disputeDeadlineAt: LessThan(now),
       },
+      // The re-check names outcomes when it reports a disagreement.
+      relations: ["outcomes"],
     });
 
     if (candidates.length === 0) return;
@@ -103,6 +111,20 @@ export class AutoResolveMarketsJob {
           );
           continue;
         }
+
+        // Read the result again before the money moves; a market the provider
+        // now contradicts stays RESOLVING for an admin. A re-check that throws
+        // waits for the next tick rather than paying unchecked.
+        let allowed: boolean;
+        try {
+          allowed = await this.keeper.mayAutoSettle(market);
+        } catch (err) {
+          this.logger.warn(
+            `[AutoResolve] Re-check failed for market ${market.id}, retrying next run: ${(err as Error).message}`,
+          );
+          continue;
+        }
+        if (!allowed) continue;
 
         this.logger.log(
           `[AutoResolve] Auto-settling market ${market.id} ("${market.title}") ` +
