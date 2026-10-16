@@ -46,7 +46,7 @@ const NOT_PLAYED = new Set([
  * winner; the objection window and the usual settlers do the paying, and the
  * keeper re-reads ESPN before money moves (recheckProposal).
  *
- * Off unless NBA_AUTO_MARKETS=on, and paused with the keeper.
+ * On whenever the keeper is, like EPL and UCL; pausing the keeper pauses it.
  */
 @Injectable()
 export class NbaJobsService implements OnApplicationBootstrap {
@@ -62,11 +62,9 @@ export class NbaJobsService implements OnApplicationBootstrap {
     @InjectRepository(Market) private readonly marketRepo: Repository<Market>,
   ) {}
 
+  /** Runs whenever the keeper does, like the EPL and UCL jobs. */
   enabled(): boolean {
-    const on =
-      (this.config.get<string>("NBA_AUTO_MARKETS") ?? "off").toLowerCase() ===
-      "on";
-    return on && this.keeper.getStatus().isActive;
+    return this.keeper.getStatus().isActive;
   }
 
   private lookaheadDays(): number {

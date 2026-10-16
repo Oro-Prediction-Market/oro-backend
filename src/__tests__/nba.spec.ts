@@ -242,7 +242,6 @@ describe("NBA market shape", () => {
 describe("NbaJobsService", () => {
   function make(
     opts: {
-      flag?: string;
       active?: boolean;
       games?: NbaGame[];
       existing?: any[];
@@ -267,7 +266,6 @@ describe("NbaJobsService", () => {
     };
     const telegram = { sendMessage: jest.fn(async () => undefined) };
     const env: Record<string, string> = {
-      NBA_AUTO_MARKETS: opts.flag ?? "on",
       ADMIN_TELEGRAM_ID: "42",
     };
     const config = { get: (k: string) => env[k] };
@@ -286,13 +284,12 @@ describe("NbaJobsService", () => {
   }
   const now = new Date("2026-10-20T00:00:00Z");
 
-  it("does nothing while NBA_AUTO_MARKETS is off or the keeper is paused", async () => {
-    for (const o of [{ flag: "off" }, { active: false }]) {
-      const { svc, nba } = make(o);
-      await svc.handleCreateMarkets();
-      await svc.handleProposeResults();
-      expect(nba.getGames).not.toHaveBeenCalled();
-    }
+  it("does nothing while the keeper is paused", async () => {
+    const { svc, nba, marketRepo } = make({ active: false });
+    await svc.handleCreateMarkets();
+    await svc.handleProposeResults();
+    expect(nba.getGames).not.toHaveBeenCalled();
+    expect(marketRepo.find).not.toHaveBeenCalled();
   });
 
   it("creates one market per new game and skips games that already have one", async () => {

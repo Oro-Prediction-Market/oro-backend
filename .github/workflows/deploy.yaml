@@ -154,7 +154,6 @@ jobs:
             --from-literal=SLOW_REQUEST_MS='${{ vars.SLOW_REQUEST_MS || '2000' }}' \
             --from-literal=DB_SLOW_QUERY_MS='${{ vars.DB_SLOW_QUERY_MS || '500' }}' \
             --from-literal=SIGNAL_CONCURRENCY='${{ vars.SIGNAL_CONCURRENCY || '4' }}' \
-            --from-literal=NBA_AUTO_MARKETS='${{ vars.NBA_AUTO_MARKETS || 'off' }}' \
             --from-literal=NBA_LOOKAHEAD_DAYS='${{ vars.NBA_LOOKAHEAD_DAYS || '7' }}' \
             --from-literal=NBA_SEASON='${{ vars.NBA_SEASON || '2027' }}' \
             | kubectl apply -f -
