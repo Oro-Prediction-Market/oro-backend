@@ -29,8 +29,15 @@ import { statNamesMatch } from "./stat-outcome-match.util";
 import {
   isSelfResolvingSource,
   requiresManualProposal,
+  isFeedProposed,
   neverAutoSettles,
 } from "./settlement-sources.util";
+import {
+  ESPN_NBA_SOURCE,
+  fetchNbaGame,
+  nbaFinalResult,
+} from "../nba/espn-nba.util";
+import { nbaWinnerOutcome } from "../nba/nba-markets";
 import {
   fetchFixture,
   isFixtureStable,
@@ -519,9 +526,11 @@ export class KeeperService {
             // bypasses proposeResolution and picks the outcome by LABEL, and
             // this competition fields Republic of Ireland AND Northern Ireland.
             // Its proposals come from the fixture row, on the admin page.
+            // NBA too: its own job proposes from ESPN (FEED_PROPOSED_SOURCES).
             if (
               !isSelfResolvingSource(market.externalSource) &&
-              !requiresManualProposal(market.externalSource)
+              !requiresManualProposal(market.externalSource) &&
+              !isFeedProposed(market.externalSource)
             ) {
               await this.notifyAdminPropose(market);
             }
@@ -1725,11 +1734,50 @@ export class KeeperService {
    * readiness checks in `readFixtureResult` when it was made, so it is stale at
    * worst, never unchecked. The daily audit is what covers the remainder.
    */
+  /**
+   * NBA: re-read the game from ESPN and confirm the proposed team still won.
+   * Same verdicts as football: a different winner blocks the payout for a
+   * human; an unreadable or not-yet-final record is "unverified", which (as
+   * for football) does not block.
+   */
+  private async recheckNbaProposal(
+    market: Market,
+  ): Promise<{ verdict: "agrees" | "disagrees" | "unverified"; reason: string }> {
+    const gameId = market.metadata?.espnGameId;
+    if (!gameId) return { verdict: "unverified", reason: "no ESPN game id" };
+    const game = await fetchNbaGame(String(gameId));
+    if (!game) return { verdict: "unverified", reason: "ESPN game fetch failed" };
+    const result = nbaFinalResult(game);
+    if (!result)
+      return { verdict: "unverified", reason: `ESPN game not final (${game.statusName})` };
+    const outcomes = market.outcomes?.length
+      ? market.outcomes
+      : (
+          await this.marketRepo.findOne({
+            where: { id: market.id },
+            relations: ["outcomes"],
+          })
+        )?.outcomes ?? [];
+    const winner = nbaWinnerOutcome(outcomes, game);
+    const score = `${game.away.abbr} ${result.away}–${result.home} ${game.home.abbr}`;
+    if (!winner)
+      return { verdict: "disagrees", reason: `ESPN final ${score}: no outcome names the winner` };
+    if (winner.id !== market.proposedOutcomeId)
+      return {
+        verdict: "disagrees",
+        reason: `ESPN now says ${winner.label} won (${score}), not the proposed outcome`,
+      };
+    return { verdict: "agrees", reason: `ESPN final ${score}` };
+  }
+
   private async recheckProposal(
     market: Market,
   ): Promise<{ verdict: "agrees" | "disagrees" | "unverified"; reason: string }> {
     if (market.externalSource === "ucl-bracket")
       return this.recheckUclProposal(market);
+
+    if (market.externalSource === ESPN_NBA_SOURCE)
+      return this.recheckNbaProposal(market);
 
     if (!market.externalMatchId || market.externalSource !== "football-data.org")
       return { verdict: "agrees", reason: "not a fixture-linked market" };

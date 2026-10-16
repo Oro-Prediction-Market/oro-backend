@@ -10,12 +10,17 @@
  * The Nations League belongs here for the same reason and then some: a group
  * stage matchday is 27 matches settled within a few hours of each other, so
  * without this it would be the single loudest thing the channel has ever done.
+ *
+ * The NBA ("nba-") likewise: up to 15 games a night, every night, all season.
  */
 export function isCompetitionSubcategory(
   subcategory?: string | null,
 ): boolean {
   const s = (subcategory ?? "").toLowerCase();
   return (
-    s.startsWith("epl-") || s.startsWith("ucl-") || s.startsWith("unl-")
+    s.startsWith("epl-") ||
+    s.startsWith("ucl-") ||
+    s.startsWith("unl-") ||
+    s.startsWith("nba-")
   );
 }

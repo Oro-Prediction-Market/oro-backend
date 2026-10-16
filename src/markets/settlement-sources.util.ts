@@ -34,6 +34,18 @@ export const SELF_RESOLVING_SOURCES = ["ter", "btc"] as const;
 export const MANUAL_PROPOSAL_SOURCES = ["unl-manual"] as const;
 
 /**
+ * Markets whose result is proposed from a data feed by their own job, not by
+ * the keeper's football auto-proposal and not by an admin.
+ *
+ * The NBA: NbaJobsService reads the final from ESPN and proposes it. The
+ * keeper's close-time DM (one-tap propose buttons) is skipped for these — at
+ * up to 15 games a night it would bury every other DM, and the job proposes
+ * without anyone's help. Settling is unchanged: objection window, then the
+ * usual settlers, with the keeper re-reading ESPN before money moves.
+ */
+export const FEED_PROPOSED_SOURCES = ["espn-nba"] as const;
+
+/**
  * Everything the two auto-settlers must leave alone.
  *
  * Both `KeeperService.handleDisputeWindowExpiry` (every minute) and
@@ -89,4 +101,9 @@ export function requiresManualProposal(
 /** True when no automated settler may resolve this market. */
 export function neverAutoSettles(source: string | null | undefined): boolean {
   return has(NEVER_AUTO_SETTLE_SOURCES, source);
+}
+
+/** Proposed by its own feed job; the keeper should not ask an admin to. */
+export function isFeedProposed(source: string | null | undefined): boolean {
+  return has(FEED_PROPOSED_SOURCES, source);
 }
